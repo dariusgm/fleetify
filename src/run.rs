@@ -259,7 +259,9 @@ pub fn execute_loaded(
     let recorder = spawn_recorder(bus.subscribe(), layout.clone())
         .map_err(|err| Refused(format!("cannot write events log: {err}")))?;
     let runner = Runner::new(bus.clone(), redactor.clone());
+    // Steps run in the workspace, so the tools path must not depend on the current directory.
     let tools = recipe_dir.join(recipe.tools.as_deref().unwrap_or("tools"));
+    let tools = std::path::absolute(&tools).unwrap_or(tools);
     let ctx = Ctx {
         layout,
         workdir,

@@ -1,0 +1,37 @@
+# Moves a Poetry + Pelican project to Python 3.15.
+# Prepare: Dockerfile base image, pyproject constraint, lock regenerated (existing
+# pins are kept by `poetry lock`). Verify: the pins, the lock, a Python 3.15
+# environment and a full Pelican build. Requires a POSIX shell and uv (uvx).
+schema = 1
+name = "python-315-update"
+branch = "chore/python-3.15"
+pr_title = "chore: update to Python 3.15"
+commit_message = "chore: update to Python 3.15"
+tools = "tools"
+
+[applies_to]
+host_type = ["github"]
+has_file = ["pyproject.toml", "poetry.lock", "Dockerfile"]
+
+[prepare]
+argv = ["sh", "{tools}/prepare.sh", "{repo}"]
+timeout_s = 900
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 1800
+tail_lines = 60
+error_patterns = ['^E ', 'Error', 'error:', 'Traceback']
+
+[guards]
+# Only the three files that carry the Python version may change.
+allow_paths = ["Dockerfile", "pyproject.toml", "poetry.lock"]
+max_files_changed = 3
+max_lines_changed = 5000
+deny_added_patterns = ["NOSONAR", '#\s*nosec']
+
+[ci]
+wait = false
+
+[limits]
+agent_timeout_min = 60

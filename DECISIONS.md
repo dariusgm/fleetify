@@ -301,3 +301,26 @@ Design questions the plan does not answer. Each entry names the milestone.
   path, a second run that finds the open PR, a failing verifier, a guard
   violation and a no-change run. Each checks the remote state, not only the
   status.
+
+## Example run — Python 3.15 on dariusgm/blog (private)
+
+- **Recipe.** `examples/recipes/python-315-update`. Prepare sets
+  `Dockerfile` to `python:3.15.0` and `pyproject.toml` to `python = "3.15.*"`,
+  then runs `poetry lock` (Poetry 2.5.1 via `uvx`). Verify checks the pins and
+  `poetry check --lock`, installs the project under Python 3.15.0 and runs
+  `make html`. Guards allow only `Dockerfile`, `pyproject.toml` and `poetry.lock`.
+- **What changes in the lock.** Only the header (Poetry version, because the
+  recipe pins 2.5.1), `python-versions` and `content-hash`. Every package pin is
+  unchanged (checked by diffing the lock).
+- **Result.** PR #12 (`chore/python-3.15` → `main`) on dariusgm/blog: 3 files,
+  +5 −5. A second run reports `already_done` and opens no duplicate.
+- **Bug found by the first real run.** A relative recipe path made the prepare
+  step fail, because `{tools}` was resolved against the current directory and
+  the step runs in the workspace. Fixed: the tools path is made absolute before
+  any step runs. The failed run pushed nothing (verified: no branch, no PR).
+  Tests use absolute recipe paths, so this is not covered by them yet.
+- **Requirements of the recipe.** A POSIX shell (`sh`) and `uv` 0.13 or newer
+  (older builds do not know Python 3.15). On Windows the recipe fails with
+  "sh not found" as an error result.
+- **Credentials.** `~/.fleetify/credentials.toml` (mode 600) holds the `gh`
+  token for the `dariusgm/*` rule, for this and later runs.
