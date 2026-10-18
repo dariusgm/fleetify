@@ -288,7 +288,11 @@ fn github_returns_an_existing_open_pull_request() {
         )
     });
     let found = github(&host.base)
-        .find_change_request(&repo("github.com", HostType::Github, "o/r"), &token(), "chore/x")
+        .find_change_request(
+            &repo("github.com", HostType::Github, "o/r"),
+            &token(),
+            "chore/x",
+        )
         .unwrap()
         .expect("the open pull request");
     assert_eq!(found.id, "9");
@@ -305,7 +309,11 @@ fn gitlab_ignores_a_closed_merge_request_even_if_listed() {
         )
     });
     let found = gitlab(&host.base)
-        .find_change_request(&repo("gitlab.example.com", HostType::Gitlab, "a/b"), &token(), "chore/x")
+        .find_change_request(
+            &repo("gitlab.example.com", HostType::Gitlab, "a/b"),
+            &token(),
+            "chore/x",
+        )
         .unwrap();
     assert_eq!(found, None);
 }
@@ -320,7 +328,12 @@ fn github_merge_refused_by_the_host_is_a_block_with_its_reason() {
         state: CrState::Open,
     };
     match github(&host.base)
-        .merge(&repo("github.com", HostType::Github, "o/r"), &token(), &change, "x")
+        .merge(
+            &repo("github.com", HostType::Github, "o/r"),
+            &token(),
+            &change,
+            "x",
+        )
         .unwrap()
     {
         MergeOutcome::Blocked(reason) => assert!(reason.contains("not mergeable"), "{reason}"),
