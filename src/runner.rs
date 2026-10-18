@@ -301,6 +301,10 @@ impl Runner {
         &self.bus
     }
 
+    pub fn redactor(&self) -> &Redactor {
+        &self.redactor
+    }
+
     /// Runs the request to completion, or until its timeout expires.
     pub fn run(&self, req: RunRequest) -> CommandResult {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);

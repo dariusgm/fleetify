@@ -91,7 +91,7 @@ impl std::error::Error for HostError {}
 
 /// Everything host-specific. Methods that talk to the API take the token that
 /// applies to the repo (from the credential rules).
-pub trait Host {
+pub trait Host: Send + Sync {
     fn probe_read_access(&self, repo: &Repo, token: &Secret) -> Result<Access, HostError>;
     fn default_branch(&self, repo: &Repo, token: &Secret) -> Result<String, HostError>;
     /// The open change request whose source is `branch`, if any. Closed or merged

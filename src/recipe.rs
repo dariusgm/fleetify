@@ -853,6 +853,18 @@ pub fn json_schema() -> String {
     serde_json::to_string_pretty(&schema).expect("schema serialises")
 }
 
+impl Recipe {
+    /// The `prepare` step as a command, if the recipe has one.
+    pub fn prepare_spec(&self) -> Option<CommandSpec> {
+        self.prepare.as_ref().and_then(command_of_table)
+    }
+
+    /// The verifier as a command, if the recipe has one.
+    pub fn verify_spec(&self) -> Option<CommandSpec> {
+        self.verify.as_ref().and_then(command_of_verify)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

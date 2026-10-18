@@ -189,6 +189,15 @@ fn clean_text(redactor: &Redactor, text: &str, max: usize) -> String {
     cut
 }
 
+/// Serialises appends from parallel workers.
+static APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`append_result`] for concurrent callers.
+pub fn append_result_locked(path: &Path, result: &RepoResult) -> io::Result<()> {
+    let _guard = APPEND_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    append_result(path, result)
+}
+
 /// Appends one result to `results.jsonl`. The last line for a repo counts.
 pub fn append_result(path: &Path, result: &RepoResult) -> io::Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;

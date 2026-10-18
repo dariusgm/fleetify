@@ -1,3 +1,4 @@
+#![allow(dead_code)] // each test binary uses a different part of this module
 //! A tiny HTTP/1.1 server for host tests. It records every request and answers
 //! with what the test's handler returns.
 

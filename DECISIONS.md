@@ -260,3 +260,44 @@ Design questions the plan does not answer. Each entry names the milestone.
   creation, the SHA guard and refusals. The real host was exercised with a
   placeholder token (401 shown) and with the `gh` token (read access ok). The
   token was absent from every file of the run.
+
+## M7 — the no-agent pipeline
+
+- **One flow for dry runs and real runs.** `run::execute` does the setup, the
+  worker pool, the results log and the report. A dry run and a real run differ
+  only in the per-repo step (`dry_run_repo` or `pipeline::process_repo`).
+- **Workers are std threads, not tokio.** Each step is a blocking git or HTTP
+  call, so scoped threads do the job without an async runtime. This is a
+  deliberate deviation from the plan's `tokio` pool.
+- **Per-repo order.** Probe read access, cache, `applies_to`, idempotency
+  (an open change request means `already_done`), then a remote branch without
+  a change request means a resume (open the change request only). Otherwise:
+  workspace, prepare, `git add -A`, no changes means `no_changes`, verifier,
+  guards on the staged diff, one commit, push through the explicit URL, and
+  the change request.
+- **Workspace restart.** A workspace left by an earlier attempt of the same run
+  is deleted and rebuilt, as the plan's run flow says.
+- **Placeholders.** `{repo}` is the workspace path. `{tools}` is the trusted copy
+  of the recipe's `tools` directory. With no agent there is no untrusted copy yet.
+- **Verifier output.** Lines matching `error_patterns` are kept. If none match,
+  the last `tail_lines` lines are kept.
+- **Guards** (`guards.rs`, pure and tested): file and line limits, binary files,
+  test deletion (any deleted path containing "test"), deny and allow path globs,
+  and `deny_added_patterns` on added lines. Renames are not detected: a rename
+  is a delete plus an add, so test-deletion stays strict. `diff.patch` is kept
+  for every guard decision.
+- **Commit identity.** The repo's own `user.email` is used when set. Otherwise
+  the commit is attributed to `fleetify <fleetify@localhost>`. Without this, a CI
+  runner with no git identity would fail every commit.
+- **Push.** Through the explicit clone URL with the askpass token. The
+  workspace's disabled `pushurl` is left as it is.
+- **Refused for now.** `--merge` (M11), `--agent` and recipes with instructions
+  (M9), and any `--waves` other than the default single wave (M8).
+  `--continue-if-green` is also M8.
+- **Results.** `pr_open`, `already_done`, `no_changes`, `skipped`, `verify_failed`,
+  `guard_violation`, `error` (prepare failed or host error), `interrupted`.
+- **Tests.** `tests/pipeline.rs` runs the real flow: a bare local remote, a
+  fake host and real git and shell steps (Unix only). It covers the happy
+  path, a second run that finds the open PR, a failing verifier, a guard
+  violation and a no-change run. Each checks the remote state, not only the
+  status.

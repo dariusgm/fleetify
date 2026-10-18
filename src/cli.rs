@@ -10,7 +10,7 @@ use crate::clock::today_utc;
 use crate::logging;
 use crate::recipe::Recipe;
 use crate::report::{self, Report};
-use crate::run::{self, DryRunInput, Refused, RunLayout};
+use crate::run::{self, Refused, RunInput, RunLayout};
 use crate::state;
 use crate::workspace::remove_workspaces;
 
@@ -228,16 +228,17 @@ pub fn run(cli: Cli) -> ExitCode {
     }
 }
 
-/// `fleetify run`. Only `--dry-run` is implemented so far.
+/// `fleetify run`. A dry run plans; a real run executes the no-agent pipeline.
 fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
-    if !args.dry_run {
-        if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
-            return code;
-        }
-        eprintln!("fleetify: `run` without --dry-run is not implemented yet (milestone M7)");
-        return ExitCode::from(1);
-    }
-
+    let refusal = if args.merge {
+        Some("--merge comes with milestone M11")
+    } else if args.continue_if_green || args.waves != "all" && args.waves != "1,all" {
+        Some("waves and --continue-if-green come with milestone M8; omit them or pass --waves all")
+    } else if args.agent.is_some() {
+        Some("--agent comes with milestone M9; this build runs recipes without instructions")
+    } else {
+        None
+    };
     let recipe = match Recipe::load(&args.recipe_dir) {
         Ok(recipe) => recipe,
         Err(err) => {
@@ -251,11 +252,22 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
     if let Err(code) = start_logging(&layout.log_path(), debug) {
         return code;
     }
+    if let Some(message) = refusal {
+        eprintln!("fleetify: {message}");
+        return ExitCode::from(3);
+    }
     // The first Ctrl-C stops running commands and marks the rest of the run interrupted.
     let _ = ctrlc::set_handler(crate::runner::request_interrupt);
-    tracing::info!(run = %run_id, "dry run starts");
+    let mode = if args.dry_run {
+        run::Mode::DryRun
+    } else {
+        run::Mode::Pipeline {
+            parallel: args.parallel,
+        }
+    };
+    tracing::info!(run = %run_id, dry_run = args.dry_run, "run starts");
 
-    let input = DryRunInput {
+    let input = RunInput {
         workdir,
         recipe_dir: &args.recipe_dir,
         recipe: &recipe,
@@ -264,7 +276,7 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
         only: &args.only,
         agent: args.agent.as_deref(),
     };
-    match run::dry_run(&input) {
+    match run::execute(&input, mode) {
         Err(Refused(message)) => {
             tracing::error!(%message, "run refused");
             eprintln!("fleetify: {message}");

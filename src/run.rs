@@ -1,22 +1,26 @@
-//! Run folders, run ids and the dry-run flow (PLAN.md, "Run flow per repo",
-//! steps 1–3 and the "Dry run" acceptance). A dry run refreshes the cache clones,
-//! evaluates `applies_to` and reports which credential rule applies. It creates no
-//! workspace and pushes nothing.
+//! Runs: run folders, the shared setup, the worker pool and the report. A dry run
+//! and a real run share everything except the per-repo step (PLAN.md, "Run flow
+//! per repo"). A dry run only refreshes caches, evaluates `applies_to` and probes
+//! read access. Nothing is pushed.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::clock::rfc3339_now;
 use crate::config::{Config, ConfigError, HostTable};
-use crate::credentials::{Credentials, CredentialsError};
+use crate::credentials::{Credentials, CredentialsError, Secret};
 use crate::events::{Event, EventBus, Redactor};
 use crate::git::{Auth, GitContext, GitError, username_for};
 use crate::hosts::{Access, Host, TlsCheck, api_base, client_for, tls_self_test};
+use crate::pipeline;
 use crate::recipe::{Recipe, RepoFacts};
 use crate::report::{self, Failure, RepoResult, Report};
 use crate::repos::{Repo, parse_repos};
@@ -25,7 +29,7 @@ use crate::state::{output_path, spawn_recorder, write_atomic};
 use crate::workspace::{cache_dir, ensure_cache};
 
 /// Timeout for one git call (clone, fetch, ls-remote).
-const GIT_TIMEOUT: Duration = Duration::from_secs(600);
+pub const GIT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Run id: the given name, or `<recipe>-<YYYY-MM-DD>`.
 pub fn run_id(recipe_name: &str, requested: Option<&str>, date: &str) -> String {
@@ -128,14 +132,13 @@ pub fn load_report(layout: &RunLayout) -> Result<Report, String> {
         .map_err(|err| format!("run {} has no metadata: {err}", layout.run_id))
         .and_then(|text| serde_json::from_str(&text).map_err(|err| err.to_string()))?;
     let results = report::read_results(&layout.results_path()).map_err(|err| err.to_string())?;
-    let redactor = Redactor::default();
     Ok(report::build(
         &meta.run_id,
         &meta.recipe,
         &meta.started,
         &meta.finished,
         results,
-        &redactor,
+        &Redactor::default(),
     ))
 }
 
@@ -161,8 +164,18 @@ impl From<CredentialsError> for Refused {
     }
 }
 
-/// Everything a dry run needs.
-pub struct DryRunInput<'a> {
+/// What a run does per repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    DryRun,
+    /// Full no-agent pipeline; `parallel` repos at a time.
+    Pipeline {
+        parallel: usize,
+    },
+}
+
+/// Inputs as given on the command line.
+pub struct RunInput<'a> {
     pub workdir: &'a Path,
     pub recipe_dir: &'a Path,
     pub recipe: &'a Recipe,
@@ -172,10 +185,15 @@ pub struct DryRunInput<'a> {
     pub agent: Option<&'a str>,
 }
 
-/// Runs the dry run and writes `run.json`, `results.jsonl`, `events.jsonl`,
-/// per-repo state and `report.json`. Refuses before doing any work when the
-/// configuration, recipe or repos file is wrong.
-pub fn dry_run(input: &DryRunInput<'_>) -> Result<Report, Refused> {
+/// Everything a run needs after loading and checking the inputs.
+pub struct Loaded {
+    pub credentials: Credentials,
+    pub repos: Vec<Repo>,
+    pub clients: BTreeMap<String, Box<dyn Host>>,
+}
+
+/// Loads config, credentials, repos and host clients, and runs the TLS self-test.
+pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
     let config = Config::load(&input.workdir.join("config.toml"))?;
     let hosts = config.host_table()?;
     let (credentials, warnings) = Credentials::load(&input.workdir.join("credentials.toml"))?;
@@ -183,48 +201,80 @@ pub fn dry_run(input: &DryRunInput<'_>) -> Result<Report, Refused> {
         tracing::warn!(%warning, "credentials");
         eprintln!("warning: {warning}");
     }
-    let redactor = Redactor::new(credentials.secrets());
-    crate::logging::set_redactor(redactor.clone());
+    crate::logging::set_redactor(Redactor::new(credentials.secrets()));
+    let repos = load_repos(input.repos_file, &hosts, input.only)?;
+    let clients = host_clients(&repos)?;
+    Ok(Loaded {
+        credentials,
+        repos,
+        clients,
+    })
+}
 
+/// Runs the whole run: validates the recipe, then processes every repo.
+pub fn execute(input: &RunInput<'_>, mode: Mode) -> Result<Report, Refused> {
     let issues = input.recipe.validate(input.recipe_dir, input.agent);
     if !issues.is_empty() {
         let list: Vec<String> = issues.iter().map(ToString::to_string).collect();
         return Err(Refused(format!("recipe refused: {}", list.join("; "))));
     }
-    let repos = load_repos(input.repos_file, &hosts, input.only)?;
-    let clients = host_clients(&repos)?;
+    if !input.recipe.instructions.is_empty() {
+        return Err(Refused(
+            "this recipe has instructions for an agent; agent runs come with milestone M9".into(),
+        ));
+    }
+    let loaded = load(input)?;
+    execute_loaded(
+        input.layout,
+        input.recipe,
+        input.recipe_dir,
+        input.workdir,
+        loaded,
+        mode,
+    )
+}
 
-    let layout = input.layout;
+/// The part of a run after loading: meta, workers, results, report. Tests call
+/// this directly with fake clients and local repositories.
+pub fn execute_loaded(
+    layout: &RunLayout,
+    recipe: &Recipe,
+    recipe_dir: &Path,
+    workdir: &Path,
+    loaded: Loaded,
+    mode: Mode,
+) -> Result<Report, Refused> {
     fs::create_dir_all(&layout.root).map_err(|err| Refused(err.to_string()))?;
     let started = rfc3339_now();
     let mut meta = RunMeta {
         run_id: layout.run_id.clone(),
-        recipe: input.recipe.name.clone(),
+        recipe: recipe.name.clone(),
         started: started.clone(),
         finished: String::new(),
     };
     write_meta(layout, &meta).map_err(|err| Refused(err.to_string()))?;
 
+    let redactor = Redactor::new(loaded.credentials.secrets());
     let bus = EventBus::new();
     let recorder = spawn_recorder(bus.subscribe(), layout.clone())
         .map_err(|err| Refused(format!("cannot write events log: {err}")))?;
     let runner = Runner::new(bus.clone(), redactor.clone());
+    let tools = recipe_dir.join(recipe.tools.as_deref().unwrap_or("tools"));
+    let ctx = Ctx {
+        layout,
+        workdir,
+        recipe,
+        tools: &tools,
+        runner: &runner,
+        credentials: &loaded.credentials,
+        clients: &loaded.clients,
+    };
 
-    let mut results = Vec::with_capacity(repos.len());
-    for repo in &repos {
-        let result = if interrupt_requested() {
-            interrupted_before_start(repo)
-        } else {
-            dry_run_repo(input, &runner, &credentials, &clients, repo)
-        };
-        let _ = report::append_result(&layout.results_path(), &result);
-        runner.bus().emit(Event::RepoFinished {
-            repo: result.repo.clone(),
-            result: result.result.clone(),
-            message: redactor.redact(&result.detail),
-        });
-        results.push(result);
-    }
+    let parallel = match mode {
+        Mode::DryRun => 1,
+        Mode::Pipeline { parallel } => parallel.max(1),
+    };
+    let results = process_all(&ctx, &loaded.repos, mode, parallel);
 
     drop(runner);
     drop(bus);
@@ -245,35 +295,53 @@ pub fn dry_run(input: &DryRunInput<'_>) -> Result<Report, Refused> {
     Ok(report)
 }
 
-/// One API client per host used by the repos, after a TLS self-test per host. A
-/// certificate the OS does not trust stops the run: the internal CA is missing.
-/// Other connection failures are reported and the run goes on, because the
-/// repo itself will then fail with a clearer message.
-fn host_clients(repos: &[Repo]) -> Result<BTreeMap<String, Box<dyn Host>>, Refused> {
-    let mut clients: BTreeMap<String, Box<dyn Host>> = BTreeMap::new();
-    for repo in repos {
-        if clients.contains_key(&repo.host) {
-            continue;
+/// Everything a per-repo step needs. Shared by all workers.
+pub struct Ctx<'a> {
+    pub layout: &'a RunLayout,
+    pub workdir: &'a Path,
+    pub recipe: &'a Recipe,
+    /// Trusted copy of the recipe's `tools` directory.
+    pub tools: &'a Path,
+    pub runner: &'a Runner,
+    pub credentials: &'a Credentials,
+    pub clients: &'a BTreeMap<String, Box<dyn Host>>,
+}
+
+/// Processes the repos with `parallel` workers. Results keep the repos' order.
+fn process_all(ctx: &Ctx<'_>, repos: &[Repo], mode: Mode, parallel: usize) -> Vec<RepoResult> {
+    let next = AtomicUsize::new(0);
+    let slots: Mutex<Vec<Option<RepoResult>>> = Mutex::new(vec![None; repos.len()]);
+    thread::scope(|scope| {
+        for _ in 0..parallel.min(repos.len().max(1)) {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(repo) = repos.get(index) else { break };
+                    let result = if interrupt_requested() {
+                        interrupted_before_start(repo)
+                    } else {
+                        match mode {
+                            Mode::DryRun => dry_run_repo(ctx, repo),
+                            Mode::Pipeline { .. } => pipeline::process_repo(ctx, repo),
+                        }
+                    };
+                    let _ = report::append_result_locked(&ctx.layout.results_path(), &result);
+                    ctx.runner.bus().emit(Event::RepoFinished {
+                        repo: result.repo.clone(),
+                        result: result.result.clone(),
+                        message: ctx.runner.redactor().redact(&result.detail),
+                    });
+                    slots.lock().unwrap_or_else(|p| p.into_inner())[index] = Some(result);
+                }
+            });
         }
-        let base = api_base(repo.host_type, &repo.host);
-        match tls_self_test(&base) {
-            TlsCheck::Ok => {}
-            TlsCheck::UntrustedCertificate(detail) => {
-                return Err(Refused(format!(
-                    "TLS: {base} presents a certificate the OS does not trust ({detail}). \
-                     Install the internal CA in the operating system's certificate store and retry."
-                )));
-            }
-            TlsCheck::Unreachable(detail) => {
-                tracing::warn!(%base, %detail, "TLS self-test could not reach the host");
-                eprintln!("warning: cannot reach {base} for the TLS check: {detail}");
-            }
-        }
-        let client = client_for(repo.host_type, &repo.host, None)
-            .map_err(|err| Refused(format!("cannot set up the client for {}: {err}", repo.host)))?;
-        clients.insert(repo.host.clone(), client);
-    }
-    Ok(clients)
+    });
+    slots
+        .into_inner()
+        .unwrap_or_else(|p| p.into_inner())
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 fn write_meta(layout: &RunLayout, meta: &RunMeta) -> io::Result<()> {
@@ -307,8 +375,38 @@ fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Rep
         .collect())
 }
 
-fn artifacts(layout: &RunLayout, repo: &Repo) -> BTreeMap<String, String> {
-    let key = repo.key();
+/// One API client per host used by the repos, after a TLS self-test per host. A
+/// certificate the OS does not trust stops the run: the internal CA is missing.
+/// Other connection failures are reported and the run goes on.
+fn host_clients(repos: &[Repo]) -> Result<BTreeMap<String, Box<dyn Host>>, Refused> {
+    let mut clients: BTreeMap<String, Box<dyn Host>> = BTreeMap::new();
+    for repo in repos {
+        if clients.contains_key(&repo.host) {
+            continue;
+        }
+        let base = api_base(repo.host_type, &repo.host);
+        match tls_self_test(&base) {
+            TlsCheck::Ok => {}
+            TlsCheck::UntrustedCertificate(detail) => {
+                return Err(Refused(format!(
+                    "TLS: {base} presents a certificate the OS does not trust ({detail}). \
+                     Install the internal CA in the operating system's certificate store and retry."
+                )));
+            }
+            TlsCheck::Unreachable(detail) => {
+                tracing::warn!(%base, %detail, "TLS self-test could not reach the host");
+                eprintln!("warning: cannot reach {base} for the TLS check: {detail}");
+            }
+        }
+        let client = client_for(repo.host_type, &repo.host, None)
+            .map_err(|err| Refused(format!("cannot set up the client for {}: {err}", repo.host)))?;
+        clients.insert(repo.host.clone(), client);
+    }
+    Ok(clients)
+}
+
+/// Folder paths used in failure blocks.
+pub fn artifacts(layout: &RunLayout, repo: &Repo) -> BTreeMap<String, String> {
     BTreeMap::from([
         (
             "events".to_string(),
@@ -317,7 +415,7 @@ fn artifacts(layout: &RunLayout, repo: &Repo) -> BTreeMap<String, String> {
         ("log".to_string(), layout.log_path().display().to_string()),
         (
             "output".to_string(),
-            output_path(layout, &key).display().to_string(),
+            output_path(layout, &repo.key()).display().to_string(),
         ),
         (
             "repo_dir".to_string(),
@@ -326,32 +424,53 @@ fn artifacts(layout: &RunLayout, repo: &Repo) -> BTreeMap<String, String> {
     ])
 }
 
-fn interrupted_repo(
-    key: &str,
+/// A result for a repo that failed with `message`.
+pub fn error_result(
+    layout: &RunLayout,
+    repo: &Repo,
     message: String,
+    rule: Option<String>,
     output_tail: Vec<String>,
-    artifacts: BTreeMap<String, String>,
 ) -> RepoResult {
-    let mut result = RepoResult::new(key, "interrupted", &message);
+    let mut result = RepoResult::new(&repo.key(), "error", &message);
+    result.rule = rule.clone();
     result.failure = Some(Failure {
-        class: "interrupted".to_string(),
+        class: "error".to_string(),
         message,
-        rule: None,
+        rule,
         output_tail,
-        artifacts,
+        artifacts: artifacts(layout, repo),
     });
     result
 }
 
+/// Whether a git failure came from Ctrl-C; those become `interrupted`.
+pub fn git_failure(
+    layout: &RunLayout,
+    repo: &Repo,
+    error: GitError,
+    rule: Option<String>,
+) -> RepoResult {
+    if interrupt_requested() {
+        let mut result = RepoResult::new(&repo.key(), "interrupted", &error.message);
+        result.failure = Some(Failure {
+            class: "interrupted".to_string(),
+            message: error.message,
+            rule,
+            output_tail: error.output_tail,
+            artifacts: artifacts(layout, repo),
+        });
+        return result;
+    }
+    error_result(layout, repo, error.message, rule, error.output_tail)
+}
+
 fn interrupted_before_start(repo: &Repo) -> RepoResult {
-    let mut result = RepoResult::new(
-        &repo.key(),
-        "interrupted",
-        "not started: the run was interrupted",
-    );
+    let message = "not started: the run was interrupted".to_string();
+    let mut result = RepoResult::new(&repo.key(), "interrupted", &message);
     result.failure = Some(Failure {
         class: "interrupted".to_string(),
-        message: "not started: the run was interrupted".to_string(),
+        message,
         rule: None,
         output_tail: Vec::new(),
         artifacts: BTreeMap::new(),
@@ -359,96 +478,86 @@ fn interrupted_before_start(repo: &Repo) -> RepoResult {
     result
 }
 
-fn dry_run_repo(
-    input: &DryRunInput<'_>,
-    runner: &Runner,
-    credentials: &Credentials,
-    clients: &BTreeMap<String, Box<dyn Host>>,
+/// Credential rule and read-access probe for one repo. Errors come back as a
+/// message plus the rule that was involved.
+pub fn probe<'a>(
+    ctx: &Ctx<'a>,
     repo: &Repo,
-) -> RepoResult {
+) -> Result<(String, &'a Secret), (String, Option<String>)> {
+    let rule = ctx
+        .credentials
+        .find_rule(&repo.host, &repo.path)
+        .map_err(|err| (err.to_string(), None))?;
+    let pattern = rule.pattern().to_string();
+    let client = ctx.clients.get(&repo.host).ok_or_else(|| {
+        (
+            format!("no API client for {}", repo.host),
+            Some(pattern.clone()),
+        )
+    })?;
+    match client.probe_read_access(repo, rule.token()) {
+        Ok(Access::Ok) => Ok((pattern, rule.token())),
+        Ok(denied) => Err((denied.describe().to_string(), Some(pattern))),
+        Err(err) => Err((err.to_string(), Some(pattern))),
+    }
+}
+
+/// Git context for one repo: the token of its rule, the run's scratch dir and the timeout.
+pub fn git_context<'a>(
+    ctx: &'a Ctx<'_>,
+    repo: &'a Repo,
+    key: &'a str,
+    token: &'a Secret,
+    scratch: &'a Path,
+) -> GitContext<'a> {
+    GitContext {
+        runner: ctx.runner,
+        label: key,
+        scratch,
+        auth: Some(Auth {
+            username: username_for(repo.host_type.as_str()),
+            token,
+        }),
+        timeout: GIT_TIMEOUT,
+    }
+}
+
+/// The per-repo step of a dry run: probe, cache, `applies_to`, and the plan.
+fn dry_run_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     let key = repo.key();
     let phase = |name: &str| {
-        runner.bus().emit(Event::RepoPhase {
+        ctx.runner.bus().emit(Event::RepoPhase {
             repo: key.clone(),
             phase: name.to_string(),
         })
     };
     phase("cloning");
-
-    let failed = |message: String, rule: Option<String>, tail: Vec<String>| {
-        let mut result = RepoResult::new(&key, "error", &message);
-        result.rule = rule.clone();
-        result.failure = Some(Failure {
-            class: "error".to_string(),
-            message,
-            rule,
-            output_tail: tail,
-            artifacts: artifacts(input.layout, repo),
-        });
-        result
+    let (pattern, token) = match probe(ctx, repo) {
+        Ok(found) => found,
+        Err((message, rule)) => return error_result(ctx.layout, repo, message, rule, Vec::new()),
     };
-
-    let rule = match credentials.find_rule(&repo.host, &repo.path) {
-        Ok(rule) => rule,
-        Err(err) => return failed(err.to_string(), None, Vec::new()),
-    };
-    let pattern = rule.pattern().to_string();
-    let host_type = repo.host_type.as_str();
-
-    // Read-access probe first: a rejected token fails here, without a clone.
-    let access = match clients
-        .get(&repo.host)
-        .map(|client| client.probe_read_access(repo, rule.token()))
-    {
-        Some(Ok(Access::Ok)) => None,
-        Some(Ok(denied)) => Some(denied.describe().to_string()),
-        Some(Err(err)) => Some(err.to_string()),
-        None => Some(format!("no API client for {}", repo.host)),
-    };
-    if let Some(message) = access {
-        return failed(message, Some(pattern), Vec::new());
-    }
-
-    let scratch = input.layout.scratch_dir();
-    let ctx = GitContext {
-        runner,
-        label: &key,
-        scratch: &scratch,
-        auth: Some(Auth {
-            username: username_for(host_type),
-            token: rule.token(),
-        }),
-        timeout: GIT_TIMEOUT,
-    };
-
-    let cache = cache_dir(input.workdir, &repo.host, &repo.path);
-    let state = match ensure_cache(&ctx, &repo.clone_url, &cache) {
+    let scratch = ctx.layout.scratch_dir();
+    let git = git_context(ctx, repo, &key, token, &scratch);
+    let cache = cache_dir(ctx.workdir, &repo.host, &repo.path);
+    let state = match ensure_cache(&git, &repo.clone_url, &cache) {
         Ok(state) => state,
-        Err(GitError {
-            message,
-            output_tail,
-        }) => {
-            if interrupt_requested() {
-                return interrupted_repo(&key, message, output_tail, artifacts(input.layout, repo));
-            }
-            return failed(message, Some(pattern), output_tail);
-        }
+        Err(err) => return git_failure(ctx.layout, repo, err, Some(pattern)),
     };
 
     phase("checking");
     let facts = RepoFacts {
-        host_type,
+        host_type: repo.host_type.as_str(),
         path: &repo.path,
         checkout: &cache,
     };
-    let unmet = input.recipe.unmet_conditions(&facts);
+    let unmet = ctx.recipe.unmet_conditions(&facts);
     let mut result = if unmet.is_empty() {
         RepoResult::new(
             &key,
             "dry_run",
             &format!(
                 "read access ok; would branch {} from {} at {}",
-                input.recipe.branch,
+                ctx.recipe.branch,
                 state.default_branch,
                 &state.base_sha[..state.base_sha.len().min(12)]
             ),
