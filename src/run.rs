@@ -16,6 +16,7 @@ use crate::config::{Config, ConfigError, HostTable};
 use crate::credentials::{Credentials, CredentialsError};
 use crate::events::{Event, EventBus, Redactor};
 use crate::git::{Auth, GitContext, GitError, username_for};
+use crate::hosts::{Access, Host, TlsCheck, api_base, client_for, tls_self_test};
 use crate::recipe::{Recipe, RepoFacts};
 use crate::report::{self, Failure, RepoResult, Report};
 use crate::repos::{Repo, parse_repos};
@@ -191,6 +192,7 @@ pub fn dry_run(input: &DryRunInput<'_>) -> Result<Report, Refused> {
         return Err(Refused(format!("recipe refused: {}", list.join("; "))));
     }
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
+    let clients = host_clients(&repos)?;
 
     let layout = input.layout;
     fs::create_dir_all(&layout.root).map_err(|err| Refused(err.to_string()))?;
@@ -213,7 +215,7 @@ pub fn dry_run(input: &DryRunInput<'_>) -> Result<Report, Refused> {
         let result = if interrupt_requested() {
             interrupted_before_start(repo)
         } else {
-            dry_run_repo(input, &runner, &credentials, repo)
+            dry_run_repo(input, &runner, &credentials, &clients, repo)
         };
         let _ = report::append_result(&layout.results_path(), &result);
         runner.bus().emit(Event::RepoFinished {
@@ -241,6 +243,37 @@ pub fn dry_run(input: &DryRunInput<'_>) -> Result<Report, Refused> {
     let bytes = serde_json::to_vec_pretty(&report).map_err(|err| Refused(err.to_string()))?;
     write_atomic(&layout.report_path(), &bytes).map_err(|err| Refused(err.to_string()))?;
     Ok(report)
+}
+
+/// One API client per host used by the repos, after a TLS self-test per host. A
+/// certificate the OS does not trust stops the run: the internal CA is missing.
+/// Other connection failures are reported and the run goes on, because the
+/// repo itself will then fail with a clearer message.
+fn host_clients(repos: &[Repo]) -> Result<BTreeMap<String, Box<dyn Host>>, Refused> {
+    let mut clients: BTreeMap<String, Box<dyn Host>> = BTreeMap::new();
+    for repo in repos {
+        if clients.contains_key(&repo.host) {
+            continue;
+        }
+        let base = api_base(repo.host_type, &repo.host);
+        match tls_self_test(&base) {
+            TlsCheck::Ok => {}
+            TlsCheck::UntrustedCertificate(detail) => {
+                return Err(Refused(format!(
+                    "TLS: {base} presents a certificate the OS does not trust ({detail}). \
+                     Install the internal CA in the operating system's certificate store and retry."
+                )));
+            }
+            TlsCheck::Unreachable(detail) => {
+                tracing::warn!(%base, %detail, "TLS self-test could not reach the host");
+                eprintln!("warning: cannot reach {base} for the TLS check: {detail}");
+            }
+        }
+        let client = client_for(repo.host_type, &repo.host, None)
+            .map_err(|err| Refused(format!("cannot set up the client for {}: {err}", repo.host)))?;
+        clients.insert(repo.host.clone(), client);
+    }
+    Ok(clients)
 }
 
 fn write_meta(layout: &RunLayout, meta: &RunMeta) -> io::Result<()> {
@@ -330,6 +363,7 @@ fn dry_run_repo(
     input: &DryRunInput<'_>,
     runner: &Runner,
     credentials: &Credentials,
+    clients: &BTreeMap<String, Box<dyn Host>>,
     repo: &Repo,
 ) -> RepoResult {
     let key = repo.key();
@@ -360,6 +394,21 @@ fn dry_run_repo(
     };
     let pattern = rule.pattern().to_string();
     let host_type = repo.host_type.as_str();
+
+    // Read-access probe first: a rejected token fails here, without a clone.
+    let access = match clients
+        .get(&repo.host)
+        .map(|client| client.probe_read_access(repo, rule.token()))
+    {
+        Some(Ok(Access::Ok)) => None,
+        Some(Ok(denied)) => Some(denied.describe().to_string()),
+        Some(Err(err)) => Some(err.to_string()),
+        None => Some(format!("no API client for {}", repo.host)),
+    };
+    if let Some(message) = access {
+        return failed(message, Some(pattern), Vec::new());
+    }
+
     let scratch = input.layout.scratch_dir();
     let ctx = GitContext {
         runner,
@@ -398,7 +447,7 @@ fn dry_run_repo(
             &key,
             "dry_run",
             &format!(
-                "would branch {} from {} at {}",
+                "read access ok; would branch {} from {} at {}",
                 input.recipe.branch,
                 state.default_branch,
                 &state.base_sha[..state.base_sha.len().min(12)]

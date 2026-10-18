@@ -223,3 +223,40 @@ Design questions the plan does not answer. Each entry names the milestone.
 - **Dev dependency.** `jsonschema` with `default-features = false`, to validate
   the report against its schema. With default features it pulled in an HTTP
   stack and a C library that cannot be cross-built for Windows here.
+
+## M6 — host layer
+
+- **HTTP client: reqwest 0.13, blocking, `rustls` feature.** Its rustls
+  verifier reads the OS certificate store, which is what the internal CA
+  needs. native-tls was the other option: it would add OpenSSL as a runtime
+  dependency on Linux. `aws-lc-sys` is a C build. It builds on Linux and is
+  expected to build on the Windows CI runner. Cross-checking the Windows target
+  from this Linux machine is not possible without a mingw toolchain.
+- **Proxies.** reqwest honours `HTTPS_PROXY` by default. Not tested here (no
+  proxy in this environment).
+- **Token placement.** GitHub gets `Authorization: Bearer`, GitLab gets
+  `PRIVATE-TOKEN`. Tests check that a token never appears in a URL or body.
+- **API bases.** github.com uses `api.github.com`, other GitHub hosts
+  `/api/v3`, and GitLab hosts `/api/v4`. There is no config override yet.
+- **Read-access probe.** One `GET` per repo before the clone: 200 is ok,
+  401/403/404 map to named results, and any other status is an error with the
+  host's message. A rejected token therefore fails in the dry run without a
+  clone. The dry run's detail reads `read access ok; …`.
+- **TLS self-test.** One HTTPS request per host (on the API base) before the
+  repos are processed. A certificate the OS does not trust stops the run with
+  exit 3 and says to install the internal CA. Other failures (DNS, timeout)
+  only print a warning, because the repo will then fail with a clearer message.
+  The classification is unit-tested. The live check ran against api.github.com.
+- **Open change requests.** Only `state=open` counts. The client also filters
+  the result locally, so a closed or merged item the host returns is ignored.
+- **Merge guard.** `merge` sends the expected head SHA. The host refuses a
+  mismatch (409 on both hosts), and a refusal becomes `MergeOutcome::Blocked`
+  with the host's reason. An unexpected status is an error, not a block.
+- **Not called yet.** `default_branch`, `find_change_request`,
+  `create_change_request` and `merge` have no caller until the pipeline (M7).
+  The cache keeps using `ls-remote` for the default branch.
+- **Tests.** A small fake HTTP server in `tests/support` records requests. It
+  covers every status mapping, subgroup encoding, open and closed filtering,
+  creation, the SHA guard and refusals. The real host was exercised with a
+  placeholder token (401 shown) and with the `gh` token (read access ok). The
+  token was absent from every file of the run.
