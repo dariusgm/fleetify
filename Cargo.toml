@@ -1,0 +1,14 @@
+[package]
+name = "fleetify"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "Run one task across a list of Git repositories with an optional coding agent, verifier and CI gate."
+readme = "README.md"
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
