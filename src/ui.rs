@@ -15,6 +15,11 @@ pub fn plain_line(event: &Event) -> String {
             None => format!("{label} | $ {}", argv.join(" ")),
         },
         Event::OutputLine { label, line, .. } => format!("{label} | {line}"),
+        Event::RepoFinished {
+            repo,
+            result,
+            message,
+        } => format!("{repo} | {result}: {message}"),
         Event::CommandFinished {
             label,
             outcome,

@@ -227,6 +227,27 @@ impl CommandResult {
         self.outcome.is_success()
     }
 
+    /// Standard output lines only, joined with newlines.
+    pub fn stdout(&self) -> String {
+        self.lines
+            .iter()
+            .filter(|l| l.stream == Stream::Stdout)
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The last `n` standard error lines, for error messages.
+    pub fn stderr_tail(&self, n: usize) -> String {
+        let errors: Vec<&str> = self
+            .lines
+            .iter()
+            .filter(|l| l.stream == Stream::Stderr)
+            .map(|l| l.text.as_str())
+            .collect();
+        errors[errors.len().saturating_sub(n)..].join("\n")
+    }
+
     /// All kept output lines, joined with newlines.
     pub fn text(&self) -> String {
         self.lines

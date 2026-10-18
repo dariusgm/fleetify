@@ -126,3 +126,57 @@ Design questions the plan does not answer. Each entry names the milestone.
   exists, which keeps it honest as an example.
 - **Issues are de-duplicated.** One problem is reported once even when it
   shows up for both OSes.
+
+## M4 — cache clones, workspaces and dry run
+
+- **Credentials reach git through a `GIT_ASKPASS` file, not a pipe.** For one git
+  call the token goes into a `0600` file under `<workdir>/tmp`, named in the
+  environment variable `FLEETIFY_ASKPASS_FILE`. The same binary answers git's
+  prompts when that variable is set (checked in `main` before argument
+  parsing). The file is deleted when the call ends. The plan's pipe or
+  file-descriptor design was replaced because it does not work portably. The
+  token never appears on a command line, in an event or in a log.
+- **Git's own credential helpers are switched off** (`-c credential.helper=`).
+  A user's `gh` or Git Credential Manager cannot supply a different token behind
+  fleetify's back.
+- **Credential rules are required for every host access**, public repos
+  included, as the plan says. The public test repo therefore needs a matching
+  rule. Git never sends the token for a public clone, so the rule's value is
+  unused there.
+- **HTTPS username** is `x-access-token` for GitHub and `oauth2` for GitLab.
+- **Askpass path not yet exercised end to end.** The only authenticated remote
+  available is private, and the fake HTTP host comes with M6. Unit tests cover
+  the prompt choice and the file lifecycle.
+- **Cache clones** live under `<workdir>/clones/<host>/<path>`. The default
+  branch comes from `git ls-remote --symref origin HEAD`. The cache is then
+  checked out on that branch at the fetched tip and cleaned with `clean -ffdx`.
+  Dry runs keep these clones and the second run fetches (verified against
+  `dariusgm/git2duck`).
+- **Workspaces** are `git clone --local` of the cache at
+  `runs/<run>/<host>/<path>/workspace`. The branch starts at the base SHA,
+  `origin` is the real URL, and `remote.origin.pushurl` is
+  `invalid://fleetify-push-disabled`. `.agent/` is added to
+  `.git/info/exclude`. Tests check that status and diff work and that a push from
+  inside fails.
+- **Open question 9 (hard links on NTFS)** is still open. Only Linux was run.
+- **Dry-run results**: `dry_run` (applicable, the workspace would be created),
+  `skipped` (applies_to unmet, with the unmet conditions), `error`. Only `error`
+  is unsuccessful, so the run exits 1 when any repo errors.
+- **Events and logs.** A dry run writes `runs/<run>/events.jsonl` and logs to
+  `runs/<run>/fleetify.log`. Every other command logs to `<workdir>/fleetify.log`.
+  `RepoFinished` was added to the event enum.
+- **Run ids** are `<recipe>-<YYYY-MM-DD>` in UTC. Dates are computed without a
+  time crate.
+- **`--only`** matches a path suffix. A suffix that matches no repo refuses the
+  run (exit 3), so a typo cannot silently skip everything.
+- **`clean`** deletes `workspace/` directories under a run and keeps clones and
+  logs. Without `--run` it picks the most recently modified run.
+- **Config location.** `config.toml` and `credentials.toml` are read from the
+  working directory. The `workdir` key in config.toml was removed (unknown keys
+  are rejected), because a config file cannot tell you where it lives.
+- **Not in M4.** The TLS self-test needs the HTTP client, so it moves to M6.
+  Parallel execution is M7. Non-dry `run` still refuses with exit 1.
+- **GitLab.** `gitlab:group/sub/name` and clone URLs on gitlab.com go through
+  the same git path, so subgroup paths need no special handling. The gitlab
+  acceptance (a repo with a subgroup and a `gitlab.com` rule) is not run yet.
+  It needs your token and a repo.

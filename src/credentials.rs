@@ -42,6 +42,10 @@ impl CredentialRule {
     pub fn pattern(&self) -> &str {
         &self.pattern
     }
+
+    pub fn token(&self) -> &Secret {
+        &self.token
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -195,17 +199,21 @@ impl Credentials {
         Ok((Self::from_raw(raw)?, warnings))
     }
 
-    /// The token of the first rule whose pattern matches `<host>/<path>`.
-    pub fn find(&self, host: &str, path: &str) -> Result<&Secret, CredentialsError> {
+    /// The first rule whose pattern matches `<host>/<path>`.
+    pub fn find_rule(&self, host: &str, path: &str) -> Result<&CredentialRule, CredentialsError> {
         let key = format!("{host}/{path}");
         self.rules
             .iter()
             .find(|rule| glob_match(&rule.pattern, &key))
-            .map(|rule| &rule.token)
             .ok_or_else(|| CredentialsError::NoMatch {
                 key,
                 checked: self.rules.iter().map(|r| r.pattern.clone()).collect(),
             })
+    }
+
+    /// The token of the first rule whose pattern matches `<host>/<path>`.
+    pub fn find(&self, host: &str, path: &str) -> Result<&Secret, CredentialsError> {
+        self.find_rule(host, path).map(|rule| &rule.token)
     }
 
     pub fn rules(&self) -> &[CredentialRule] {

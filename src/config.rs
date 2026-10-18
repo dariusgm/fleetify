@@ -36,8 +36,6 @@ impl fmt::Display for HostType {
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Working directory. `--workdir` overrides it.
-    pub workdir: Option<String>,
     /// Hosts beyond `github.com` and `gitlab.com`, keyed by host name.
     #[serde(default)]
     pub hosts: BTreeMap<String, HostEntry>,

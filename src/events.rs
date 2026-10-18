@@ -59,6 +59,12 @@ pub enum Event {
         outcome: Outcome,
         duration_ms: u64,
     },
+    /// The result of one repo in a run (dry run for now, full results from M7).
+    RepoFinished {
+        repo: String,
+        result: String,
+        message: String,
+    },
 }
 
 /// Fan-out of events to any number of subscribers. Subscribers that have been
