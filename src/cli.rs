@@ -90,7 +90,12 @@ pub enum Command {
         report: Option<PathBuf>,
     },
     /// Check a recipe: schema, referenced files and rendered commands per OS
-    Validate { recipe_dir: PathBuf },
+    Validate {
+        recipe_dir: PathBuf,
+        /// Agent to assume when the recipe names none
+        #[arg(long)]
+        agent: Option<String>,
+    },
     /// Print the JSON Schema of recipe.toml for this binary
     Schema,
     /// Render the report of a run
@@ -171,6 +176,11 @@ pub fn run(cli: Cli) -> ExitCode {
 
     match cli.command {
         Command::DebugPanic => panic!("deliberate panic requested with the debug-panic subcommand"),
+        Command::Schema => {
+            println!("{}", crate::recipe::json_schema());
+            ExitCode::SUCCESS
+        }
+        Command::Validate { recipe_dir, agent } => validate_command(&recipe_dir, agent.as_deref()),
         command => {
             tracing::info!(
                 command = command.name(),
@@ -180,4 +190,65 @@ pub fn run(cli: Cli) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// `fleetify validate`: prints the rendered commands on success. Exit code 3 when the
+/// recipe is refused, with every issue listed on stderr.
+fn validate_command(dir: &std::path::Path, agent: Option<&str>) -> ExitCode {
+    let recipe = match crate::recipe::Recipe::load(dir) {
+        Ok(recipe) => recipe,
+        Err(err) => {
+            eprintln!("fleetify: {err}");
+            return ExitCode::from(3);
+        }
+    };
+    let issues = recipe.validate(dir, agent);
+    if !issues.is_empty() {
+        for issue in &issues {
+            eprintln!("error: {issue}");
+        }
+        eprintln!(
+            "fleetify: recipe {} refused: {} issue(s)",
+            recipe.name,
+            issues.len()
+        );
+        return ExitCode::from(3);
+    }
+    let rendered = match recipe.rendered_commands(dir) {
+        Ok(rendered) => rendered,
+        Err(err) => {
+            eprintln!("fleetify: {err}");
+            return ExitCode::from(3);
+        }
+    };
+    println!("recipe {} is valid", recipe.name);
+    println!("branch: {}", recipe.branch);
+    for command in rendered {
+        println!(
+            "{} [{}]: {}",
+            command.step,
+            command.os,
+            display_argv(&command.argv)
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// Shows an argument list for people to read. Not for execution: arguments with
+/// spaces or shell characters are single-quoted.
+fn display_argv(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| {
+            let plain = !arg.is_empty()
+                && arg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./:=@+{}<>".contains(c));
+            if plain {
+                arg.clone()
+            } else {
+                format!("'{}'", arg.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

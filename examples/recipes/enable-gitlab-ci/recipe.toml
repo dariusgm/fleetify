@@ -1,0 +1,39 @@
+schema = 1
+name = "enable-gitlab-ci"
+branch = "chore/enable-gitlab-ci"
+pr_title = "chore: enable GitLab CI pipeline"
+agent = "claude-code"
+attachments = ["reference/gitlab-ci.yaml"]
+tools = "tools"
+
+[applies_to]
+host_type = ["gitlab"]
+not_has_file = [".gitlab-ci.yml"]
+
+[[instructions]]
+file = "prompts/enable-ci.md"
+
+[[instructions]]
+text = "The reference pipeline is in .agent/attachments/gitlab-ci.yaml. Adapt it to this repository and write .gitlab-ci.yml."
+
+[verify]
+posix = ["bash", "{tools}/verify.sh", "{repo}"]
+windows = ["pwsh", "-NoProfile", "-File", "{tools}/verify.ps1", "{repo}"]
+timeout_s = 300
+tail_lines = 40
+error_patterns = ['^E\s', 'error:']
+
+[guards]
+deny_added_patterns = ["NOSONAR", '#\s*nosec', '#\s*noqa']
+max_files_changed = 50
+max_lines_changed = 2000
+
+[ci]
+provider = "auto"
+wait = true
+timeout_min = 30
+merge = "off"
+
+[limits]
+agent_timeout_min = 60
+idle_warn_min = 10

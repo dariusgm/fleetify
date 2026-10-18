@@ -86,3 +86,43 @@ Design questions the plan does not answer. Each entry names the milestone.
 - **Not yet wired.** The runner is not yet built with the credentials' redactor;
   that happens when a run loads credentials (M4). The log redaction is already
   live once `set_redactor` is called.
+
+## M3 — recipe format
+
+- **`applies_to` semantics** (the plan's comment is ambiguous, so the reading
+  is recorded here). Every listed condition must hold. Within `host_type` and
+  `path_glob` any listed value may match. `has_file` needs *all* listed files,
+  `has_file_any` needs *any*, and `not_has_file` needs *none*. The plan lists
+  both `has_file` and `has_file_any`, which would be redundant under "any" for
+  both. `path_glob` matches the repo path (`group/sub/name`), not the host.
+- **Commands** are an argv list, or `posix` and/or `windows`. A command with
+  only one OS variant is refused, because a run on the other OS would then
+  fail or be skipped silently.
+- **`commit_message` is an optional field** that defaults to `pr_title`. The
+  plan's skip-CI check names a commit message, and the recipe has nowhere else
+  to put one.
+- **Skip-CI markers** are matched case-insensitively against the branch, the
+  PR title and the commit message. The list is in `recipe.rs` and includes
+  `[skip ci]`, `[ci skip]`, `[skip-ci]`, `[no ci]` and `skip-ci`.
+- **Branch names** are checked against the git ref rules that matter here, in
+  pure Rust. Once git is required at run time (M4), `git check-ref-format` can
+  replace the approximation.
+- **Instruction placeholders** (`{repo.name}` and friends) are not checked at
+  validate time yet. Rendering happens in M7, which is when unknown names
+  should fail.
+- **Verify is optional.** Without a `[verify]` table no outer verifier runs.
+  Pure `prepare` recipes need no verifier at all.
+- **`validate` exit code is 3** (refused before starting), matching `run`.
+  `validate --agent NAME` lets a recipe with instructions and no `agent` pass
+  validation, as the plan's rule allows.
+- **Schema** is `schema = 1` and is exported with schemars. `fleetify schema`
+  prints it.
+- **Defaults**: `ci.wait` is false, `ci.provider` is `auto`, `ci.merge` is `off`,
+  `limits` 60/10 minutes, guards 50 files / 2000 lines / test deletion and binary
+  files forbidden. `prepare` defaults to 120 s and `verify` to 300 s.
+- **Example recipe** `examples/recipes/enable-gitlab-ci` follows the plan's
+  example with two changes. It has no `[prepare]` step, because it does no
+  useful work there. And its verifier only checks that `.gitlab-ci.yml`
+  exists, which keeps it honest as an example.
+- **Issues are de-duplicated.** One problem is reported once even when it
+  shows up for both OSes.
