@@ -5,6 +5,7 @@ pub mod agents;
 pub mod ci;
 pub mod cli;
 pub mod config;
+pub mod credentials;
 pub mod events;
 pub mod hosts;
 pub mod logging;

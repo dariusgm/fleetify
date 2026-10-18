@@ -19,7 +19,9 @@ Design questions the plan does not answer. Each entry names the milestone.
 - **Crate name check.** `fleetify` and `fleetify-recipes` returned 404 on
   crates.io when checked. Only crates.io was checked; see PLAN.md open
   question 7 for the other registries.
-- **Edition 2021, MSRV 1.75** (conservative; the toolchain here is newer).
+- **Edition 2021, no pinned MSRV.** A `rust-version` was set in M0 but dropped
+  in M2: current `toml` needs a newer rustc and the warning made the pin
+  meaningless. Revisit when there is a release target that needs one.
 
 ## M1 — command runner and event stream
 
@@ -49,3 +51,38 @@ Design questions the plan does not answer. Each entry names the milestone.
 - **Event bus.** A plain fan-out of `mpsc` senders with dropped subscribers
   removed on emit. Enough for stage 1; not a general broadcast channel.
 - **Plain renderer** lives in `ui.rs` (M1 scope); the live view is M13.
+
+## M2 — config, repos and credentials
+
+- **`credentials.rs` is a separate module.** The plan lists `config` for both
+  files. Tokens sit in their own module so the `Secret` type and its redacting
+  `Debug` stay in one place.
+- **Glob semantics.** `*` matches any run of characters, including `/`. So
+  `gitlab.example.com/team-a/*` also covers nested subgroups. Only `*` is special.
+- **Credential patterns must start with a dotted host name**
+  (`github.com/*`, not `team-a/*`). This catches a rule that would silently
+  match nothing.
+- **Open credentials file is an error on POSIX** (any group or other bit set),
+  not a warning. On Windows the ACL is not checked; a warning says so.
+- **Missing files.** Missing `config.toml` means defaults. Missing
+  `credentials.toml` means no rules, so every repo fails with the no-rule error
+  when a token is needed.
+- **`config.toml` rejects unknown keys** (`deny_unknown_fields`). A token typed
+  into the wrong file fails at load time rather than being read silently.
+- **Where the files live.** The loaders take explicit paths. Deciding the
+  default location and how `workdir` from config interacts with `--workdir` is
+  left to the CLI wiring (M4); `--workdir` wins over `workdir` in the file.
+- **`repos.txt` rules.** Only full-line comments (`#` first). Duplicates are
+  rejected case-insensitively because folders mirror host and path. Every bad
+  line is reported with its number. `http://` is rejected; `https` and `ssh` are
+  accepted. Credentials embedded in an HTTPS URL are rejected with a message
+  that does not echo them. Ports are kept in the clone URL only.
+- **Path validation.** Segments may contain `[A-Za-z0-9._-]` only, and `.`/`..`
+  are rejected. Paths become folder names, so this is path-traversal protection.
+- **Redaction in logs.** `logging::set_redactor` installs the secrets globally
+  after credentials load, because the log is opened before config. The log
+  writer redacts each write. This assumes tracing writes each event in one
+  call, which holds for the JSON formatter; a test covers the writer.
+- **Not yet wired.** The runner is not yet built with the credentials' redactor;
+  that happens when a run loads credentials (M4). The log redaction is already
+  live once `set_redactor` is called.

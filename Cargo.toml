@@ -2,7 +2,6 @@
 name = "fleetify"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
 license = "MIT"
 description = "Run one task across a list of Git repositories with an optional coding agent, verifier and CI gate."
 readme = "README.md"
@@ -13,5 +12,6 @@ clap = { version = "4", features = ["derive"] }
 command-group = "5.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+toml = "0.9.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
