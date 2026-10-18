@@ -61,7 +61,7 @@ fn broken_recipe_is_refused_with_exit_code_three_and_named_fields() {
     let broken = toml
         .replace("schema = 1", "schema = 2")
         .replace("max_lines_changed = 2000", "max_lines_changed = 0")
-        .replace("\"{repo}\"]\nwindows", "\"{reponame}\"]\nwindows");
+        .replace("\"{repo}\"]", "\"{reponame}\"]");
     fs::write(recipe_dir.join("recipe.toml"), broken).unwrap();
 
     let output = fleetify()
