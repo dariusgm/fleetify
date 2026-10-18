@@ -48,6 +48,7 @@ pub fn ensure_cache(
     let listing = git(ctx, None, &["ls-remote", "--symref", clone_url, "HEAD"])?;
     let default_branch = parse_default_branch(&listing).ok_or_else(|| GitError {
         message: "remote has no default branch (is the repository empty?)".to_string(),
+        output_tail: Vec::new(),
     })?;
 
     if cache.join(".git").exists() {
@@ -110,6 +111,7 @@ pub fn create_workspace(
     if workspace.exists() {
         return Err(GitError {
             message: format!("workspace {} already exists", workspace.display()),
+            output_tail: Vec::new(),
         });
     }
     if let Some(parent) = workspace.parent() {
@@ -173,6 +175,7 @@ pub fn remove_workspaces(run_dir: &Path) -> io::Result<usize> {
 fn io_error(path: &Path, err: io::Error) -> GitError {
     GitError {
         message: format!("{}: {err}", path.display()),
+        output_tail: Vec::new(),
     }
 }
 

@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod ci;
 pub mod cli;
+pub mod clock;
 pub mod config;
 pub mod credentials;
 pub mod events;
@@ -15,5 +16,6 @@ pub mod report;
 pub mod repos;
 pub mod run;
 pub mod runner;
+pub mod state;
 pub mod ui;
 pub mod workspace;

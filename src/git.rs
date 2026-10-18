@@ -50,6 +50,8 @@ pub struct GitContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitError {
     pub message: String,
+    /// Last standard error lines of the failed command, for the report.
+    pub output_tail: Vec<String>,
 }
 
 impl fmt::Display for GitError {
@@ -82,6 +84,7 @@ pub fn git(ctx: &GitContext<'_>, dir: Option<&Path>, args: &[&str]) -> Result<St
     if let Some(file) = &askpass {
         let helper = std::env::current_exe().map_err(|err| GitError {
             message: format!("cannot locate fleetify for askpass: {err}"),
+            output_tail: Vec::new(),
         })?;
         set.push(("GIT_ASKPASS".to_string(), helper.display().to_string()));
         set.push((ASKPASS_ENV.to_string(), file.path.display().to_string()));
@@ -97,6 +100,7 @@ pub fn git(ctx: &GitContext<'_>, dir: Option<&Path>, args: &[&str]) -> Result<St
         Outcome::Exited { code: Some(code) } => format!("exit code {code}"),
         Outcome::Exited { code: None } => "killed by a signal".to_string(),
         Outcome::TimedOut => "timed out".to_string(),
+        Outcome::Interrupted => "interrupted".to_string(),
         Outcome::SpawnFailed { message } | Outcome::Error { message } => message.clone(),
     };
     let tail = result.stderr_tail(5);
@@ -107,6 +111,7 @@ pub fn git(ctx: &GitContext<'_>, dir: Option<&Path>, args: &[&str]) -> Result<St
     };
     Err(GitError {
         message: format!("git {subcommand} failed ({reason}){detail}"),
+        output_tail: result.stderr_lines(20),
     })
 }
 
@@ -119,6 +124,7 @@ impl AskpassFile {
     fn create(dir: &Path, auth: Auth<'_>) -> Result<Self, GitError> {
         let io_error = |err: std::io::Error| GitError {
             message: format!("cannot write askpass file in {}: {err}", dir.display()),
+            output_tail: Vec::new(),
         };
         fs::create_dir_all(dir).map_err(io_error)?;
         let name = format!(

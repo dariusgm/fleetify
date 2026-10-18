@@ -15,6 +15,7 @@ pub fn plain_line(event: &Event) -> String {
             None => format!("{label} | $ {}", argv.join(" ")),
         },
         Event::OutputLine { label, line, .. } => format!("{label} | {line}"),
+        Event::RepoPhase { repo, phase } => format!("{repo} | phase {phase}"),
         Event::RepoFinished {
             repo,
             result,
@@ -31,6 +32,7 @@ pub fn plain_line(event: &Event) -> String {
                 Outcome::Exited { code: Some(code) } => format!("exit {code}"),
                 Outcome::Exited { code: None } => "killed by signal".to_string(),
                 Outcome::TimedOut => "timed out, process tree terminated".to_string(),
+                Outcome::Interrupted => "interrupted, process tree terminated".to_string(),
                 Outcome::SpawnFailed { message } => format!("not started: {message}"),
                 Outcome::Error { message } => format!("supervision error: {message}"),
             };

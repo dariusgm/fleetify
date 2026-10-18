@@ -180,3 +180,46 @@ Design questions the plan does not answer. Each entry names the milestone.
   the same git path, so subgroup paths need no special handling. The gitlab
   acceptance (a repo with a subgroup and a `gitlab.com` rule) is not run yet.
   It needs your token and a repo.
+
+## M5 — event consumers, report and status
+
+- **One event consumer thread** (`state::spawn_recorder`) writes `events.jsonl`,
+  per-repo `state.json` and `output.log`. The orchestrator only emits events.
+- **`state.json` is replaced atomically** (temp file, then rename) on every
+  phase change, output line and result, so `fleetify status` can read it at any
+  time.
+- **`output.log` replaces the plan's `agent.log`** until agents exist (M9). It
+  holds every command line (`$ argv`), every output line and the final result.
+  `fleetify logs <repo>` tails it, and `-f` follows it.
+- **`results.jsonl`**: one line per repo per invocation, last line per repo wins.
+  The report of an invocation is built from that invocation's results, so a
+  re-run with `--only` changes only the repos it touched in the report.
+- **`report.json` shape** follows the plan (`schema`, `run_id`, `recipe`,
+  `started`, `finished`, `exit_code`, `summary`, `repos`). Each repo has
+  `result`, `successful`, `detail`, `rule`, `change_request`, `pushed_sha` and
+  `failure`. The plan's `phases` map is not there yet, because nothing records
+  phase durations until M7. `change_request` and `pushed_sha` are always null
+  until M7.
+- **`dry_run` counts as successful** because a dry run has no failures, only plans. The
+  plan's successful list does not mention it.
+- **Failure blocks** are built for every unsuccessful repo. A missing message is
+  filled in from the detail, and the report never has an empty one. Messages are
+  limited to 2000 characters, output tails to 40 lines of 300 characters, and every
+  text is redacted with the credentials' secrets.
+- **`run.json`** holds run-level facts (`run_id`, `recipe`, `started`,
+  `finished`). `finished` stays empty until the run ends. `report` rebuilds
+  the report from `run.json` and `results.jsonl` when `report.json` is missing.
+- **Ctrl-C.** The first Ctrl-C sets a process-wide flag. Running commands are
+  killed as a whole tree (`Outcome::Interrupted`), the repo in progress becomes
+  `interrupted` with its output tail, the repos not yet started become
+  `interrupted` too, and the report is still written. The exit code is 1. A second
+  Ctrl-C does not force an exit yet.
+- **`status --watch`** redraws every 2 s until the run is marked finished.
+  `logs -f` polls every 500 ms.
+- **Not in M5 (deferred to M7).** The plain renderer that prints every event
+  as a prefixed line, and the periodic summary line. The final table is printed.
+  Dry runs are short enough that the periodic summary has no value yet.
+- **Time** is UTC, RFC 3339, from the new `clock` module.
+- **Dev dependency.** `jsonschema` with `default-features = false`, to validate
+  the report against its schema. With default features it pulled in an HTTP
+  stack and a C library that cannot be cross-built for Windows here.

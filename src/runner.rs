@@ -10,7 +10,7 @@ use std::fmt;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -49,6 +49,17 @@ const PIPE_GRACE: Duration = Duration::from_secs(2);
 const KILL_WAIT: Duration = Duration::from_secs(5);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static INTERRUPT: AtomicBool = AtomicBool::new(false);
+
+/// Asks all running and future commands to stop. Called from the Ctrl-C handler.
+pub fn request_interrupt() {
+    INTERRUPT.store(true, Ordering::SeqCst);
+}
+
+/// True once Ctrl-C has been received.
+pub fn interrupt_requested() -> bool {
+    INTERRUPT.load(Ordering::SeqCst)
+}
 
 /// A command as declared in a recipe: one argument list for both OSes, or one per OS.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,6 +248,17 @@ impl CommandResult {
             .join("\n")
     }
 
+    /// The last `n` standard error lines, as a list.
+    pub fn stderr_lines(&self, n: usize) -> Vec<String> {
+        let errors: Vec<String> = self
+            .lines
+            .iter()
+            .filter(|l| l.stream == Stream::Stderr)
+            .map(|l| l.text.clone())
+            .collect();
+        errors[errors.len().saturating_sub(n)..].to_vec()
+    }
+
     /// The last `n` standard error lines, for error messages.
     pub fn stderr_tail(&self, n: usize) -> String {
         let errors: Vec<&str> = self
@@ -365,6 +387,7 @@ impl Runner {
         let mut status = None;
         let mut exited_at = None;
         let mut killed_at = None;
+        let mut interrupted = false;
 
         loop {
             match rx.recv_timeout(POLL) {
@@ -397,6 +420,12 @@ impl Runner {
                 }
             }
 
+            if status.is_none() && killed_at.is_none() && interrupt_requested() {
+                let _ = child.kill();
+                interrupted = true;
+                killed_at = Some(Instant::now());
+            }
+
             if status.is_none()
                 && killed_at.is_none()
                 && let Some(deadline) = deadline
@@ -418,6 +447,9 @@ impl Runner {
             }
         }
 
+        if interrupted {
+            return Outcome::Interrupted;
+        }
         if killed_at.is_some() {
             return Outcome::TimedOut;
         }

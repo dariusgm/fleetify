@@ -25,6 +25,8 @@ pub enum Outcome {
     TimedOut,
     /// The program could not be started.
     SpawnFailed { message: String },
+    /// Ctrl-C arrived while the process ran; the process tree was terminated.
+    Interrupted,
     /// The process started but the tool could not supervise it to the end.
     Error { message: String },
 }
@@ -59,6 +61,8 @@ pub enum Event {
         outcome: Outcome,
         duration_ms: u64,
     },
+    /// A repo moved to a new phase (`cloning`, `verifying`, ...).
+    RepoPhase { repo: String, phase: String },
     /// The result of one repo in a run (dry run for now, full results from M7).
     RepoFinished {
         repo: String,

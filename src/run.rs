@@ -3,50 +3,28 @@
 //! evaluates `applies_to` and reports which credential rule applies. It creates no
 //! workspace and pushes nothing.
 
-use std::fs::{self, File};
-use std::io::{self, Write};
+use std::collections::BTreeMap;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
-use std::thread::{self, JoinHandle};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
+use crate::clock::rfc3339_now;
 use crate::config::{Config, ConfigError, HostTable};
 use crate::credentials::{Credentials, CredentialsError};
 use crate::events::{Event, EventBus, Redactor};
-use crate::git::{Auth, GitContext, username_for};
+use crate::git::{Auth, GitContext, GitError, username_for};
 use crate::recipe::{Recipe, RepoFacts};
+use crate::report::{self, Failure, RepoResult, Report};
 use crate::repos::{Repo, parse_repos};
-use crate::runner::Runner;
+use crate::runner::{Runner, interrupt_requested};
+use crate::state::{output_path, spawn_recorder, write_atomic};
 use crate::workspace::{cache_dir, ensure_cache};
-
-use std::time::Duration;
 
 /// Timeout for one git call (clone, fetch, ls-remote).
 const GIT_TIMEOUT: Duration = Duration::from_secs(600);
-
-/// Today's date in UTC as `YYYY-MM-DD`.
-pub fn today_utc() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let (y, m, d) = civil_from_days((secs / 86_400) as i64);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// Converts days since 1970-01-01 to a (year, month, day) date.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
-}
 
 /// Run id: the given name, or `<recipe>-<YYYY-MM-DD>`.
 pub fn run_id(recipe_name: &str, requested: Option<&str>, date: &str) -> String {
@@ -81,6 +59,18 @@ impl RunLayout {
         self.root.join("events.jsonl")
     }
 
+    pub fn results_path(&self) -> PathBuf {
+        self.root.join("results.jsonl")
+    }
+
+    pub fn report_path(&self) -> PathBuf {
+        self.root.join("report.json")
+    }
+
+    pub fn meta_path(&self) -> PathBuf {
+        self.root.join("run.json")
+    }
+
     /// Folder of one repo inside the run: `<host>/<path>`.
     pub fn repo_dir(&self, repo: &Repo) -> PathBuf {
         self.root.join(&repo.host).join(&repo.path)
@@ -96,13 +86,23 @@ impl RunLayout {
     }
 }
 
+/// Run-level facts kept in `run.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunMeta {
+    pub run_id: String,
+    pub recipe: String,
+    pub started: String,
+    /// Empty until the run has finished.
+    pub finished: String,
+}
+
 /// The run folder that was modified most recently, if any.
 pub fn latest_run(workdir: &Path) -> io::Result<Option<String>> {
     let runs = workdir.join("runs");
     if !runs.is_dir() {
         return Ok(None);
     }
-    let mut newest: Option<(SystemTime, String)> = None;
+    let mut newest: Option<(std::time::SystemTime, String)> = None;
     for entry in fs::read_dir(runs)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
@@ -117,22 +117,25 @@ pub fn latest_run(workdir: &Path) -> io::Result<Option<String>> {
     Ok(newest.map(|(_, name)| name))
 }
 
-/// Result of one repo in a dry run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Row {
-    pub repo: String,
-    /// `dry_run`, `skipped` or `error`.
-    pub result: &'static str,
-    /// The credential rule that applies (its pattern, never its token).
-    pub rule: Option<String>,
-    pub detail: String,
-}
-
-impl Row {
-    /// Only `error` is unsuccessful in a dry run.
-    pub fn is_success(&self) -> bool {
-        self.result != "error"
+/// The report of a run: `report.json` if written, otherwise rebuilt from the
+/// results log of a run that did not finish.
+pub fn load_report(layout: &RunLayout) -> Result<Report, String> {
+    if let Ok(text) = fs::read_to_string(layout.report_path()) {
+        return serde_json::from_str(&text).map_err(|err| format!("cannot read report: {err}"));
     }
+    let meta: RunMeta = fs::read_to_string(layout.meta_path())
+        .map_err(|err| format!("run {} has no metadata: {err}", layout.run_id))
+        .and_then(|text| serde_json::from_str(&text).map_err(|err| err.to_string()))?;
+    let results = report::read_results(&layout.results_path()).map_err(|err| err.to_string())?;
+    let redactor = Redactor::default();
+    Ok(report::build(
+        &meta.run_id,
+        &meta.recipe,
+        &meta.started,
+        &meta.finished,
+        results,
+        &redactor,
+    ))
 }
 
 /// Why a run cannot start at all (exit code 3).
@@ -168,8 +171,10 @@ pub struct DryRunInput<'a> {
     pub agent: Option<&'a str>,
 }
 
-/// Runs the dry run. Returns one row per repo, or refuses before doing any work.
-pub fn dry_run(input: &DryRunInput<'_>) -> Result<Vec<Row>, Refused> {
+/// Runs the dry run and writes `run.json`, `results.jsonl`, `events.jsonl`,
+/// per-repo state and `report.json`. Refuses before doing any work when the
+/// configuration, recipe or repos file is wrong.
+pub fn dry_run(input: &DryRunInput<'_>) -> Result<Report, Refused> {
     let config = Config::load(&input.workdir.join("config.toml"))?;
     let hosts = config.host_table()?;
     let (credentials, warnings) = Credentials::load(&input.workdir.join("credentials.toml"))?;
@@ -185,32 +190,62 @@ pub fn dry_run(input: &DryRunInput<'_>) -> Result<Vec<Row>, Refused> {
         let list: Vec<String> = issues.iter().map(ToString::to_string).collect();
         return Err(Refused(format!("recipe refused: {}", list.join("; "))));
     }
-
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
 
-    fs::create_dir_all(input.layout.root.clone()).map_err(|err| Refused(err.to_string()))?;
+    let layout = input.layout;
+    fs::create_dir_all(&layout.root).map_err(|err| Refused(err.to_string()))?;
+    let started = rfc3339_now();
+    let mut meta = RunMeta {
+        run_id: layout.run_id.clone(),
+        recipe: input.recipe.name.clone(),
+        started: started.clone(),
+        finished: String::new(),
+    };
+    write_meta(layout, &meta).map_err(|err| Refused(err.to_string()))?;
+
     let bus = EventBus::new();
-    let writer = spawn_event_writer(bus.subscribe(), &input.layout.events_path())
+    let recorder = spawn_recorder(bus.subscribe(), layout.clone())
         .map_err(|err| Refused(format!("cannot write events log: {err}")))?;
     let runner = Runner::new(bus.clone(), redactor.clone());
 
-    let rows: Vec<Row> = repos
-        .iter()
-        .map(|repo| {
-            let row = dry_run_repo(input, &runner, &credentials, repo);
-            runner.bus().emit(Event::RepoFinished {
-                repo: repo.key(),
-                result: row.result.to_string(),
-                message: redactor.redact(&row.detail),
-            });
-            row
-        })
-        .collect();
+    let mut results = Vec::with_capacity(repos.len());
+    for repo in &repos {
+        let result = if interrupt_requested() {
+            interrupted_before_start(repo)
+        } else {
+            dry_run_repo(input, &runner, &credentials, repo)
+        };
+        let _ = report::append_result(&layout.results_path(), &result);
+        runner.bus().emit(Event::RepoFinished {
+            repo: result.repo.clone(),
+            result: result.result.clone(),
+            message: redactor.redact(&result.detail),
+        });
+        results.push(result);
+    }
 
     drop(runner);
     drop(bus);
-    let _ = writer.join();
-    Ok(rows)
+    let _ = recorder.join();
+
+    meta.finished = rfc3339_now();
+    write_meta(layout, &meta).map_err(|err| Refused(err.to_string()))?;
+    let report = report::build(
+        &meta.run_id,
+        &meta.recipe,
+        &meta.started,
+        &meta.finished,
+        results,
+        &redactor,
+    );
+    let bytes = serde_json::to_vec_pretty(&report).map_err(|err| Refused(err.to_string()))?;
+    write_atomic(&layout.report_path(), &bytes).map_err(|err| Refused(err.to_string()))?;
+    Ok(report)
+}
+
+fn write_meta(layout: &RunLayout, meta: &RunMeta) -> io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(meta).map_err(io::Error::other)?;
+    write_atomic(&layout.meta_path(), &bytes)
 }
 
 fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Repo>, Refused> {
@@ -223,11 +258,10 @@ fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Rep
     if only.is_empty() {
         return Ok(repos);
     }
+    let selected =
+        |r: &Repo, suffix: &str| r.path == suffix || r.path.ends_with(&format!("/{suffix}"));
     for suffix in only {
-        let matches = repos
-            .iter()
-            .any(|r| r.path == *suffix || r.path.ends_with(&format!("/{suffix}")));
-        if !matches {
+        if !repos.iter().any(|r| selected(r, suffix)) {
             return Err(Refused(format!(
                 "--only {suffix}: no repo in {} has this path",
                 path.display()
@@ -236,11 +270,60 @@ fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Rep
     }
     Ok(repos
         .into_iter()
-        .filter(|r| {
-            only.iter()
-                .any(|s| r.path == *s || r.path.ends_with(&format!("/{s}")))
-        })
+        .filter(|r| only.iter().any(|s| selected(r, s)))
         .collect())
+}
+
+fn artifacts(layout: &RunLayout, repo: &Repo) -> BTreeMap<String, String> {
+    let key = repo.key();
+    BTreeMap::from([
+        (
+            "events".to_string(),
+            layout.events_path().display().to_string(),
+        ),
+        ("log".to_string(), layout.log_path().display().to_string()),
+        (
+            "output".to_string(),
+            output_path(layout, &key).display().to_string(),
+        ),
+        (
+            "repo_dir".to_string(),
+            layout.repo_dir(repo).display().to_string(),
+        ),
+    ])
+}
+
+fn interrupted_repo(
+    key: &str,
+    message: String,
+    output_tail: Vec<String>,
+    artifacts: BTreeMap<String, String>,
+) -> RepoResult {
+    let mut result = RepoResult::new(key, "interrupted", &message);
+    result.failure = Some(Failure {
+        class: "interrupted".to_string(),
+        message,
+        rule: None,
+        output_tail,
+        artifacts,
+    });
+    result
+}
+
+fn interrupted_before_start(repo: &Repo) -> RepoResult {
+    let mut result = RepoResult::new(
+        &repo.key(),
+        "interrupted",
+        "not started: the run was interrupted",
+    );
+    result.failure = Some(Failure {
+        class: "interrupted".to_string(),
+        message: "not started: the run was interrupted".to_string(),
+        rule: None,
+        output_tail: Vec::new(),
+        artifacts: BTreeMap::new(),
+    });
+    result
 }
 
 fn dry_run_repo(
@@ -248,18 +331,32 @@ fn dry_run_repo(
     runner: &Runner,
     credentials: &Credentials,
     repo: &Repo,
-) -> Row {
+) -> RepoResult {
     let key = repo.key();
-    let failed = |detail: String, rule: Option<String>| Row {
-        repo: key.clone(),
-        result: "error",
-        rule,
-        detail,
+    let phase = |name: &str| {
+        runner.bus().emit(Event::RepoPhase {
+            repo: key.clone(),
+            phase: name.to_string(),
+        })
+    };
+    phase("cloning");
+
+    let failed = |message: String, rule: Option<String>, tail: Vec<String>| {
+        let mut result = RepoResult::new(&key, "error", &message);
+        result.rule = rule.clone();
+        result.failure = Some(Failure {
+            class: "error".to_string(),
+            message,
+            rule,
+            output_tail: tail,
+            artifacts: artifacts(input.layout, repo),
+        });
+        result
     };
 
     let rule = match credentials.find_rule(&repo.host, &repo.path) {
         Ok(rule) => rule,
-        Err(err) => return failed(err.to_string(), None),
+        Err(err) => return failed(err.to_string(), None, Vec::new()),
     };
     let pattern = rule.pattern().to_string();
     let host_type = repo.host_type.as_str();
@@ -278,58 +375,46 @@ fn dry_run_repo(
     let cache = cache_dir(input.workdir, &repo.host, &repo.path);
     let state = match ensure_cache(&ctx, &repo.clone_url, &cache) {
         Ok(state) => state,
-        Err(err) => return failed(err.message, Some(pattern)),
+        Err(GitError {
+            message,
+            output_tail,
+        }) => {
+            if interrupt_requested() {
+                return interrupted_repo(&key, message, output_tail, artifacts(input.layout, repo));
+            }
+            return failed(message, Some(pattern), output_tail);
+        }
     };
 
+    phase("checking");
     let facts = RepoFacts {
         host_type,
         path: &repo.path,
         checkout: &cache,
     };
     let unmet = input.recipe.unmet_conditions(&facts);
-    if !unmet.is_empty() {
-        return Row {
-            repo: key,
-            result: "skipped",
-            rule: Some(pattern),
-            detail: unmet.join("; "),
-        };
-    }
-    Row {
-        repo: key,
-        result: "dry_run",
-        rule: Some(pattern),
-        detail: format!(
-            "would branch {} from {} at {}",
-            input.recipe.branch,
-            state.default_branch,
-            &state.base_sha[..state.base_sha.len().min(12)]
-        ),
-    }
-}
-
-/// Writes every event as one JSON line until the bus is dropped.
-fn spawn_event_writer(events: Receiver<Event>, path: &Path) -> io::Result<JoinHandle<()>> {
-    let mut file: File = File::create(path)?;
-    Ok(thread::spawn(move || {
-        for event in events {
-            if let Ok(line) = serde_json::to_string(&event) {
-                let _ = writeln!(file, "{line}");
-            }
-        }
-    }))
+    let mut result = if unmet.is_empty() {
+        RepoResult::new(
+            &key,
+            "dry_run",
+            &format!(
+                "would branch {} from {} at {}",
+                input.recipe.branch,
+                state.default_branch,
+                &state.base_sha[..state.base_sha.len().min(12)]
+            ),
+        )
+    } else {
+        RepoResult::new(&key, "skipped", &unmet.join("; "))
+    };
+    result.rule = Some(pattern);
+    phase("finished");
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn civil_dates_are_converted_correctly() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(11_017), (2000, 3, 1));
-        assert_eq!(civil_from_days(20_000), (2024, 10, 4));
-    }
 
     #[test]
     fn run_id_defaults_to_recipe_and_date() {
