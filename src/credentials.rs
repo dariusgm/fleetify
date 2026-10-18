@@ -85,7 +85,10 @@ impl fmt::Display for CredentialsError {
                 path: Some(path),
                 message,
             } => write!(f, "invalid credentials file {}: {message}", path.display()),
-            CredentialsError::Parse { path: None, message } => {
+            CredentialsError::Parse {
+                path: None,
+                message,
+            } => {
                 write!(f, "invalid credentials: {message}")
             }
             CredentialsError::Invalid { index, message } => {
@@ -99,7 +102,10 @@ impl fmt::Display for CredentialsError {
             ),
             CredentialsError::NoMatch { key, checked } => {
                 if checked.is_empty() {
-                    write!(f, "no credential rule for {key}: credentials.toml has no rules")
+                    write!(
+                        f,
+                        "no credential rule for {key}: credentials.toml has no rules"
+                    )
                 } else {
                     write!(
                         f,
@@ -171,13 +177,13 @@ impl Credentials {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Ok((Credentials::default(), Vec::new()))
+                return Ok((Credentials::default(), Vec::new()));
             }
             Err(source) => {
                 return Err(CredentialsError::Read {
                     path: path.to_path_buf(),
                     source,
-                })
+                });
             }
         };
         let mut warnings = Vec::new();

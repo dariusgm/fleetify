@@ -156,7 +156,7 @@ impl Config {
                     return Err(ConfigError::Invalid(format!(
                         "host {name} is built in as {existing} and cannot be configured as {}",
                         entry.kind
-                    )))
+                    )));
                 }
                 _ => {
                     table.hosts.insert(name.clone(), entry.kind);
@@ -205,10 +205,10 @@ pub fn expand_home(path: &str) -> PathBuf {
     if path == "~" {
         return home().unwrap_or_else(|| PathBuf::from(path));
     }
-    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
-        if let Some(home) = home() {
-            return home.join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"))
+        && let Some(home) = home()
+    {
+        return home.join(rest);
     }
     PathBuf::from(path)
 }

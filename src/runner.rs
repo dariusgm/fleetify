@@ -323,7 +323,7 @@ impl Runner {
                     message: self
                         .redactor
                         .redact(&format!("cannot start {program}: {err}")),
-                }
+                };
             }
         };
 
@@ -376,24 +376,24 @@ impl Runner {
                 }
             }
 
-            if status.is_none() && killed_at.is_none() {
-                if let Some(deadline) = deadline {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        killed_at = Some(Instant::now());
-                    }
-                }
+            if status.is_none()
+                && killed_at.is_none()
+                && let Some(deadline) = deadline
+                && Instant::now() >= deadline
+            {
+                let _ = child.kill();
+                killed_at = Some(Instant::now());
             }
 
-            if let Some(killed) = killed_at {
-                if status.is_some() || killed.elapsed() >= KILL_WAIT {
-                    break;
-                }
+            if let Some(killed) = killed_at
+                && (status.is_some() || killed.elapsed() >= KILL_WAIT)
+            {
+                break;
             }
-            if let Some(exited) = exited_at {
-                if open_pipes == 0 || exited.elapsed() >= PIPE_GRACE {
-                    break;
-                }
+            if let Some(exited) = exited_at
+                && (open_pipes == 0 || exited.elapsed() >= PIPE_GRACE)
+            {
+                break;
             }
         }
 

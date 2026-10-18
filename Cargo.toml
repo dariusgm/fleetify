@@ -1,7 +1,7 @@
 [package]
 name = "fleetify"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 description = "Run one task across a list of Git repositories with an optional coding agent, verifier and CI gate."
 readme = "README.md"

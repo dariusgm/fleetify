@@ -1,9 +1,17 @@
+// Imports used only by the Unix-gated tests are gated too, so Windows builds stay warning-free.
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
-use fleetify::events::{Event, EventBus, Outcome, Redactor, Stream};
-use fleetify::runner::{EnvPolicy, RunRequest, Runner};
+#[cfg(unix)]
+use fleetify::events::Stream;
+use fleetify::events::{Event, EventBus, Outcome, Redactor};
+#[cfg(unix)]
+use fleetify::runner::EnvPolicy;
+use fleetify::runner::{RunRequest, Runner};
 
 fn runner() -> (Runner, EventBus) {
     let bus = EventBus::new();
@@ -128,7 +136,9 @@ fn secrets_are_redacted_in_events_and_output_but_not_in_the_process() {
 #[cfg(unix)]
 #[test]
 fn minimal_env_drops_variables_that_are_not_allowlisted() {
-    std::env::set_var("FLEETIFY_RUNNER_TEST_VAR", "visible-to-parent");
+    // SAFETY: the variable name is unique to this test and no other test reads it,
+    // so no concurrent reader can observe the write.
+    unsafe { std::env::set_var("FLEETIFY_RUNNER_TEST_VAR", "visible-to-parent") };
     let (runner, _bus) = runner();
 
     let mut restricted = RunRequest::new(

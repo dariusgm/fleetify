@@ -423,10 +423,10 @@ impl Recipe {
         if self.pr_title.trim().is_empty() {
             push("pr_title", "must not be empty".into());
         }
-        if let Some(message) = &self.commit_message {
-            if message.trim().is_empty() {
-                push("commit_message", "must not be empty".into());
-            }
+        if let Some(message) = &self.commit_message
+            && message.trim().is_empty()
+        {
+            push("commit_message", "must not be empty".into());
         }
         let commit_message = self.commit_message.as_deref().unwrap_or(&self.pr_title);
         for (field, text) in [
@@ -459,27 +459,27 @@ impl Recipe {
 
     fn validate_agent(&self, agent_override: Option<&str>, push: &mut impl FnMut(&str, String)) {
         let effective = agent_override.or(self.agent.as_deref());
-        if let Some(agent) = self.agent.as_deref() {
-            if !KNOWN_AGENTS.contains(&agent) {
-                push(
-                    "agent",
-                    format!(
-                        "unknown agent {agent:?}; expected one of {}",
-                        KNOWN_AGENTS.join(", ")
-                    ),
-                );
-            }
+        if let Some(agent) = self.agent.as_deref()
+            && !KNOWN_AGENTS.contains(&agent)
+        {
+            push(
+                "agent",
+                format!(
+                    "unknown agent {agent:?}; expected one of {}",
+                    KNOWN_AGENTS.join(", ")
+                ),
+            );
         }
-        if let Some(agent) = agent_override {
-            if !KNOWN_AGENTS.contains(&agent) {
-                push(
-                    "--agent",
-                    format!(
-                        "unknown agent {agent:?}; expected one of {}",
-                        KNOWN_AGENTS.join(", ")
-                    ),
-                );
-            }
+        if let Some(agent) = agent_override
+            && !KNOWN_AGENTS.contains(&agent)
+        {
+            push(
+                "--agent",
+                format!(
+                    "unknown agent {agent:?}; expected one of {}",
+                    KNOWN_AGENTS.join(", ")
+                ),
+            );
         }
         if !self.instructions.is_empty() && effective.is_none() {
             push(
@@ -489,10 +489,10 @@ impl Recipe {
             );
         }
         if let Some(judge) = &self.judge {
-            if let Some(agent) = &judge.agent {
-                if !KNOWN_AGENTS.contains(&agent.as_str()) {
-                    push("judge.agent", format!("unknown agent {agent:?}"));
-                }
+            if let Some(agent) = &judge.agent
+                && !KNOWN_AGENTS.contains(&agent.as_str())
+            {
+                push("judge.agent", format!("unknown agent {agent:?}"));
             }
             if judge.max_diff_lines == Some(0) {
                 push("judge.max_diff_lines", "must be greater than 0".into());
@@ -584,10 +584,10 @@ impl Recipe {
                 spec,
                 prepare.timeout_s.unwrap_or(DEFAULT_PREPARE_TIMEOUT_S),
             ));
-            if let Some(timeout) = prepare.timeout_s {
-                if timeout == 0 {
-                    push("prepare.timeout_s", "must be greater than 0".into());
-                }
+            if let Some(timeout) = prepare.timeout_s
+                && timeout == 0
+            {
+                push("prepare.timeout_s", "must be greater than 0".into());
             }
         }
         if let Some(verify) = &self.verify {
@@ -975,19 +975,23 @@ mod tests {
         let text = VALID.replace("agent = \"claude-code\"\n", "");
         let dir = valid_dir("no-agent");
         let recipe = Recipe::parse(&text).unwrap();
-        assert!(recipe
-            .validate(&dir, None)
-            .iter()
-            .any(|i| i.field == "agent"));
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "agent")
+        );
         assert!(recipe.validate(&dir, Some("opencode")).is_empty());
     }
 
     #[test]
     fn unknown_agent_is_reported() {
         let issues = issues_for(&VALID.replace("claude-code", "gpt-pilot"), "agent");
-        assert!(issues
-            .iter()
-            .any(|i| i.field == "agent" && i.message.contains("gpt-pilot")));
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.field == "agent" && i.message.contains("gpt-pilot"))
+        );
     }
 
     #[test]
@@ -1055,9 +1059,11 @@ mod tests {
             "attachments = [\"../secrets.txt\"]",
         );
         let issues = issues_for(&text, "escape");
-        assert!(issues
-            .iter()
-            .any(|i| i.field == "attachments" && i.message.contains("relative")));
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.field == "attachments" && i.message.contains("relative"))
+        );
     }
 
     #[test]

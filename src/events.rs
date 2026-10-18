@@ -2,7 +2,7 @@
 //! renderers, the event log and the report consume them. Nothing shown to a
 //! user comes from anywhere else (PLAN.md, "Events, renderers and the report").
 
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use serde::{Deserialize, Serialize};
 
