@@ -30,8 +30,15 @@ fn example_recipe_validates_and_prints_both_oses() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(stdout.contains("recipe enable-gitlab-ci is valid"), "{stdout}");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("recipe enable-gitlab-ci is valid"),
+        "{stdout}"
+    );
     assert!(stdout.contains("verify [posix]: bash"), "{stdout}");
     assert!(stdout.contains("verify [windows]: pwsh"), "{stdout}");
     let _ = fs::remove_dir_all(&work);
@@ -67,8 +74,14 @@ fn broken_recipe_is_refused_with_exit_code_three_and_named_fields() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(3), "{stderr}");
     assert!(stderr.contains("error: schema:"), "{stderr}");
-    assert!(stderr.contains("error: guards.max_lines_changed:"), "{stderr}");
-    assert!(stderr.contains("unknown placeholder {reponame}"), "{stderr}");
+    assert!(
+        stderr.contains("error: guards.max_lines_changed:"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("unknown placeholder {reponame}"),
+        "{stderr}"
+    );
     assert_eq!(stderr.matches("unknown placeholder").count(), 1, "{stderr}");
     let _ = fs::remove_dir_all(&work);
 }
