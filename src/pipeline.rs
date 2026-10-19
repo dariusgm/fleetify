@@ -140,6 +140,39 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         return git_failure(ctx.layout, repo, err, Some(pattern));
     }
 
+    // Step 4a: the CI configuration on the untouched base.
+    if let Some(failed) = ci_pre_check(ctx, repo, &pattern, &workspace, "baseline") {
+        return failed;
+    }
+
+    // Step 4b: the verifier on the untouched base. A broken base is not caused by the
+    // change, so the repo stops here, before prepare or any agent runs.
+    if let Some(verify) = ctx.recipe.verify.as_ref()
+        && verify.baseline
+        && let Some(spec) = ctx.recipe.verify_spec()
+    {
+        phase("baseline");
+        let timeout = verify
+            .timeout_s
+            .map_or(DEFAULT_VERIFY_TIMEOUT, Duration::from_secs);
+        let tail_lines = verify.tail_lines.map_or(40, |n| n as usize).min(MAX_TAIL);
+        match run_step(ctx, repo, &spec, &workspace, timeout) {
+            Err(message) => {
+                return error_result(ctx.layout, repo, message, Some(pattern), Vec::new());
+            }
+            Ok(result) if !result.is_success() => {
+                let tail = failure_lines(&result, &verify.error_patterns, tail_lines);
+                let mut failed = step_failure(ctx, repo, "baseline verify", &result, pattern, tail);
+                failed.result = "base_broken".to_string();
+                if let Some(block) = failed.failure.as_mut() {
+                    block.class = "base_broken".to_string();
+                }
+                return failed;
+            }
+            Ok(_) => {}
+        }
+    }
+
     // Step 5: the recipe's prepare step.
     if let Some(spec) = ctx.recipe.prepare_spec() {
         let timeout = ctx
@@ -176,6 +209,11 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         result.rule = Some(pattern);
         phase("finished");
         return result;
+    }
+
+    // Step 7a: the CI configuration after the change, before the build.
+    if let Some(failed) = ci_pre_check(ctx, repo, &pattern, &workspace, "change") {
+        return failed;
     }
 
     // Step 8, first part: the verifier.
@@ -390,6 +428,40 @@ fn change_body(ctx: &Ctx<'_>, base_sha: &str, default_branch: &str) -> String {
             "not configured"
         },
     )
+}
+
+/// The CI configuration pre-check. A broken file stops the repo before the build:
+/// on the base it is `base_broken`, after prepare it is `ci_invalid`.
+fn ci_pre_check(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    pattern: &str,
+    workspace: &Path,
+    stage: &str,
+) -> Option<RepoResult> {
+    if !ctx.recipe.ci.validate {
+        return None;
+    }
+    let findings = crate::ci_config::check(workspace);
+    if findings.is_empty() {
+        return None;
+    }
+    let name = if stage == "baseline" {
+        "base_broken"
+    } else {
+        "ci_invalid"
+    };
+    let message = format!(
+        "{stage}: CI configuration is invalid ({} problem(s))",
+        findings.len()
+    );
+    let tail: Vec<String> = findings.iter().map(|f| f.line()).collect();
+    let mut failed = error_result(ctx.layout, repo, message, Some(pattern.to_string()), tail);
+    failed.result = name.to_string();
+    if let Some(block) = failed.failure.as_mut() {
+        block.class = name.to_string();
+    }
+    Some(failed)
 }
 
 /// Renders the step for this OS and runs it in the workspace.

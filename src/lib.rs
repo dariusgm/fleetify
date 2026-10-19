@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod ci;
+pub mod ci_config;
 pub mod cli;
 pub mod clock;
 pub mod config;
