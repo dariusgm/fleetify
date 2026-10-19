@@ -385,6 +385,32 @@ fn a_broken_base_stops_before_prepare_and_any_push() {
 }
 
 #[test]
+fn an_invalid_ci_file_after_prepare_stops_before_the_build_and_any_push() {
+    // The change adds a broken GitHub Actions workflow. The verifier must never run.
+    let prepare = "#!/bin/sh\nsed -i 's/3.11/3.15/' \"$1/pyproject.toml\"\nmkdir -p \"$1/.github/workflows\"\nprintf 'jobs: [\\n' > \"$1/.github/workflows/ci.yml\"\n";
+    let verify = "#!/bin/sh\ntouch \"$1/verify-ran\"\nexit 1\n";
+    let s = scenario("ci", prepare, verify);
+    let result = run(&s, "run-1");
+    assert_eq!(result.result, "ci_invalid", "{result:?}");
+    let failure = result.failure.expect("failure block");
+    assert!(
+        failure
+            .output_tail
+            .iter()
+            .any(|l| l.contains(".github/workflows/ci.yml")),
+        "{failure:?}"
+    );
+    let output = fs::read_to_string(&failure.artifacts["output"]).unwrap();
+    assert!(
+        !output.contains("verify.sh"),
+        "verifier must not run: {output}"
+    );
+    assert!(!remote_has_branch(&s), "nothing may be pushed");
+    assert!(!s.created.load(Ordering::SeqCst), "no pull request");
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
 fn a_guard_violation_stops_before_any_push_and_names_the_rule() {
     let prepare = "#!/bin/sh\nsed -i 's/3.11/3.15/' \"$1/pyproject.toml\"\necho 'x = 1  # NOSONAR' >> \"$1/app.py\"\n";
     let s = scenario("guard", prepare, VERIFY_OK);

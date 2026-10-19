@@ -238,6 +238,10 @@ pub struct Ci {
     /// off or when_green.
     #[serde(default = "off")]
     pub merge: String,
+    /// Check GitLab CI and GitHub Actions files before the build: on the base and
+    /// after prepare. Only structure is checked. Default true.
+    #[serde(default = "default_true")]
+    pub validate: bool,
 }
 
 impl Default for Ci {
@@ -247,6 +251,7 @@ impl Default for Ci {
             wait: false,
             timeout_min: default_ci_timeout(),
             merge: off(),
+            validate: true,
         }
     }
 }
