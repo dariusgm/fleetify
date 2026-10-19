@@ -92,6 +92,8 @@ timeout_s = 60
 argv = ["sh", "{tools}/verify.sh", "{repo}"]
 timeout_s = 60
 tail_lines = 10
+# The verifier checks the bumped state, so it must not run on the base.
+baseline = false
 
 [guards]
 deny_added_patterns = ["NOSONAR"]
@@ -267,6 +269,64 @@ fn a_failing_verifier_stops_before_any_push() {
     assert!(
         failure.output_tail.iter().any(|l| l.contains("not bumped")),
         "{failure:?}"
+    );
+    assert!(!remote_has_branch(&s), "nothing may be pushed");
+    assert!(!s.created.load(Ordering::SeqCst), "no pull request");
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn a_broken_base_stops_before_prepare_and_any_push() {
+    // Baseline on: the verifier fails on the untouched base, so prepare must never run.
+    let verify = "#!/bin/sh\necho 'E  base is broken'\nexit 1\n";
+    let prepare =
+        "#!/bin/sh\ntouch \"$1/prepare-ran\"\nsed -i 's/3.11/3.15/' \"$1/pyproject.toml\"\n";
+    let s = scenario("base", prepare, verify);
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text = fs::read_to_string(&recipe)
+        .unwrap()
+        .replace("baseline = false\n", "");
+    fs::write(&recipe, text).unwrap();
+    let result = run(&s, "run-1");
+    assert_eq!(result.result, "base_broken", "{result:?}");
+    let failure = result.failure.expect("failure block");
+    assert!(
+        failure
+            .output_tail
+            .iter()
+            .any(|l| l.contains("base is broken")),
+        "{failure:?}"
+    );
+    let output = fs::read_to_string(&failure.artifacts["output"]).unwrap();
+    assert!(
+        !output.contains("prepare.sh"),
+        "prepare must not run: {output}"
+    );
+    assert!(!remote_has_branch(&s), "nothing may be pushed");
+    assert!(!s.created.load(Ordering::SeqCst), "no pull request");
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn an_invalid_ci_file_after_prepare_stops_before_the_build_and_any_push() {
+    // The change adds a broken GitHub Actions workflow. The verifier must never run.
+    let prepare = "#!/bin/sh\nsed -i 's/3.11/3.15/' \"$1/pyproject.toml\"\nmkdir -p \"$1/.github/workflows\"\nprintf 'jobs: [\\n' > \"$1/.github/workflows/ci.yml\"\n";
+    let verify = "#!/bin/sh\ntouch \"$1/verify-ran\"\nexit 1\n";
+    let s = scenario("ci", prepare, verify);
+    let result = run(&s, "run-1");
+    assert_eq!(result.result, "ci_invalid", "{result:?}");
+    let failure = result.failure.expect("failure block");
+    assert!(
+        failure
+            .output_tail
+            .iter()
+            .any(|l| l.contains(".github/workflows/ci.yml")),
+        "{failure:?}"
+    );
+    let output = fs::read_to_string(&failure.artifacts["output"]).unwrap();
+    assert!(
+        !output.contains("verify.sh"),
+        "verifier must not run: {output}"
     );
     assert!(!remote_has_branch(&s), "nothing may be pushed");
     assert!(!s.created.load(Ordering::SeqCst), "no pull request");

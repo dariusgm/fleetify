@@ -1,0 +1,40 @@
+# Moves a Cargo project's dependencies to the newest released versions.
+# Prepare: `cargo upgrade --incompatible` raises the version requirements in
+# Cargo.toml (cargo-edit is installed when missing), then `cargo update` refreshes
+# Cargo.lock. Verify: the lock is consistent, the project builds with all targets
+# and the tests pass. No agent: if the newest versions break the build, the
+# verifier fails and nothing is pushed.
+schema = 1
+name = "cargo-deps-update"
+branch = "chore/cargo-deps-update"
+pr_title = "chore: update Cargo dependencies to latest versions"
+commit_message = "chore: update Cargo dependencies to latest versions"
+tools = "tools"
+
+[applies_to]
+host_type = ["github"]
+has_file = ["Cargo.toml", "Cargo.lock"]
+
+[prepare]
+argv = ["sh", "{tools}/prepare.sh", "{repo}"]
+timeout_s = 1800
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 3600
+tail_lines = 60
+error_patterns = ['^error', '^E ', 'panicked', 'FAILED']
+
+[guards]
+# Only the manifest and the lock may change. Sources must stay on crates.io:
+# a git or path dependency must not be introduced silently.
+allow_paths = ["Cargo.toml", "Cargo.lock"]
+max_files_changed = 2
+max_lines_changed = 2000
+deny_added_patterns = ['git\s*=\s*"', 'path\s*=\s*"', "NOSONAR"]
+
+[ci]
+provider = "auto"
+wait = true
+timeout_min = 60
+merge = "off"

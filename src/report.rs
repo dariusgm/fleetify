@@ -298,6 +298,7 @@ mod tests {
         for bad in [
             "error",
             "verify_failed",
+            "base_broken",
             "interrupted",
             "ci_failed",
             "needs_input",

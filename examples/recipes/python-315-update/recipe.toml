@@ -22,6 +22,8 @@ argv = ["sh", "{tools}/verify.sh", "{repo}"]
 timeout_s = 1800
 tail_lines = 60
 error_patterns = ['^E ', 'Error', 'error:', 'Traceback']
+# The verifier checks the 3.15 state, which the untouched base does not have yet.
+baseline = false
 
 [guards]
 # Only the three files that carry the Python version may change.
