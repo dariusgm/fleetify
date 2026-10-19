@@ -75,7 +75,13 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         );
     };
     // Step 3: a change request for the branch already exists, so the repo is done.
-    match client.find_change_request(repo, token, &branch) {
+    // Without a change request there is nothing to look up; the branch check below covers it.
+    let found = if ctx.recipe.delivery.open_mr {
+        client.find_change_request(repo, token, &branch)
+    } else {
+        Ok(None)
+    };
+    match found {
         Ok(Some(change)) => {
             let mut result = RepoResult::new(
                 &key,
@@ -99,6 +105,17 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         None,
         &["ls-remote", "--heads", &repo.clone_url, &branch_ref],
     ) {
+        Ok(listing) if !listing.trim().is_empty() && !ctx.recipe.delivery.open_mr => {
+            // Push-only: the branch is already on the remote, so an earlier run did this.
+            let mut result = RepoResult::new(
+                &key,
+                "already_done",
+                "the branch already exists on the remote",
+            );
+            result.rule = Some(pattern);
+            phase("finished");
+            return result;
+        }
         Ok(listing) if !listing.trim().is_empty() => {
             phase("opening_pr");
             return open_change_request(
@@ -364,6 +381,18 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         Ok(sha) => sha.trim().to_string(),
         Err(err) => return git_failure(ctx.layout, repo, err, Some(pattern)),
     };
+
+    // Push-only: the branch is pushed and nothing else happens.
+    if !ctx.recipe.delivery.open_mr {
+        let mut result = RepoResult::new(
+            &key,
+            "pushed",
+            &format!("pushed {branch} at {}", short(&pushed_sha)),
+        );
+        result.rule = Some(pattern);
+        phase("finished");
+        return result;
+    }
 
     // Step 9b: the change request.
     phase("opening_pr");

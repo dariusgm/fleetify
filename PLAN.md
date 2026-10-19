@@ -298,6 +298,15 @@ pub trait Agent {
 
 **Merge is a two-key operation and off by default:** the recipe must set `merge = "when_green"` *and* the run must be started with `--merge`. The merge is done by the orchestrator through the host API and respects branch protection and approval rules. If the host refuses, the repo ends as `merge_blocked`; fleetify never forces a merge. Without both keys the run ends at `pr_open` (no CI wait) or `ci_passed` (CI green) and a human merges.
 
+**Delivery ladder (opt-in, one step at a time).** Private repositories get the most conservative setting by default; each further step has to be asked for in the recipe, and the steps are validated against each other:
+
+1. `delivery.open_mr = false`: push the branch and stop. Result `pushed`. Nothing is opened, nothing is merged, nothing is deleted.
+2. `delivery.open_mr = true` (default): push and open the pull or merge request. Result `pr_open`. A human merges.
+3. `ci.merge = "when_green"` (needs `ci.wait`, so it needs M11) together with `--merge` at run time: merge after CI is green on the pushed commit, with the expected-head guard.
+4. `delivery.delete_branch = true` (needs step 3): delete the source branch, but only after the merge was confirmed. Not deleted on any other result.
+
+Each step is refused at validation if the step before it is off: `when_green` needs `open_mr`, and `delete_branch` needs `when_green`. A push-only run that finds its branch already on the remote ends as `already_done`, so it never pushes or opens anything over an earlier run.
+
 Stage 1 only reports CI failures. Feeding a CI failure back to the agent as a new attempt (CI-fix loop) is stage 2.
 
 ## CI layer and CI gate

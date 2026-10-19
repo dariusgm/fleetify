@@ -24,7 +24,14 @@ const MAX_LINE_CHARS: usize = 300;
 pub fn is_successful(result: &str) -> bool {
     matches!(
         result,
-        "pr_open" | "ci_passed" | "merged" | "skipped" | "already_done" | "no_changes" | "dry_run"
+        "pushed"
+            | "pr_open"
+            | "ci_passed"
+            | "merged"
+            | "skipped"
+            | "already_done"
+            | "no_changes"
+            | "dry_run"
     )
 }
 

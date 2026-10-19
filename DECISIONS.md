@@ -334,6 +334,19 @@ Design questions the plan does not answer. Each entry names the milestone.
   integration test uses a fake binary. Run `fleetify check-agent claude-code`
   once on a machine with the real CLI.
 
+## Delivery steps after the push
+
+- `[delivery] open_mr` (default `true`) and `delete_branch` (default `false`)
+  were added. The ladder is described in `PLAN.md` under "Delivery ladder".
+- `open_mr = false` ends the repo as `pushed`, a success. No change request is
+  looked up or created. A branch that already exists on the remote ends as
+  `already_done` instead of being pushed over.
+- `delete_branch` is only valid with `ci.merge = "when_green"`. Merge still needs
+  the CI gate (M11) and is refused until then, so branch deletion cannot run yet.
+- Host layer: `delete_branch` for GitHub (`DELETE git/refs/heads/<branch>`) and
+  GitLab (`DELETE repository/branches/<branch>`, with `/` encoded). 204 and 404
+  both count as deleted; anything else is an error. Tested against the fake host.
+
 ## Status against PLAN.md (revision 3)
 
 The plan is in `PLAN.md`. This list records what the code does today, milestone

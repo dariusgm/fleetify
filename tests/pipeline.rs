@@ -262,6 +262,32 @@ fn a_second_run_finds_the_open_pull_request_and_does_nothing() {
 }
 
 #[test]
+fn push_only_stops_at_the_branch_and_a_second_run_is_already_done() {
+    let s = scenario("push-only", PREPARE_OK, VERIFY_OK);
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text = fs::read_to_string(&recipe).unwrap() + "\n[delivery]\nopen_mr = false\n";
+    fs::write(&recipe, text).unwrap();
+
+    let result = run(&s, "run-1");
+    assert_eq!(result.result, "pushed", "{result:?}");
+    assert!(result.successful);
+    assert!(result.change_request.is_none());
+    assert!(remote_has_branch(&s), "the branch must be pushed");
+    assert!(
+        !s.created.load(Ordering::SeqCst),
+        "no pull request in push-only mode"
+    );
+    assert!(
+        !s.host.recorded().iter().any(|r| r.method == "POST"),
+        "no change request may be created"
+    );
+
+    let again = run(&s, "run-2");
+    assert_eq!(again.result, "already_done", "{again:?}");
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
 fn a_failing_verifier_stops_before_any_push() {
     let verify = "#!/bin/sh\necho 'E  pyproject not bumped'\nexit 1\n";
     let s = scenario("verify", PREPARE_OK, verify);

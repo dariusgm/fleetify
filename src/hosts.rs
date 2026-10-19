@@ -111,6 +111,9 @@ pub trait Host: Send + Sync {
         title: &str,
         body: &str,
     ) -> Result<ChangeRequest, HostError>;
+    /// Deletes a branch. Only called after its change request was merged. A branch
+    /// that is already gone counts as deleted.
+    fn delete_branch(&self, repo: &Repo, token: &Secret, branch: &str) -> Result<(), HostError>;
     /// Merges only if the head is still `expected_sha`; the host enforces that.
     fn merge(
         &self,
