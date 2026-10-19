@@ -718,9 +718,6 @@ impl Recipe {
         if self.ci.timeout_min == 0 {
             push("ci.timeout_min", "must be greater than 0".into());
         }
-        if self.ci.merge == "when_green" && !self.ci.wait {
-            push("ci.merge", "when_green needs ci.wait = true".into());
-        }
         // The CI gate is milestone M11. Until it exists, a set `wait` must fail loudly
         // instead of being ignored, or a run would look gated when it is not.
         if self.ci.wait {

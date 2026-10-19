@@ -112,6 +112,8 @@ fn host(created: Arc<AtomicBool>) -> support::FakeHost {
     serve(move |req: &Recorded| {
         match (req.method.as_str(), req.target.split('?').next().unwrap()) {
         ("GET", "/repos/o/r") => (200, r#"{"default_branch":"main"}"#.into()),
+        ("PUT", "/repos/o/r/pulls/1/merge") => (200, r#"{"merged":true}"#.into()),
+        ("DELETE", "/repos/o/r/git/refs/heads/chore/bump-python") => (204, String::new()),
         ("GET", "/repos/o/r/pulls") if created.load(Ordering::SeqCst) => (
             200,
             r#"[{"number":1,"state":"open","merged_at":null,"html_url":"https://github.com/o/r/pull/1","head":{"sha":"abc"}}]"#
@@ -156,6 +158,16 @@ fn scenario(name: &str, prepare: &str, verify: &str) -> Scenario {
 
 /// Runs the pipeline for one repo and returns the report's only repo result.
 fn run(s: &Scenario, run_id: &str) -> fleetify::report::RepoResult {
+    run_with(s, run_id, false, false)
+}
+
+/// Like `run`, with the merge policy and the `--merge` flag as given.
+fn run_with(
+    s: &Scenario,
+    run_id: &str,
+    merge_without_ci: bool,
+    merge: bool,
+) -> fleetify::report::RepoResult {
     let recipe = Recipe::load(&s.recipe_dir).unwrap();
     let workdir = s.base.join("work");
     let credentials = Credentials::parse(&format!(
@@ -174,12 +186,15 @@ fn run(s: &Scenario, run_id: &str) -> fleetify::report::RepoResult {
         client_for(HostType::Github, "github.com", Some(&s.host.base)).unwrap();
     let clients = BTreeMap::from([("github.com".to_string(), client)]);
     let layout = RunLayout::new(&workdir, run_id);
+    let mut config = Config::default();
+    config.policy.merge_without_ci = merge_without_ci;
     let loaded = Loaded {
         credentials,
-        config: Config::default(),
+        config,
         repos: vec![repo],
         clients,
         agent: None,
+        merge,
     };
     let report = execute_loaded(
         &layout,
@@ -288,6 +303,36 @@ fn push_only_stops_at_the_branch_and_a_second_run_is_already_done() {
 
     let again = run(&s, "run-2");
     assert_eq!(again.result, "already_done", "{again:?}");
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn a_repo_is_merged_at_the_pushed_commit_when_the_policy_allows_it() {
+    let s = scenario("merge", PREPARE_OK, VERIFY_OK);
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text = fs::read_to_string(&recipe).unwrap()
+        + "\n[ci]\nwait = false\nmerge = \"when_green\"\n\n[delivery]\ndelete_branch = true\n";
+    fs::write(&recipe, text).unwrap();
+
+    let result = run_with(&s, "run-1", true, true);
+    assert_eq!(result.result, "merged", "{result:?}");
+    assert!(result.successful);
+
+    // The merge names the commit that was pushed, so the host refuses if the head moved.
+    let requests = s.host.recorded();
+    let merge = requests
+        .iter()
+        .find(|r| r.method == "PUT")
+        .expect("a merge request");
+    let pushed = result.pushed_sha.clone().expect("a pushed commit");
+    assert!(merge.body.contains(&pushed), "{}", merge.body);
+    // The source branch is deleted only after the merge succeeded.
+    assert!(
+        requests.iter().any(
+            |r| r.method == "DELETE" && r.target.ends_with("/git/refs/heads/chore/bump-python")
+        ),
+        "{requests:?}"
+    );
     let _ = fs::remove_dir_all(&s.base);
 }
 

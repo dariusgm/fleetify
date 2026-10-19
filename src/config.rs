@@ -58,6 +58,10 @@ pub struct Policy {
     /// Refuse agents that did not pass `check-agent`.
     #[serde(default)]
     pub require_checked_agent: bool,
+    /// Allow `--merge` without a CI gate, for any repository the token can merge into.
+    /// It is the user's decision, and it can be a bad one.
+    #[serde(default)]
+    pub merge_without_ci: bool,
 }
 
 /// Permissions granted to every agent, on top of the built-in baseline.

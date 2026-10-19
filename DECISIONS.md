@@ -378,6 +378,20 @@ Design questions the plan does not answer. Each entry names the milestone.
   (`needs.commands = ["sh .agent/tools/verify.sh"]`). Patterns are `<cmd>` and
   `<cmd> *`, so no other `sh` script is allowed.
 
+## Merging without a CI gate (user decision)
+
+- Merging needs both keys: the recipe sets `ci.merge = "when_green"`, and the run
+  is started with `--merge`. Without the policy below, `--merge` is refused at load.
+- `[policy] merge_without_ci = true` in `config.toml` lets such a merge happen with
+  no CI check. It is off by default. It applies to any repository, public or
+  private, because that is the user's decision and it can be a bad one. The CI
+  gate itself is still M11.
+- The merge passes the pushed commit as the expected head. The host refuses a
+  different head, and the result is `merge_blocked`. A successful merge with
+  `delivery.delete_branch` deletes the source branch. A failed deletion does not
+  change the result, and the detail says so.
+- A run that finds its PR already open also merges when `--merge` is given.
+
 ## Status against PLAN.md (revision 3)
 
 The plan is in `PLAN.md`. This list records what the code does today, milestone

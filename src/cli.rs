@@ -72,7 +72,8 @@ pub struct RunArgs {
     /// Continue to the next wave automatically when the current one is green
     #[arg(long)]
     pub continue_if_green: bool,
-    /// Merge after CI is green (second key; needs `ci.merge = "when_green"`)
+    /// Merge after the change request is open (second key; needs `ci.merge = "when_green"`
+    /// and `[policy] merge_without_ci = true` in config.toml until the CI gate exists)
     #[arg(long)]
     pub merge: bool,
     /// Allow agents that did not pass `check-agent`
@@ -206,11 +207,6 @@ pub fn run(cli: Cli) -> ExitCode {
 
 /// `fleetify run`. A dry run plans; a real run executes the no-agent pipeline.
 fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
-    let refusal = if args.merge {
-        Some("--merge comes with milestone M11")
-    } else {
-        None
-    };
     let recipe = match Recipe::load(&args.recipe_dir) {
         Ok(recipe) => recipe,
         Err(err) => {
@@ -223,10 +219,6 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
     let layout = RunLayout::new(workdir, &run_id);
     if let Err(code) = start_logging(&layout.log_path(), debug) {
         return code;
-    }
-    if let Some(message) = refusal {
-        eprintln!("fleetify: {message}");
-        return ExitCode::from(3);
     }
     // The first Ctrl-C stops running commands and marks the rest of the run interrupted.
     let _ = ctrlc::set_handler(crate::runner::request_interrupt);
@@ -269,6 +261,7 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
         only: &args.only,
         agent: args.agent.as_deref(),
         allow_unchecked_agent: args.allow_unchecked_agent,
+        merge: args.merge,
         waves: run::Waves {
             plan: &wave_plan,
             proceed: &proceed,

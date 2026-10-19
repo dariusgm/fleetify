@@ -10,7 +10,7 @@ use crate::agents;
 use crate::events::{Event, Outcome};
 use crate::git::{GitContext, git};
 use crate::guards;
-use crate::hosts::ChangeRequest;
+use crate::hosts::{ChangeRequest, MergeOutcome};
 use crate::report::{Failure, RepoResult};
 use crate::repos::Repo;
 use crate::run::{Ctx, artifacts, error_result, git_context, git_failure, probe};
@@ -90,8 +90,13 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
                 "already_done",
                 "an open change request for the branch exists",
             );
-            result.change_request = Some(change.url);
+            result.change_request = Some(change.url.clone());
             result.rule = Some(pattern);
+            if ctx.merge {
+                // The change exists already; a run with --merge still merges it.
+                let expected = change.head_sha.clone();
+                return merge_change(ctx, repo, token, &branch, &change, &expected, result);
+            }
             phase("finished");
             return result;
         }
@@ -415,8 +420,90 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     if result.successful {
         result.result = "pr_open".to_string();
         result.successful = crate::report::is_successful("pr_open");
+        if ctx.merge {
+            let client = ctx.clients.get(&repo.host).expect("client checked above");
+            match client.find_change_request(repo, token, &branch) {
+                Ok(Some(change)) => {
+                    result = merge_change(ctx, repo, token, &branch, &change, &pushed_sha, result);
+                }
+                Ok(None) => {
+                    result.result = "merge_blocked".to_string();
+                    result.successful = false;
+                    result.detail = "no open change request to merge".to_string();
+                }
+                Err(err) => {
+                    return error_result(
+                        ctx.layout,
+                        repo,
+                        err.to_string(),
+                        result.rule.clone(),
+                        Vec::new(),
+                    );
+                }
+            }
+        }
     }
     phase("finished");
+    result
+}
+
+/// Merges an open change request, for a run started with `--merge`. The policy in
+/// `check_merge` decides whether that is allowed, and the host refuses unless the head is
+/// still `expected`, the commit fleetify pushed. A successful merge can delete the
+/// source branch when the recipe asks for it.
+#[allow(clippy::too_many_arguments)]
+fn merge_change(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    token: &crate::credentials::Secret,
+    branch: &str,
+    change: &ChangeRequest,
+    expected: &str,
+    mut result: RepoResult,
+) -> RepoResult {
+    let Some(client) = ctx.clients.get(&repo.host) else {
+        return error_result(
+            ctx.layout,
+            repo,
+            format!("no API client for {}", repo.host),
+            result.rule.clone(),
+            Vec::new(),
+        );
+    };
+    ctx.runner.bus().emit(Event::RepoPhase {
+        repo: repo.key(),
+        phase: "merging".to_string(),
+    });
+    match client.merge(repo, token, change, expected) {
+        Ok(MergeOutcome::Merged) => {
+            result.result = "merged".to_string();
+            result.successful = crate::report::is_successful("merged");
+            result.detail = format!("merged {} at {}", change.url, short(expected));
+        }
+        Ok(MergeOutcome::Blocked(reason)) => {
+            result.result = "merge_blocked".to_string();
+            result.successful = false;
+            result.detail = reason;
+            return result;
+        }
+        Err(err) => {
+            return error_result(
+                ctx.layout,
+                repo,
+                err.to_string(),
+                result.rule.clone(),
+                Vec::new(),
+            );
+        }
+    }
+    if ctx.recipe.delivery.delete_branch {
+        match client.delete_branch(repo, token, branch) {
+            Ok(()) => result.detail.push_str("; source branch deleted"),
+            Err(err) => result
+                .detail
+                .push_str(&format!("; source branch not deleted: {err}")),
+        }
+    }
     result
 }
 

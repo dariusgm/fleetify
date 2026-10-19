@@ -188,6 +188,7 @@ fn run_agent_repo(name: &str, instruction: &str) -> (RepoResult, PathBuf, Vec<Re
         repos: vec![repo],
         clients: BTreeMap::from([("github.com".to_string(), client)]),
         agent: Some("claude-code".to_string()),
+        merge: false,
     };
     let report = execute_loaded(
         &layout,

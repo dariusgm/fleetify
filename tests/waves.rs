@@ -55,6 +55,7 @@ fn run_waves(
         repos: paths.iter().map(|p| repo(p)).collect(),
         clients: BTreeMap::from([("github.com".to_string(), client)]),
         agent: None,
+        merge: false,
     };
     let layout = RunLayout::new(&base, name);
     let report = execute_loaded(

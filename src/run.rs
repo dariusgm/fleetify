@@ -275,6 +275,8 @@ pub struct RunInput<'a> {
     pub agent: Option<&'a str>,
     pub allow_unchecked_agent: bool,
     pub waves: Waves<'a>,
+    /// `--merge`: merge after the change request is open, if the recipe asks for it.
+    pub merge: bool,
 }
 
 /// Everything a run needs after loading and checking the inputs.
@@ -285,6 +287,7 @@ pub struct Loaded {
     pub clients: BTreeMap<String, Box<dyn Host>>,
     /// The agent that runs the recipe's instructions. `None` for a recipe without instructions.
     pub agent: Option<String>,
+    pub merge: bool,
 }
 
 /// Loads config, credentials, repos and host clients, and runs the TLS self-test.
@@ -298,6 +301,7 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
     }
     crate::logging::set_redactor(Redactor::new(credentials.secrets()));
     let agent = check_agent(input, &config)?;
+    check_merge(input.recipe, &config, input.merge).map_err(Refused)?;
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
     let clients = host_clients(&repos)?;
     Ok(Loaded {
@@ -306,7 +310,27 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
         repos,
         clients,
         agent,
+        merge: input.merge,
     })
+}
+
+/// `--merge` needs the recipe to ask for a merge, and the policy to allow merging
+/// without a CI gate. The CI gate itself is milestone M11.
+pub fn check_merge(recipe: &Recipe, config: &Config, merge: bool) -> Result<(), String> {
+    if !merge {
+        return Ok(());
+    }
+    if recipe.ci.merge != "when_green" {
+        return Err("--merge needs ci.merge = \"when_green\" in the recipe".to_string());
+    }
+    if !config.policy.merge_without_ci {
+        return Err(
+            "--merge without a CI gate needs [policy] merge_without_ci = true in config.toml \
+             (the CI gate comes with milestone M11)"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Checks what an agent run needs before any repo is touched: the agent is supported,
@@ -397,6 +421,7 @@ pub fn execute_loaded(
         workdir,
         recipe,
         recipe_dir,
+        merge: loaded.merge,
         tools: &tools,
         runner: &runner,
         config: &loaded.config,
@@ -465,6 +490,8 @@ pub struct Ctx<'a> {
     pub recipe: &'a Recipe,
     /// Where the recipe came from: instruction files and attachments are read from here.
     pub recipe_dir: &'a Path,
+    /// Whether this run may merge change requests (`--merge`, already checked at load).
+    pub merge: bool,
     /// Trusted copy of the recipe's `tools` directory.
     pub tools: &'a Path,
     pub runner: &'a Runner,
@@ -734,6 +761,42 @@ fn dry_run_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     result.rule = Some(pattern);
     phase("finished");
     result
+}
+
+#[cfg(test)]
+mod merge_gate_tests {
+    use super::*;
+
+    fn recipe(ci: &str) -> Recipe {
+        Recipe::parse(&format!(
+            "schema = 1\nname = \"x\"\nbranch = \"b\"\npr_title = \"t\"\n\n[ci]\n{ci}\n"
+        ))
+        .unwrap()
+    }
+
+    fn config(merge_without_ci: bool) -> Config {
+        let mut config = Config::default();
+        config.policy.merge_without_ci = merge_without_ci;
+        config
+    }
+
+    #[test]
+    fn merge_needs_a_recipe_that_asks_for_it_and_the_policy() {
+        let asks = recipe("wait = false\nmerge = \"when_green\"");
+        let plain = recipe("wait = false\nmerge = \"off\"");
+        assert!(check_merge(&asks, &config(false), false).is_ok());
+        assert!(check_merge(&asks, &config(true), true).is_ok());
+        assert!(
+            check_merge(&asks, &config(false), true)
+                .unwrap_err()
+                .contains("merge_without_ci")
+        );
+        assert!(
+            check_merge(&plain, &config(true), true)
+                .unwrap_err()
+                .contains("when_green")
+        );
+    }
 }
 
 #[cfg(test)]
