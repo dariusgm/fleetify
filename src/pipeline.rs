@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::agents;
 use crate::events::{Event, Outcome};
 use crate::git::{GitContext, git};
 use crate::guards;
@@ -140,6 +141,34 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         return git_failure(ctx.layout, repo, err, Some(pattern));
     }
 
+    // Step 4b: the verifier on the untouched base. A broken base is not caused by the
+    // change, so the repo stops here, before prepare or any agent runs.
+    if let Some(verify) = ctx.recipe.verify.as_ref()
+        && verify.baseline
+        && let Some(spec) = ctx.recipe.verify_spec()
+    {
+        phase("baseline");
+        let timeout = verify
+            .timeout_s
+            .map_or(DEFAULT_VERIFY_TIMEOUT, Duration::from_secs);
+        let tail_lines = verify.tail_lines.map_or(40, |n| n as usize).min(MAX_TAIL);
+        match run_step(ctx, repo, &spec, &workspace, timeout) {
+            Err(message) => {
+                return error_result(ctx.layout, repo, message, Some(pattern), Vec::new());
+            }
+            Ok(result) if !result.is_success() => {
+                let tail = failure_lines(&result, &verify.error_patterns, tail_lines);
+                let mut failed = step_failure(ctx, repo, "baseline verify", &result, pattern, tail);
+                failed.result = "base_broken".to_string();
+                if let Some(block) = failed.failure.as_mut() {
+                    block.class = "base_broken".to_string();
+                }
+                return failed;
+            }
+            Ok(_) => {}
+        }
+    }
+
     // Step 5: the recipe's prepare step.
     if let Some(spec) = ctx.recipe.prepare_spec() {
         let timeout = ctx
@@ -159,7 +188,37 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         }
     }
 
-    // Step 6 (no agent): is there anything to commit?
+    // Step 5b: the agent, when the recipe has instructions. It edits the prepared
+    // workspace; the verifier and the guards below judge what it changed.
+    if let Some(name) = ctx.agent {
+        phase("agent");
+        match run_agent(ctx, repo, name, &workspace) {
+            Err(message) => {
+                return error_result(ctx.layout, repo, message, Some(pattern), Vec::new());
+            }
+            Ok(result) if !result.is_success() => {
+                return step_failure(ctx, repo, "agent", &result, pattern, Vec::new());
+            }
+            Ok(_) => {}
+        }
+        if let Some(lines) = blocked_lines(&workspace) {
+            let mut blocked = error_result(
+                ctx.layout,
+                repo,
+                "the agent reported that it is blocked".to_string(),
+                Some(pattern),
+                lines,
+            );
+            blocked.result = "needs_input".to_string();
+            if let Some(block) = blocked.failure.as_mut() {
+                block.class = "needs_input".to_string();
+            }
+            phase("finished");
+            return blocked;
+        }
+    }
+
+    // Step 6: is there anything to commit?
     if let Err(err) = git(&local, Some(&workspace), &["add", "-A"]) {
         return git_failure(ctx.layout, repo, err, Some(pattern));
     }
@@ -412,6 +471,31 @@ fn run_step(
     request.cwd = Some(workspace.to_path_buf());
     request.timeout = Some(timeout);
     Ok(ctx.runner.run(request))
+}
+
+/// Writes the task and attachments into `.agent/`, then runs the agent in the workspace.
+fn run_agent(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    name: &str,
+    workspace: &Path,
+) -> Result<CommandResult, String> {
+    agents::write_task(workspace, ctx.recipe_dir, ctx.recipe)
+        .map_err(|err| format!("cannot write the agent task: {err}"))?;
+    let argv = agents::command(name, ctx.recipe, &ctx.config.permissions)?;
+    let mut request = RunRequest::new(repo.key(), argv);
+    request.cwd = Some(workspace.to_path_buf());
+    request.timeout = Some(Duration::from_secs(
+        u64::from(ctx.recipe.limits.agent_timeout_min) * 60,
+    ));
+    request.env = agents::env_policy();
+    Ok(ctx.runner.run(request))
+}
+
+/// The lines of `blocked.md` when the agent left one in the workspace.
+fn blocked_lines(workspace: &Path) -> Option<Vec<String>> {
+    let text = fs::read_to_string(workspace.join(agents::BLOCKED_FILE)).ok()?;
+    Some(text.lines().take(MAX_TAIL).map(str::to_string).collect())
 }
 
 fn step_failure(

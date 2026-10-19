@@ -143,6 +143,11 @@ pub struct VerifyTable {
     /// Lines of failing output shown to the agent. Default 40.
     #[serde(default)]
     pub tail_lines: Option<u32>,
+    /// Run the verifier on the untouched base before prepare or any agent. A failing
+    /// base stops the repo with `base_broken`, so a later failure is known to come
+    /// from the change. Default true.
+    #[serde(default = "default_true")]
+    pub baseline: bool,
     /// Regexes that select the relevant lines on failure.
     #[serde(default)]
     pub error_patterns: Vec<String>,
@@ -252,6 +257,10 @@ fn off() -> String {
 }
 fn default_ci_timeout() -> u32 {
     30
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]

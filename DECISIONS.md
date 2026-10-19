@@ -291,8 +291,8 @@ Design questions the plan does not answer. Each entry names the milestone.
   runner with no git identity would fail every commit.
 - **Push.** Through the explicit clone URL with the askpass token. The
   workspace's disabled `pushurl` is left as it is.
-- **Refused for now.** `--merge` (M11), `--agent` and recipes with instructions
-  (M9), and any `--waves` other than the default single wave (M8).
+- **Refused for now.** `--merge` (M11) and any `--waves` other than the default
+  single wave (M8). Agent runs are M9 (see below).
   `--continue-if-green` is also M8.
 - **Results.** `pr_open`, `already_done`, `no_changes`, `skipped`, `verify_failed`,
   `guard_violation`, `error` (prepare failed or host error), `interrupted`.
@@ -301,6 +301,38 @@ Design questions the plan does not answer. Each entry names the milestone.
   path, a second run that finds the open PR, a failing verifier, a guard
   violation and a no-change run. Each checks the remote state, not only the
   status.
+
+## M9 — the claude-code agent
+
+- **Scope.** Only `claude-code` runs. `opencode` and `copilot` are still refused
+  with a message; they come with M10.
+- **Where it runs.** After the prepare step, before the commit check. The agent
+  works in the prepared workspace. The verifier and the guards then judge what it
+  changed, as for every other step. A failing agent ends the repo at `agent`.
+- **Task and attachments.** The instruction texts are joined into
+  `.agent/task.md`. Attachments are copied to `.agent/attachments/<file name>`.
+  `.agent/` is in `.git/info/exclude`, so it never reaches a commit.
+- **Tools.** Baseline `Read Edit Write Glob Grep`. `Bash(<cmd>:*)` only for a
+  command in both `needs.commands` and `config.toml` `[permissions] commands`.
+  Web tools need `needs.web` and `permissions.web`. A recipe need that
+  `config.toml` does not grant refuses the whole run before any repo is touched.
+- **Blanket permission.** `[permissions.agent.claude-code] unrestricted = true`
+  adds `--dangerously-skip-permissions`. It is the user's own choice.
+- **Environment.** The base allowlist plus `ANTHROPIC_API_KEY` and
+  `CLAUDE_CONFIG_DIR`. Nothing else is inherited.
+- **Timeout.** `limits.agent_timeout_min`, for the whole agent process.
+- **Asking for help.** A `blocked.md` left in the workspace ends the repo as
+  `needs_input`. Nothing is committed or pushed.
+- **Binary.** `claude` from PATH, or `FLEETIFY_CLAUDE_BIN` when set.
+- **check-agent.** A canary: the agent writes `inside.txt` in its workspace and
+  must not leave `escape.txt` one level above. A pass writes
+  `<workdir>/agents/<name>.checked`. With `policy.require_checked_agent`, a run
+  is refused until the marker exists, unless `--allow-unchecked-agent` is given.
+- **Not verified here.** The `claude` CLI is not installed on the development
+  machine. The argv (`-p`, `--allowedTools`, `--add-dir`,
+  `--dangerously-skip-permissions`) follows the documented Claude Code flags. The
+  integration test uses a fake binary. Run `fleetify check-agent claude-code`
+  once on a machine with the real CLI.
 
 ## Example run — Python 3.15 on dariusgm/blog (private)
 

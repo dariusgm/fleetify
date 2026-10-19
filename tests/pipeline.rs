@@ -12,7 +12,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use fleetify::config::HostType;
+use fleetify::config::{Config, HostType};
 use fleetify::credentials::Credentials;
 use fleetify::hosts::{Host, client_for};
 use fleetify::recipe::Recipe;
@@ -92,6 +92,8 @@ timeout_s = 60
 argv = ["sh", "{tools}/verify.sh", "{repo}"]
 timeout_s = 60
 tail_lines = 10
+# The verifier checks the bumped state, so it must not run on the base.
+baseline = false
 
 [guards]
 deny_added_patterns = ["NOSONAR"]
@@ -174,8 +176,10 @@ fn run(s: &Scenario, run_id: &str) -> fleetify::report::RepoResult {
     let layout = RunLayout::new(&workdir, run_id);
     let loaded = Loaded {
         credentials,
+        config: Config::default(),
         repos: vec![repo],
         clients,
+        agent: None,
     };
     let report = execute_loaded(
         &layout,
@@ -267,6 +271,38 @@ fn a_failing_verifier_stops_before_any_push() {
     assert!(
         failure.output_tail.iter().any(|l| l.contains("not bumped")),
         "{failure:?}"
+    );
+    assert!(!remote_has_branch(&s), "nothing may be pushed");
+    assert!(!s.created.load(Ordering::SeqCst), "no pull request");
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn a_broken_base_stops_before_prepare_and_any_push() {
+    // Baseline on: the verifier fails on the untouched base, so prepare must never run.
+    let verify = "#!/bin/sh\necho 'E  base is broken'\nexit 1\n";
+    let prepare =
+        "#!/bin/sh\ntouch \"$1/prepare-ran\"\nsed -i 's/3.11/3.15/' \"$1/pyproject.toml\"\n";
+    let s = scenario("base", prepare, verify);
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text = fs::read_to_string(&recipe)
+        .unwrap()
+        .replace("baseline = false\n", "");
+    fs::write(&recipe, text).unwrap();
+    let result = run(&s, "run-1");
+    assert_eq!(result.result, "base_broken", "{result:?}");
+    let failure = result.failure.expect("failure block");
+    assert!(
+        failure
+            .output_tail
+            .iter()
+            .any(|l| l.contains("base is broken")),
+        "{failure:?}"
+    );
+    let output = fs::read_to_string(&failure.artifacts["output"]).unwrap();
+    assert!(
+        !output.contains("prepare.sh"),
+        "prepare must not run: {output}"
     );
     assert!(!remote_has_branch(&s), "nothing may be pushed");
     assert!(!s.created.load(Ordering::SeqCst), "no pull request");

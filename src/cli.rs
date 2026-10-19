@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::agents;
 use crate::clock::today_utc;
 use crate::logging;
 use crate::recipe::Recipe;
@@ -146,22 +147,6 @@ pub enum Command {
     DebugPanic,
 }
 
-impl Command {
-    fn name(&self) -> &'static str {
-        match self {
-            Command::Run(_) => "run",
-            Command::Validate { .. } => "validate",
-            Command::Schema => "schema",
-            Command::Report { .. } => "report",
-            Command::Status { .. } => "status",
-            Command::Logs { .. } => "logs",
-            Command::CheckAgent { .. } => "check-agent",
-            Command::Clean { .. } => "clean",
-            Command::DebugPanic => "debug-panic",
-        }
-    }
-}
-
 /// Resolves the working directory: `--workdir`, else `~/.fleetify`.
 pub fn resolve_workdir(explicit: Option<PathBuf>) -> Option<PathBuf> {
     explicit.or_else(|| {
@@ -214,17 +199,7 @@ pub fn run(cli: Cli) -> ExitCode {
             follow,
             lines,
         } => logs_command(&workdir, debug, &repo, run, follow, lines),
-        command => {
-            if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
-                return code;
-            }
-            tracing::info!(
-                command = command.name(),
-                "subcommand is not implemented yet"
-            );
-            eprintln!("fleetify: `{}` is not implemented yet", command.name());
-            ExitCode::from(1)
-        }
+        Command::CheckAgent { name } => check_agent_command(&workdir, debug, &name),
     }
 }
 
@@ -234,8 +209,6 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
         Some("--merge comes with milestone M11")
     } else if args.continue_if_green || args.waves != "all" && args.waves != "1,all" {
         Some("waves and --continue-if-green come with milestone M8; omit them or pass --waves all")
-    } else if args.agent.is_some() {
-        Some("--agent comes with milestone M9; this build runs recipes without instructions")
     } else {
         None
     };
@@ -275,6 +248,7 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
         layout: &layout,
         only: &args.only,
         agent: args.agent.as_deref(),
+        allow_unchecked_agent: args.allow_unchecked_agent,
     };
     match run::execute(&input, mode) {
         Err(Refused(message)) => {
@@ -485,6 +459,23 @@ fn logs_command(
         if text.len() > offset {
             print!("{}", &text[offset..]);
             offset = text.len();
+        }
+    }
+}
+
+/// `fleetify check-agent <name>`: the canary. Exit code 1 when the agent fails it.
+fn check_agent_command(workdir: &Path, debug: bool, name: &str) -> ExitCode {
+    if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
+        return code;
+    }
+    match agents::check(workdir, name) {
+        Ok(()) => {
+            println!("agent {name} passed check-agent");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("fleetify: agent {name} failed check-agent: {message}");
+            ExitCode::from(1)
         }
     }
 }

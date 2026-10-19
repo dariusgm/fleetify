@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agents;
 use crate::clock::rfc3339_now;
 use crate::config::{Config, ConfigError, HostTable};
 use crate::credentials::{Credentials, CredentialsError, Secret};
@@ -183,13 +184,17 @@ pub struct RunInput<'a> {
     pub layout: &'a RunLayout,
     pub only: &'a [String],
     pub agent: Option<&'a str>,
+    pub allow_unchecked_agent: bool,
 }
 
 /// Everything a run needs after loading and checking the inputs.
 pub struct Loaded {
     pub credentials: Credentials,
+    pub config: Config,
     pub repos: Vec<Repo>,
     pub clients: BTreeMap<String, Box<dyn Host>>,
+    /// The agent that runs the recipe's instructions. `None` for a recipe without instructions.
+    pub agent: Option<String>,
 }
 
 /// Loads config, credentials, repos and host clients, and runs the TLS self-test.
@@ -202,13 +207,46 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
         eprintln!("warning: {warning}");
     }
     crate::logging::set_redactor(Redactor::new(credentials.secrets()));
+    let agent = check_agent(input, &config)?;
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
     let clients = host_clients(&repos)?;
     Ok(Loaded {
         credentials,
+        config,
         repos,
         clients,
+        agent,
     })
+}
+
+/// Checks what an agent run needs before any repo is touched: the agent is supported,
+/// `config.toml` grants what the recipe needs, and the agent passed `check-agent` when
+/// the policy requires it. Returns the agent's name, or `None` without instructions.
+fn check_agent(input: &RunInput<'_>, config: &Config) -> Result<Option<String>, Refused> {
+    if input.recipe.instructions.is_empty() {
+        return Ok(None);
+    }
+    let name = input
+        .agent
+        .or(input.recipe.agent.as_deref())
+        .ok_or_else(|| Refused("instructions are set but no agent is".into()))?;
+    agents::check_supported(name).map_err(Refused)?;
+    let missing = agents::missing_permissions(input.recipe, &config.permissions);
+    if !missing.is_empty() {
+        return Err(Refused(format!(
+            "config.toml does not grant what the recipe needs: {}",
+            missing.join(", ")
+        )));
+    }
+    if config.policy.require_checked_agent
+        && !input.allow_unchecked_agent
+        && !agents::is_checked(input.workdir, name)
+    {
+        return Err(Refused(format!(
+            "agent {name} has not passed check-agent: run `fleetify check-agent {name}` or pass --allow-unchecked-agent"
+        )));
+    }
+    Ok(Some(name.to_string()))
 }
 
 /// Runs the whole run: validates the recipe, then processes every repo.
@@ -217,11 +255,6 @@ pub fn execute(input: &RunInput<'_>, mode: Mode) -> Result<Report, Refused> {
     if !issues.is_empty() {
         let list: Vec<String> = issues.iter().map(ToString::to_string).collect();
         return Err(Refused(format!("recipe refused: {}", list.join("; "))));
-    }
-    if !input.recipe.instructions.is_empty() {
-        return Err(Refused(
-            "this recipe has instructions for an agent; agent runs come with milestone M9".into(),
-        ));
     }
     let loaded = load(input)?;
     execute_loaded(
@@ -266,8 +299,11 @@ pub fn execute_loaded(
         layout,
         workdir,
         recipe,
+        recipe_dir,
         tools: &tools,
         runner: &runner,
+        config: &loaded.config,
+        agent: loaded.agent.as_deref(),
         credentials: &loaded.credentials,
         clients: &loaded.clients,
     };
@@ -302,9 +338,14 @@ pub struct Ctx<'a> {
     pub layout: &'a RunLayout,
     pub workdir: &'a Path,
     pub recipe: &'a Recipe,
+    /// Where the recipe came from: instruction files and attachments are read from here.
+    pub recipe_dir: &'a Path,
     /// Trusted copy of the recipe's `tools` directory.
     pub tools: &'a Path,
     pub runner: &'a Runner,
+    pub config: &'a Config,
+    /// The agent for the recipe's instructions. `None` when there are none.
+    pub agent: Option<&'a str>,
     pub credentials: &'a Credentials,
     pub clients: &'a BTreeMap<String, Box<dyn Host>>,
 }
