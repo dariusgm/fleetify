@@ -159,7 +159,7 @@ fn check_github(value: &Value) -> Vec<String> {
         return vec!["top level must be a mapping".to_string()];
     };
     let mut problems = Vec::new();
-    if !top.contains_key("on") && !top.contains_key(&Value::Bool(true)) {
+    if !top.contains_key("on") && !top.contains_key(Value::Bool(true)) {
         problems.push("missing `on` trigger".to_string());
     }
     let Some(jobs) = top.get("jobs").and_then(Value::as_mapping) else {
