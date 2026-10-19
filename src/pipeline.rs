@@ -201,6 +201,15 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
             }
             Ok(_) => {}
         }
+        // The agent may have committed by itself. Move the branch back to the base so
+        // that the diff below is the whole change and the orchestrator makes the one commit.
+        if let Err(err) = git(
+            &local,
+            Some(&workspace),
+            &["reset", "--soft", &state.base_sha],
+        ) {
+            return git_failure(ctx.layout, repo, err, Some(pattern));
+        }
         if let Some(lines) = blocked_lines(&workspace) {
             let mut blocked = error_result(
                 ctx.layout,

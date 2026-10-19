@@ -35,6 +35,6 @@ deny_added_patterns = ['git\s*=\s*"', 'path\s*=\s*"', "NOSONAR"]
 
 [ci]
 provider = "auto"
-wait = true
+wait = false
 timeout_min = 60
 merge = "off"

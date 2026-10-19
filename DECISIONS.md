@@ -334,6 +334,49 @@ Design questions the plan does not answer. Each entry names the milestone.
   integration test uses a fake binary. Run `fleetify check-agent claude-code`
   once on a machine with the real CLI.
 
+## Status against PLAN.md (revision 3)
+
+The plan is in `PLAN.md`. This list records what the code does today, milestone
+by milestone, so that gaps are visible in the repo and not only in chat.
+
+- **M0 skeleton: done.** Matrix CI (Windows and Linux), rustfmt, clippy with
+  `-D warnings`, release builds. The panic hook and exit code 4 are wired.
+- **M1 runner and events: done.** Process-tree termination is tested on Unix.
+  Windows Job Objects are not verified.
+- **M2 config, repos, credentials: done.** Redaction and the `GIT_ASKPASS` path
+  are in place.
+- **M3 recipe format: done.** `ci.wait = true` is refused until M11, so a
+  gate is never skipped silently.
+- **M4 cache, workspace, dry run: done.** Open: the NTFS hard-link question (plan
+  question 9) is not checked.
+- **M5 event consumers: mostly done.** State, events, report, status, logs and
+  Ctrl-C are present. The `--format json` output and `permissions_effective`
+  event are not built.
+- **M6 host layer: done.** GitHub and GitLab over REST, tested against a fake host.
+- **M7 no-agent pipeline: done.** Parallelism uses threads, not `tokio` as the plan
+  says. Revisit with M11, where the CI gate is planned as a separate task.
+- **M8 waves: not started.** `--waves` and `--continue-if-green` are refused.
+- **M9 agent runner: partly done.** Present: task assembly from instructions and
+  attachments, allowlisted environment, timeout, `blocked.md`, `needs` checked
+  against grants, agent-made commits normalised to the base. Missing: the fixed
+  rules block and verifier command in `task.md`, the `.agent/tools` copy, the
+  inner-loop verifier, `result.md`, `wants_input()` and the idle event, the
+  `permissions_effective` event and the run-header warnings, and the output-line
+  cap noted above.
+- **M10 opencode and check-agent: partly done.** `check-agent` exists for
+  claude-code only. Its canary is simpler than the plan: there is no decoy marker
+  and no cache per agent version. The opencode adapter is not started.
+- **M11 CI gate and merge: not started.** `src/ci.rs` is a stub.
+- **M12 Python authoring package: not started.**
+- **M13 live view: not started.** `--ui` and `--plain` are parsed but have no effect.
+- **M14 Claude Code adapter: done in code, unverified.** The CLI is not installed
+  on the development machine, so no `[ASK]` test has run.
+- **M15 Copilot CLI adapter: not started.**
+- **M16 LLM judge: not started.** `judge` is accepted by the parser and not used.
+- **M17 real trial: not started.**
+
+Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
+
 ## Example run — Python 3.15 on dariusgm/blog (private)
 
 - **Recipe.** `examples/recipes/python-315-update`. Prepare sets

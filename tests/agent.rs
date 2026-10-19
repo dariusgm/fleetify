@@ -40,6 +40,10 @@ test -f .agent/attachments/notes.txt || exit 8
 if grep -q BLOCK .agent/task.md; then echo "which python?" > blocked.md; exit 0; fi
 if grep -q FAIL .agent/task.md; then exit 1; fi
 sed -i 's/3.11/3.15/' pyproject.toml
+if grep -q COMMIT .agent/task.md; then
+  git add -A
+  git -c user.name=agent -c user.email=agent@example.invalid commit -q -m "agent commit"
+fi
 "#;
 
 const VERIFY_OK: &str =
@@ -213,6 +217,10 @@ fn agent_runs_are_judged_like_any_other_step() {
         args.contains("--allowedTools Read Edit Write Glob Grep"),
         "{args}"
     );
+
+    // The agent commits by itself: the orchestrator still makes one commit of the whole change.
+    let (committed, _) = run_agent_repo("committed", "Bump python to 3.15. COMMIT it yourself.");
+    assert_eq!(committed.result, "pr_open", "{committed:?}");
 
     // The agent asks for a decision: nothing is pushed and the repo needs input.
     let (blocked, _) = run_agent_repo("blocked", "Bump python to 3.15. BLOCK if unsure.");
