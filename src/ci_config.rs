@@ -73,11 +73,14 @@ fn github_workflows(root: &Path) -> Vec<PathBuf> {
 }
 
 fn check_file(root: &Path, path: &Path, check: fn(&Value) -> Vec<String>) -> Vec<Finding> {
+    // Forward slashes on every platform, so a report reads the same on Windows and Linux.
     let rel = path
         .strip_prefix(root)
         .unwrap_or(path)
-        .display()
-        .to_string();
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) => {
