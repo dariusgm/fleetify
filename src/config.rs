@@ -2,6 +2,7 @@
 //! keys are rejected, so a token written here fails loudly instead of being
 //! read silently. Tokens live in `credentials.toml` (see [`crate::credentials`]).
 
+use crate::credentials::glob_match;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
@@ -42,6 +43,8 @@ pub struct Config {
     #[serde(default)]
     pub policy: Policy,
     #[serde(default)]
+    pub merge_policy: Vec<MergeRule>,
+    #[serde(default)]
     pub permissions: Permissions,
 }
 
@@ -58,10 +61,32 @@ pub struct Policy {
     /// Refuse agents that did not pass `check-agent`.
     #[serde(default)]
     pub require_checked_agent: bool,
-    /// Allow `--merge` without a CI gate, for any repository the token can merge into.
-    /// It is the user's decision, and it can be a bad one.
+}
+
+/// Merge permissions for the repositories whose `<host>/<path>` matches `pattern`.
+/// Rules are checked in order and the first match decides. A repository without a
+/// matching rule is never merged without a CI gate.
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MergeRule {
+    /// Glob on `<host>/<path>`, e.g. `github.com/owner/*`.
+    #[serde(rename = "match")]
+    pub pattern: String,
+    /// Merge with `--merge` without a CI gate. Only the user can grant this, here.
     #[serde(default)]
     pub merge_without_ci: bool,
+    /// Delete the source branch after a merge. The recipe must ask for it too.
+    #[serde(default)]
+    pub delete_branch: bool,
+}
+
+impl Config {
+    /// The first merge rule whose pattern matches `key` (`<host>/<path>`).
+    pub fn merge_rule(&self, key: &str) -> Option<&MergeRule> {
+        self.merge_policy
+            .iter()
+            .find(|rule| glob_match(&rule.pattern, key))
+    }
 }
 
 /// Permissions granted to every agent, on top of the built-in baseline.
@@ -290,5 +315,27 @@ mod tests {
     fn home_expansion_keeps_other_paths() {
         assert_eq!(expand_home("/abs/path"), PathBuf::from("/abs/path"));
         assert_eq!(expand_home("relative"), PathBuf::from("relative"));
+    }
+
+    #[test]
+    fn merge_rules_match_repositories_and_the_first_match_wins() {
+        let config: Config = toml::from_str(
+            r#"
+            [[merge_policy]]
+            match = "github.com/owner/docs"
+            merge_without_ci = true
+            delete_branch = true
+
+            [[merge_policy]]
+            match = "github.com/owner/*"
+            merge_without_ci = false
+            "#,
+        )
+        .unwrap();
+        let docs = config.merge_rule("github.com/owner/docs").unwrap();
+        assert!(docs.merge_without_ci && docs.delete_branch);
+        let other = config.merge_rule("github.com/owner/service").unwrap();
+        assert!(!other.merge_without_ci);
+        assert!(config.merge_rule("gitlab.com/owner/service").is_none());
     }
 }

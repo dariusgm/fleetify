@@ -301,7 +301,7 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
     }
     crate::logging::set_redactor(Redactor::new(credentials.secrets()));
     let agent = check_agent(input, &config)?;
-    check_merge(input.recipe, &config, input.merge).map_err(Refused)?;
+    check_merge(input.recipe, input.merge).map_err(Refused)?;
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
     let clients = host_clients(&repos)?;
     Ok(Loaded {
@@ -314,21 +314,11 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
     })
 }
 
-/// `--merge` needs the recipe to ask for a merge, and the policy to allow merging
-/// without a CI gate. The CI gate itself is milestone M11.
-pub fn check_merge(recipe: &Recipe, config: &Config, merge: bool) -> Result<(), String> {
-    if !merge {
-        return Ok(());
-    }
-    if recipe.ci.merge != "when_green" {
+/// `--merge` needs the recipe to ask for a merge. Whether a repository may be merged
+/// without CI is decided per repository in the pipeline, from `[[merge_policy]]`.
+pub fn check_merge(recipe: &Recipe, merge: bool) -> Result<(), String> {
+    if merge && recipe.ci.merge != "when_green" {
         return Err("--merge needs ci.merge = \"when_green\" in the recipe".to_string());
-    }
-    if !config.policy.merge_without_ci {
-        return Err(
-            "--merge without a CI gate needs [policy] merge_without_ci = true in config.toml \
-             (the CI gate comes with milestone M11)"
-                .to_string(),
-        );
     }
     Ok(())
 }
@@ -774,25 +764,14 @@ mod merge_gate_tests {
         .unwrap()
     }
 
-    fn config(merge_without_ci: bool) -> Config {
-        let mut config = Config::default();
-        config.policy.merge_without_ci = merge_without_ci;
-        config
-    }
-
     #[test]
-    fn merge_needs_a_recipe_that_asks_for_it_and_the_policy() {
+    fn merge_needs_a_recipe_that_asks_for_it() {
         let asks = recipe("wait = false\nmerge = \"when_green\"");
         let plain = recipe("wait = false\nmerge = \"off\"");
-        assert!(check_merge(&asks, &config(false), false).is_ok());
-        assert!(check_merge(&asks, &config(true), true).is_ok());
+        assert!(check_merge(&asks, false).is_ok());
+        assert!(check_merge(&asks, true).is_ok());
         assert!(
-            check_merge(&asks, &config(false), true)
-                .unwrap_err()
-                .contains("merge_without_ci")
-        );
-        assert!(
-            check_merge(&plain, &config(true), true)
+            check_merge(&plain, true)
                 .unwrap_err()
                 .contains("when_green")
         );

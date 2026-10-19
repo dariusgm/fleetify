@@ -187,7 +187,13 @@ fn run_with(
     let clients = BTreeMap::from([("github.com".to_string(), client)]);
     let layout = RunLayout::new(&workdir, run_id);
     let mut config = Config::default();
-    config.policy.merge_without_ci = merge_without_ci;
+    if merge_without_ci {
+        config.merge_policy.push(fleetify::config::MergeRule {
+            pattern: "github.com/o/*".into(),
+            merge_without_ci: true,
+            delete_branch: true,
+        });
+    }
     let loaded = Loaded {
         credentials,
         config,
@@ -332,6 +338,24 @@ fn a_repo_is_merged_at_the_pushed_commit_when_the_policy_allows_it() {
             |r| r.method == "DELETE" && r.target.ends_with("/git/refs/heads/chore/bump-python")
         ),
         "{requests:?}"
+    );
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn without_a_merge_rule_nothing_is_merged_and_the_pull_request_stays_open() {
+    let s = scenario("no-rule", PREPARE_OK, VERIFY_OK);
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text =
+        fs::read_to_string(&recipe).unwrap() + "\n[ci]\nwait = false\nmerge = \"when_green\"\n";
+    fs::write(&recipe, text).unwrap();
+
+    let result = run_with(&s, "run-1", false, true);
+    assert_eq!(result.result, "merge_blocked", "{result:?}");
+    assert!(!result.successful);
+    assert!(
+        !s.host.recorded().iter().any(|r| r.method == "PUT"),
+        "no merge request may be sent"
     );
     let _ = fs::remove_dir_all(&s.base);
 }

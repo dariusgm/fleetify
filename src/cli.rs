@@ -73,7 +73,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub continue_if_green: bool,
     /// Merge after the change request is open (second key; needs `ci.merge = "when_green"`
-    /// and `[policy] merge_without_ci = true` in config.toml until the CI gate exists)
+    /// and a `[[merge_policy]]` rule for the repository in config.toml until the CI gate exists)
     #[arg(long)]
     pub merge: bool,
     /// Allow agents that did not pass `check-agent`

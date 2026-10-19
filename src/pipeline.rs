@@ -457,8 +457,8 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     result
 }
 
-/// Merges an open change request, for a run started with `--merge`. The policy in
-/// `check_merge` decides whether that is allowed, and the host refuses unless the head is
+/// Merges an open change request, for a run started with `--merge`. The merge rule for
+/// the repository decides whether that is allowed, and the host refuses unless the head is
 /// still `expected`, the commit fleetify pushed. A successful merge can delete the
 /// source branch when the recipe asks for it.
 #[allow(clippy::too_many_arguments)]
@@ -484,6 +484,17 @@ fn merge_change(
         repo: repo.key(),
         phase: "merging".to_string(),
     });
+    // Without a CI gate, only a merge rule for this repository allows the merge.
+    let rule = ctx.config.merge_rule(&repo.key());
+    if !rule.is_some_and(|rule| rule.merge_without_ci) {
+        result.result = "merge_blocked".to_string();
+        result.successful = false;
+        result.detail = format!(
+            "no [[merge_policy]] rule in config.toml allows merging {} without a CI gate",
+            repo.key()
+        );
+        return result;
+    }
     match client.merge(repo, token, change, expected) {
         Ok(MergeOutcome::Merged) => {
             result.result = "merged".to_string();
@@ -506,7 +517,7 @@ fn merge_change(
             );
         }
     }
-    if ctx.recipe.delivery.delete_branch {
+    if ctx.recipe.delivery.delete_branch && rule.is_some_and(|rule| rule.delete_branch) {
         match client.delete_branch(repo, token, branch) {
             Ok(()) => result.detail.push_str("; source branch deleted"),
             Err(err) => result
