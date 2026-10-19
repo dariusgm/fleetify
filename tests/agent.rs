@@ -24,7 +24,7 @@ use fleetify::hosts::{Host, client_for};
 use fleetify::recipe::Recipe;
 use fleetify::report::RepoResult;
 use fleetify::repos::Repo;
-use fleetify::run::{Loaded, Mode, RunLayout, execute_loaded};
+use fleetify::run::{Loaded, Mode, RunLayout, WavePlan, Waves, execute_loaded};
 use support::{Recorded, serve};
 
 const TOKEN: &str = "tok-agent-test";
@@ -37,9 +37,11 @@ case "$*" in *escape.txt*) echo inside > inside.txt; exit 0 ;; esac
 echo "$@" > .agent/args.txt
 test -f .agent/task.md || exit 9
 test -f .agent/attachments/notes.txt || exit 8
-if grep -q BLOCK .agent/task.md; then echo "which python?" > blocked.md; exit 0; fi
+test -f .agent/tools/verify.sh || exit 7
+if grep -q BLOCK .agent/task.md; then echo "which python?" > .agent/blocked.md; exit 0; fi
 if grep -q FAIL .agent/task.md; then exit 1; fi
 sed -i 's/3.11/3.15/' pyproject.toml
+echo "changed pyproject" > .agent/result.md
 if grep -q COMMIT .agent/task.md; then
   git add -A
   git -c user.name=agent -c user.email=agent@example.invalid commit -q -m "agent commit"
@@ -156,7 +158,7 @@ fn host(created: Arc<AtomicBool>) -> support::FakeHost {
 }
 
 /// Runs the pipeline for one repo with an agent and returns its only result.
-fn run_agent_repo(name: &str, instruction: &str) -> (RepoResult, PathBuf) {
+fn run_agent_repo(name: &str, instruction: &str) -> (RepoResult, PathBuf, Vec<Recorded>) {
     let base = scratch(name);
     let remote = remote(&base);
     let recipe_dir = recipe_dir(&base, instruction);
@@ -194,9 +196,17 @@ fn run_agent_repo(name: &str, instruction: &str) -> (RepoResult, PathBuf) {
         &workdir,
         loaded,
         Mode::Pipeline { parallel: 1 },
+        &Waves {
+            plan: &WavePlan::default(),
+            proceed: &|_, _| true,
+        },
     )
     .unwrap();
-    (report.repos.into_iter().next().unwrap(), workspace)
+    (
+        report.repos.into_iter().next().unwrap(),
+        workspace,
+        host.recorded(),
+    )
 }
 
 #[test]
@@ -209,8 +219,19 @@ fn agent_runs_are_judged_like_any_other_step() {
     unsafe { std::env::set_var(BINARY_ENV, &fake) };
 
     // The agent edits the pin, the verifier passes, a pull request opens.
-    let (done, workspace) = run_agent_repo("edit", "Bump python to 3.15.");
+    let (done, workspace, requests) = run_agent_repo("edit", "Bump python to 3.15.");
     assert_eq!(done.result, "pr_open", "{done:?}");
+    // The agent's own notes go into the pull request body, marked as unreviewed.
+    let body = requests
+        .iter()
+        .find(|r| r.method == "POST")
+        .expect("a pull request was opened");
+    assert!(
+        body.body.contains("Agent notes (written by the agent"),
+        "{}",
+        body.body
+    );
+    assert!(body.body.contains("changed pyproject"), "{}", body.body);
     let args = fs::read_to_string(workspace.join(".agent/args.txt")).unwrap();
     assert!(args.starts_with("-p "), "{args}");
     assert!(
@@ -219,11 +240,11 @@ fn agent_runs_are_judged_like_any_other_step() {
     );
 
     // The agent commits by itself: the orchestrator still makes one commit of the whole change.
-    let (committed, _) = run_agent_repo("committed", "Bump python to 3.15. COMMIT it yourself.");
+    let (committed, _, _) = run_agent_repo("committed", "Bump python to 3.15. COMMIT it yourself.");
     assert_eq!(committed.result, "pr_open", "{committed:?}");
 
     // The agent asks for a decision: nothing is pushed and the repo needs input.
-    let (blocked, _) = run_agent_repo("blocked", "Bump python to 3.15. BLOCK if unsure.");
+    let (blocked, _, _) = run_agent_repo("blocked", "Bump python to 3.15. BLOCK if unsure.");
     assert_eq!(blocked.result, "needs_input", "{blocked:?}");
     assert!(!blocked.successful);
     let failure = blocked
@@ -232,7 +253,7 @@ fn agent_runs_are_judged_like_any_other_step() {
     assert_eq!(failure.output_tail, vec!["which python?".to_string()]);
 
     // The agent exits non-zero: the repo ends as an error at the agent step.
-    let (failed, _) = run_agent_repo("failed", "FAIL on purpose.");
+    let (failed, _, _) = run_agent_repo("failed", "FAIL on purpose.");
     assert_eq!(failed.result, "error", "{failed:?}");
     let message = failed
         .failure

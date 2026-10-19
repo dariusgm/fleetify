@@ -347,6 +347,37 @@ Design questions the plan does not answer. Each entry names the milestone.
   GitLab (`DELETE repository/branches/<branch>`, with `/` encoded). 204 and 404
   both count as deleted; anything else is an error. Tested against the fake host.
 
+## Waves, agent contract and OpenCode (M8, M9, M10)
+
+- **Waves (M8).** `--waves` takes sizes that end in `all` (default `1,all`).
+  `--canary-repos` makes the first wave exactly those repos. After each wave the
+  run asks `[y/N]` on a terminal, or continues only with `--continue-if-green`
+  and only when the whole wave succeeded. Otherwise it stops: the report marks the
+  rest as `summary.pending`, the exit code is 2 (1 if something failed), and a
+  second run resumes, because finished repos come back as `already_done`. Dry runs
+  ignore waves.
+- **Agent contract (M9).** `task.md` starts with the fixed rules block (`fleetify
+  rules v1`), then the instructions, the attachment paths and the verifier command.
+  The recipe's `tools` directory is copied to `.agent/tools/`, which is the copy the
+  agent runs. Blocked: `.agent/blocked.md`. Done: `.agent/result.md`, whose text goes
+  into the change request body under "Agent notes (written by the agent, not
+  reviewed)", redacted and limited to 4000 characters. The earlier root-level
+  `blocked.md` is gone.
+- **Agent commits (M9).** After the agent run the branch is reset (soft) to the
+  base commit, so the diff is the whole change and the orchestrator makes one commit.
+- **OpenCode adapter (M10).** The command is `opencode run <prompt>` in the
+  workspace. Permissions are passed as inline config through
+  `OPENCODE_CONFIG_CONTENT`, built from the same grants as for Claude Code.
+  Everything not granted is denied. `question`, `task`, `skill` and `doom_loop`
+  are denied, and external directories are denied unless granted. Bash is denied
+  except for the read-only git commands and granted command prefixes (`<cmd>` and
+  `<cmd> *`). `OPENCODE_DISABLE_PROJECT_CONFIG=1` stops a repository's own
+  `opencode.json` from widening the grants. Provider and model stay in the user's
+  own opencode config. The binary is `opencode`, or `FLEETIFY_OPENCODE_BIN`.
+- **Grants for a verifier script.** A recipe can grant the exact verifier command
+  (`needs.commands = ["sh .agent/tools/verify.sh"]`). Patterns are `<cmd>` and
+  `<cmd> *`, so no other `sh` script is allowed.
+
 ## Status against PLAN.md (revision 3)
 
 The plan is in `PLAN.md`. This list records what the code does today, milestone
@@ -368,7 +399,7 @@ by milestone, so that gaps are visible in the repo and not only in chat.
 - **M6 host layer: done.** GitHub and GitLab over REST, tested against a fake host.
 - **M7 no-agent pipeline: done.** Parallelism uses threads, not `tokio` as the plan
   says. Revisit with M11, where the CI gate is planned as a separate task.
-- **M8 waves: not started.** `--waves` and `--continue-if-green` are refused.
+- **M8 waves: done.** See "Waves, agent contract and OpenCode" above.
 - **M9 agent runner: partly done.** Present: task assembly from instructions and
   attachments, allowlisted environment, timeout, `blocked.md`, `needs` checked
   against grants, agent-made commits normalised to the base. Missing: the fixed
@@ -376,8 +407,8 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   inner-loop verifier, `result.md`, `wants_input()` and the idle event, the
   `permissions_effective` event and the run-header warnings, and the output-line
   cap noted above.
-- **M10 opencode and check-agent: partly done.** `check-agent` exists for
-  claude-code only. Its canary is simpler than the plan: there is no decoy marker
+- **M10 opencode and check-agent: partly done.** The opencode adapter is in;
+  `check-agent` runs for both agents (the canary is still simpler than the plan). Its canary is simpler than the plan: there is no decoy marker
   and no cache per agent version. The opencode adapter is not started.
 - **M11 CI gate and merge: not started.** `src/ci.rs` is a stub.
 - **M12 Python authoring package: not started.**

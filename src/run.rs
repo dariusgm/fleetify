@@ -165,6 +165,95 @@ impl From<CredentialsError> for Refused {
     }
 }
 
+/// How a run is cut into waves. `sizes` ends with `None`, which takes all repos that
+/// remain. `canaries` replace the first wave when given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WavePlan {
+    pub sizes: Vec<Option<usize>>,
+    pub canaries: Vec<String>,
+}
+
+impl Default for WavePlan {
+    fn default() -> Self {
+        WavePlan {
+            sizes: vec![Some(1), None],
+            canaries: Vec::new(),
+        }
+    }
+}
+
+/// The caller's side of a wave boundary. `proceed` gets the results of the wave that
+/// just finished and the number of repos still waiting; `true` starts the next wave.
+pub struct Waves<'a> {
+    pub plan: &'a WavePlan,
+    pub proceed: &'a dyn Fn(&[RepoResult], usize) -> bool,
+}
+
+/// Parses `--waves`, e.g. `1,all` or `1,5,all`. `all` must be the last wave.
+pub fn parse_waves(text: &str) -> Result<Vec<Option<usize>>, String> {
+    let tokens: Vec<&str> = text.split(',').map(str::trim).collect();
+    let mut sizes = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if *token == "all" {
+            if index + 1 != tokens.len() {
+                return Err("\"all\" must be the last wave".to_string());
+            }
+            sizes.push(None);
+        } else {
+            match token.parse::<usize>() {
+                Ok(size) if size > 0 => sizes.push(Some(size)),
+                _ => {
+                    return Err(format!(
+                        "wave size {token:?} must be a positive number or \"all\""
+                    ));
+                }
+            }
+        }
+    }
+    if sizes.last() != Some(&None) {
+        return Err("the last wave must be \"all\", for example \"1,all\"".to_string());
+    }
+    Ok(sizes)
+}
+
+/// Whether a repo's path is `suffix` or ends with `/suffix`. Used by `--only` and canaries.
+fn path_matches(repo: &Repo, suffix: &str) -> bool {
+    repo.path == suffix || repo.path.ends_with(&format!("/{suffix}"))
+}
+
+/// Cuts the repos into waves in list order. Canaries, when given, are the first wave.
+pub fn split_waves(repos: &[Repo], plan: &WavePlan) -> Result<Vec<Vec<Repo>>, Refused> {
+    let mut rest: Vec<Repo> = repos.to_vec();
+    let mut waves: Vec<Vec<Repo>> = Vec::new();
+    let mut sizes = plan.sizes.iter().copied();
+    if !plan.canaries.is_empty() {
+        for suffix in &plan.canaries {
+            if !repos.iter().any(|r| path_matches(r, suffix)) {
+                return Err(Refused(format!(
+                    "--canary-repos {suffix}: no repo has this path"
+                )));
+            }
+        }
+        let (canary, others): (Vec<Repo>, Vec<Repo>) = rest
+            .into_iter()
+            .partition(|r| plan.canaries.iter().any(|s| path_matches(r, s)));
+        rest = others;
+        waves.push(canary);
+        sizes.next();
+    }
+    for size in sizes {
+        if rest.is_empty() {
+            break;
+        }
+        let take = size.unwrap_or(rest.len()).min(rest.len());
+        waves.push(rest.drain(..take).collect());
+    }
+    if !rest.is_empty() {
+        waves.push(rest);
+    }
+    Ok(waves.into_iter().filter(|wave| !wave.is_empty()).collect())
+}
+
 /// What a run does per repo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -185,6 +274,7 @@ pub struct RunInput<'a> {
     pub only: &'a [String],
     pub agent: Option<&'a str>,
     pub allow_unchecked_agent: bool,
+    pub waves: Waves<'a>,
 }
 
 /// Everything a run needs after loading and checking the inputs.
@@ -264,6 +354,7 @@ pub fn execute(input: &RunInput<'_>, mode: Mode) -> Result<Report, Refused> {
         input.workdir,
         loaded,
         mode,
+        &input.waves,
     )
 }
 
@@ -276,7 +367,13 @@ pub fn execute_loaded(
     workdir: &Path,
     loaded: Loaded,
     mode: Mode,
+    waves: &Waves<'_>,
 ) -> Result<Report, Refused> {
+    // A dry run has no waves: it plans every repo once.
+    let plan = match mode {
+        Mode::DryRun => vec![loaded.repos.clone()],
+        Mode::Pipeline { .. } => split_waves(&loaded.repos, waves.plan)?,
+    };
     fs::create_dir_all(&layout.root).map_err(|err| Refused(err.to_string()))?;
     let started = rfc3339_now();
     let mut meta = RunMeta {
@@ -312,7 +409,26 @@ pub fn execute_loaded(
         Mode::DryRun => 1,
         Mode::Pipeline { parallel } => parallel.max(1),
     };
-    let results = process_all(&ctx, &loaded.repos, mode, parallel);
+    let mut results = Vec::new();
+    let mut pending = 0;
+    let waves_total = plan.len();
+    for (index, wave) in plan.iter().enumerate() {
+        let done = process_all(&ctx, wave, mode, parallel);
+        let remaining: usize = plan[index + 1..].iter().map(Vec::len).sum();
+        let successful = done.iter().filter(|r| r.successful).count();
+        ctx.runner.bus().emit(Event::WaveFinished {
+            wave: index + 1,
+            total: waves_total,
+            successful,
+            remaining,
+        });
+        let next = remaining > 0 && !interrupt_requested() && (waves.proceed)(&done, remaining);
+        results.extend(done);
+        if remaining > 0 && !next {
+            pending = remaining;
+            break;
+        }
+    }
 
     drop(runner);
     drop(bus);
@@ -320,7 +436,7 @@ pub fn execute_loaded(
 
     meta.finished = rfc3339_now();
     write_meta(layout, &meta).map_err(|err| Refused(err.to_string()))?;
-    let report = report::build(
+    let mut report = report::build(
         &meta.run_id,
         &meta.recipe,
         &meta.started,
@@ -328,6 +444,15 @@ pub fn execute_loaded(
         results,
         &redactor,
     );
+    if pending > 0 {
+        // Stopped on purpose: 2 when everything done so far succeeded, 1 otherwise.
+        report.summary.pending = pending;
+        report.exit_code = if report.summary.successful == report.summary.total {
+            2
+        } else {
+            1
+        };
+    }
     let bytes = serde_json::to_vec_pretty(&report).map_err(|err| Refused(err.to_string()))?;
     write_atomic(&layout.report_path(), &bytes).map_err(|err| Refused(err.to_string()))?;
     Ok(report)
@@ -402,10 +527,8 @@ fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Rep
     if only.is_empty() {
         return Ok(repos);
     }
-    let selected =
-        |r: &Repo, suffix: &str| r.path == suffix || r.path.ends_with(&format!("/{suffix}"));
     for suffix in only {
-        if !repos.iter().any(|r| selected(r, suffix)) {
+        if !repos.iter().any(|r| path_matches(r, suffix)) {
             return Err(Refused(format!(
                 "--only {suffix}: no repo in {} has this path",
                 path.display()
@@ -414,7 +537,7 @@ fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Rep
     }
     Ok(repos
         .into_iter()
-        .filter(|r| only.iter().any(|s| selected(r, s)))
+        .filter(|r| only.iter().any(|s| path_matches(r, s)))
         .collect())
 }
 

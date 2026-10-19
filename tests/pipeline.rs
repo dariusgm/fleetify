@@ -17,7 +17,7 @@ use fleetify::credentials::Credentials;
 use fleetify::hosts::{Host, client_for};
 use fleetify::recipe::Recipe;
 use fleetify::repos::Repo;
-use fleetify::run::{Loaded, Mode, RunLayout, execute_loaded};
+use fleetify::run::{Loaded, Mode, RunLayout, WavePlan, Waves, execute_loaded};
 use support::{Recorded, serve};
 
 const TOKEN: &str = "tok-pipeline-test";
@@ -188,6 +188,10 @@ fn run(s: &Scenario, run_id: &str) -> fleetify::report::RepoResult {
         &workdir,
         loaded,
         Mode::Pipeline { parallel: 2 },
+        &Waves {
+            plan: &WavePlan::default(),
+            proceed: &|_, _| true,
+        },
     )
     .unwrap();
     report.repos.into_iter().next().unwrap()

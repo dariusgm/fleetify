@@ -21,6 +21,14 @@ pub fn plain_line(event: &Event) -> String {
             result,
             message,
         } => format!("{repo} | {result}: {message}"),
+        Event::WaveFinished {
+            wave,
+            total,
+            successful,
+            remaining,
+        } => format!(
+            "wave {wave} of {total} done: {successful} successful, {remaining} repos remaining"
+        ),
         Event::CommandFinished {
             label,
             outcome,

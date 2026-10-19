@@ -84,6 +84,9 @@ pub struct Summary {
     pub total: usize,
     pub successful: usize,
     pub by_result: BTreeMap<String, usize>,
+    /// Repos that were not started because the run stopped after a wave.
+    #[serde(default)]
+    pub pending: usize,
 }
 
 /// The report of one run.
@@ -145,6 +148,7 @@ pub fn build(
             total: repos.len(),
             successful,
             by_result,
+            pending: 0,
         },
         repos,
     }

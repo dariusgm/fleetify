@@ -22,6 +22,8 @@ const DEFAULT_PREPARE_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_VERIFY_TIMEOUT: Duration = Duration::from_secs(300);
 /// Output lines kept in a failure block.
 const MAX_TAIL: usize = 40;
+/// Characters of the agent's `result.md` that go into the change request body.
+const MAX_AGENT_NOTE_CHARS: usize = 4000;
 
 /// Runs the whole pipeline for one repo.
 pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
@@ -127,6 +129,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
                 None,
                 pattern,
                 "resumed: the branch existed without a change request",
+                None,
             );
         }
         Ok(_) => {}
@@ -207,6 +210,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
 
     // Step 5b: the agent, when the recipe has instructions. It edits the prepared
     // workspace; the verifier and the guards below judge what it changed.
+    let mut agent_note: Option<String> = None;
     if let Some(name) = ctx.agent {
         phase("agent");
         match run_agent(ctx, repo, name, &workspace) {
@@ -242,6 +246,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
             phase("finished");
             return blocked;
         }
+        agent_note = read_agent_note(ctx, &workspace);
     }
 
     // Step 6: is there anything to commit?
@@ -405,6 +410,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         Some(&pushed_sha),
         pattern,
         &format!("pushed {branch} at {}", short(&pushed_sha)),
+        agent_note.as_deref(),
     );
     if result.successful {
         result.result = "pr_open".to_string();
@@ -426,6 +432,7 @@ fn open_change_request(
     pushed: Option<&str>,
     pattern: String,
     detail: &str,
+    agent_note: Option<&str>,
 ) -> RepoResult {
     let key = repo.key();
     let Some(client) = ctx.clients.get(&repo.host) else {
@@ -438,7 +445,7 @@ fn open_change_request(
         );
     };
     let branch = &ctx.recipe.branch;
-    let body = change_body(ctx, base_sha, default_branch);
+    let body = change_body(ctx, base_sha, default_branch, agent_note);
     match client.create_change_request(
         repo,
         token,
@@ -469,8 +476,13 @@ fn open_change_request(
 }
 
 /// The change request body: what the run did, not what the agent or the host wants.
-fn change_body(ctx: &Ctx<'_>, base_sha: &str, default_branch: &str) -> String {
-    format!(
+fn change_body(
+    ctx: &Ctx<'_>,
+    base_sha: &str,
+    default_branch: &str,
+    agent_note: Option<&str>,
+) -> String {
+    let mut body = format!(
         "Automated change by fleetify.\n\n\
          - Recipe: {}\n\
          - Run: {}\n\
@@ -486,7 +498,26 @@ fn change_body(ctx: &Ctx<'_>, base_sha: &str, default_branch: &str) -> String {
         } else {
             "not configured"
         },
-    )
+    );
+    if let Some(note) = agent_note {
+        // The agent wrote this, nobody reviewed it: say so, and quote it.
+        body.push_str("\n\n### Agent notes (written by the agent, not reviewed)\n\n");
+        for line in note.lines() {
+            body.push_str(&format!("> {line}\n"));
+        }
+    }
+    body
+}
+
+/// The agent's own report from `.agent/result.md`, redacted and length-limited.
+fn read_agent_note(ctx: &Ctx<'_>, workspace: &Path) -> Option<String> {
+    let text = fs::read_to_string(workspace.join(agents::RESULT_FILE)).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let limited: String = text.chars().take(MAX_AGENT_NOTE_CHARS).collect();
+    Some(ctx.runner.redactor().redact(&limited))
 }
 
 /// Renders the step for this OS and runs it in the workspace.
@@ -520,13 +551,13 @@ fn run_agent(
 ) -> Result<CommandResult, String> {
     agents::write_task(workspace, ctx.recipe_dir, ctx.recipe)
         .map_err(|err| format!("cannot write the agent task: {err}"))?;
-    let argv = agents::command(name, ctx.recipe, &ctx.config.permissions)?;
-    let mut request = RunRequest::new(repo.key(), argv);
+    let invocation = agents::invocation(name, ctx.recipe, &ctx.config.permissions)?;
+    let mut request = RunRequest::new(repo.key(), invocation.argv);
     request.cwd = Some(workspace.to_path_buf());
     request.timeout = Some(Duration::from_secs(
         u64::from(ctx.recipe.limits.agent_timeout_min) * 60,
     ));
-    request.env = agents::env_policy();
+    request.env = invocation.env;
     Ok(ctx.runner.run(request))
 }
 

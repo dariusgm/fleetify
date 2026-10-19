@@ -69,6 +69,13 @@ pub enum Event {
         result: String,
         message: String,
     },
+    /// A wave is done. `remaining` repos are still waiting for the next decision.
+    WaveFinished {
+        wave: usize,
+        total: usize,
+        successful: usize,
+        remaining: usize,
+    },
 }
 
 /// Fan-out of events to any number of subscribers. Subscribers that have been

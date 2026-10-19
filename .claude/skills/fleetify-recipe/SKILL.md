@@ -89,7 +89,7 @@ Rules:
 - Change source files only where a new version requires it, and keep the behaviour the same.
 - Do not add suppression attributes, skip or disable tests, or add NOSONAR markers.
 - Do not switch any dependency to a git or path source.
-- If the build or tests cannot be made to pass, write blocked.md in the repository root explaining why. Do not guess.
+- If the build or tests cannot be made to pass, write .agent/blocked.md explaining why. Do not guess.
 ```
 
 ## tools/verify.sh
@@ -150,7 +150,7 @@ The run id defaults to `<name>-<YYYY-MM-DD>`. Pass `--run` to choose another.
 | `already_done` | An open pull request for the branch already exists. |
 | `skipped` | `applies_to` is not met, e.g. no lock file. |
 | `no_changes` | The agent changed nothing. |
-| `needs_input` | The agent wrote `blocked.md`. Read the reason in the report. |
+| `needs_input` | The agent wrote `.agent/blocked.md`. Read the reason in the report. |
 | `verify_failed` | The build or tests fail with the new versions. Nothing is pushed. |
 | `guard_violation` | A changed file or pattern broke a guard. Nothing is pushed. |
 | `base_broken` | The untouched base already fails the verifier. The repository is not changed. |

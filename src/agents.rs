@@ -13,6 +13,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::clock::rfc3339_now;
+use serde_json::json;
+
 use crate::config::Permissions;
 use crate::events::EventBus;
 use crate::events::Redactor;
@@ -20,12 +22,29 @@ use crate::recipe::Recipe;
 use crate::runner::{BASE_ENV, EnvPolicy, RunRequest, Runner};
 
 pub const CLAUDE_CODE: &str = "claude-code";
+pub const OPENCODE: &str = "opencode";
+/// Replaces the `opencode` binary, the same way `FLEETIFY_CLAUDE_BIN` does for claude.
+pub const OPENCODE_BINARY_ENV: &str = "FLEETIFY_OPENCODE_BIN";
 /// Replaces the `claude` binary. Used by tests and by installs outside PATH.
 pub const BINARY_ENV: &str = "FLEETIFY_CLAUDE_BIN";
 /// Directory in the workspace for the task and attachments. Kept out of commits.
 pub const AGENT_DIR: &str = ".agent";
-/// The file an agent writes when it cannot finish. The repo then ends as `needs_input`.
-pub const BLOCKED_FILE: &str = "blocked.md";
+/// The file an agent writes when it cannot finish, relative to the workspace. The repo
+/// then ends as `needs_input`.
+pub const BLOCKED_FILE: &str = ".agent/blocked.md";
+/// The file an agent writes when it is done, relative to the workspace. Its text goes
+/// into the pull request body, marked as written by the agent.
+pub const RESULT_FILE: &str = ".agent/result.md";
+/// Where the verifier scripts sit for the agent, relative to the workspace.
+const AGENT_TOOLS_DIR: &str = ".agent/tools";
+/// Fixed, versioned rules that every agent run gets, whatever the recipe says.
+const RULES: &str = "\
+Rules (fleetify rules v1):
+- Do not commit or push. The orchestrator does that.
+- Do not ask questions. Choose the most conservative option and note your assumptions.
+- Run the verifier named below after each change, and keep going until it passes.
+- If you cannot proceed, write .agent/blocked.md explaining why, then stop.
+- When you are done, write .agent/result.md: what changed, your assumptions, and anything a reviewer should know.";
 const TASK_FILE: &str = "task.md";
 const ATTACHMENTS_DIR: &str = "attachments";
 const PROMPT: &str = "Read .agent/task.md and carry out the task it describes in this repository. Follow its rules exactly.";
@@ -43,22 +62,10 @@ const CHECK_DIR: &str = "agents";
 /// Refuses agent names this build cannot run.
 pub fn check_supported(name: &str) -> Result<(), String> {
     match name {
-        CLAUDE_CODE => Ok(()),
+        CLAUDE_CODE | OPENCODE => Ok(()),
         other => Err(format!(
-            "agent {other:?} is not supported in this build; only {CLAUDE_CODE} runs"
+            "agent {other:?} is not supported in this build; only {CLAUDE_CODE} and {OPENCODE} run"
         )),
-    }
-}
-
-/// The environment an agent gets: the base allowlist plus its own variables.
-pub fn env_policy() -> EnvPolicy {
-    EnvPolicy::Allowlist {
-        names: BASE_ENV
-            .iter()
-            .chain(AGENT_ENV)
-            .map(|name| name.to_string())
-            .collect(),
-        set: Vec::new(),
     }
 }
 
@@ -75,18 +82,63 @@ pub fn task_text(recipe_dir: &Path, recipe: &Recipe) -> io::Result<String> {
     Ok(parts.join("\n\n"))
 }
 
-/// Writes the task file and copies the attachments into `<workspace>/.agent/`.
+/// Writes `task.md` (rules, instructions, attachments, verifier) and copies the
+/// attachments and the recipe's tools into `<workspace>/.agent/`. The tools copy is the
+/// untrusted one the agent may run; the orchestrator's verifier uses the original.
 pub fn write_task(workspace: &Path, recipe_dir: &Path, recipe: &Recipe) -> io::Result<()> {
-    let attachments = workspace.join(AGENT_DIR).join(ATTACHMENTS_DIR);
+    let agent_dir = workspace.join(AGENT_DIR);
+    let attachments = agent_dir.join(ATTACHMENTS_DIR);
     fs::create_dir_all(&attachments)?;
-    fs::write(
-        workspace.join(AGENT_DIR).join(TASK_FILE),
-        task_text(recipe_dir, recipe)?,
-    )?;
     for relative in &recipe.attachments {
         let source = recipe_dir.join(relative);
         if let Some(name) = source.file_name() {
             fs::copy(&source, attachments.join(name))?;
+        }
+    }
+    let tools = recipe.tools.as_deref().unwrap_or("tools");
+    let source_tools = recipe_dir.join(tools);
+    if source_tools.is_dir() {
+        copy_dir(&source_tools, &workspace.join(AGENT_TOOLS_DIR))?;
+    }
+    fs::write(
+        agent_dir.join(TASK_FILE),
+        task_document(recipe_dir, recipe)?,
+    )
+}
+
+/// The text of `task.md`: rules, instructions, attachments and the verifier command.
+fn task_document(recipe_dir: &Path, recipe: &Recipe) -> io::Result<String> {
+    let mut text = format!("{RULES}\n\n{}\n", task_text(recipe_dir, recipe)?);
+    if !recipe.attachments.is_empty() {
+        text.push_str("\nAttachments, relative to the repository root:\n");
+        for relative in &recipe.attachments {
+            let name = Path::new(relative)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            text.push_str(&format!("- .agent/attachments/{name}\n"));
+        }
+    }
+    if let Some(spec) = recipe.verify_spec() {
+        let argv = spec
+            .render(cfg!(windows), &[("repo", "."), ("tools", AGENT_TOOLS_DIR)])
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        text.push_str(&format!("\nVerifier: {}\n", argv.join(" ")));
+    }
+    Ok(text)
+}
+
+/// Copies a directory tree. Symbolic links are not followed into the copy.
+fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), &target)?;
         }
     }
     Ok(())
@@ -113,50 +165,156 @@ pub fn missing_permissions(recipe: &Recipe, permissions: &Permissions) -> Vec<St
 
 /// The tools an agent may use: the baseline plus the granted commands and web access.
 pub fn allowed_tools(recipe: &Recipe, permissions: &Permissions) -> Vec<String> {
+    claude_tools(&grants(recipe, permissions, CLAUDE_CODE))
+}
+
+fn claude_tools(grants: &Grants) -> Vec<String> {
     let mut tools: Vec<String> = BASELINE_TOOLS.iter().map(|tool| tool.to_string()).collect();
-    for command in &recipe.needs.commands {
-        if permissions.commands.contains(command) {
-            tools.push(format!("Bash({command}:*)"));
-        }
+    for command in &grants.commands {
+        tools.push(format!("Bash({command}:*)"));
     }
-    if recipe.needs.web && permissions.web {
+    if grants.web {
         tools.extend(["WebFetch", "WebSearch"].map(String::from));
     }
     tools
 }
 
-/// The full command line for one agent run of a recipe.
-pub fn command(
+/// What fleetify grants one agent run, after the recipe's needs were checked against
+/// `config.toml`. Each adapter turns these into its own CLI options.
+#[derive(Debug, Default)]
+pub struct Grants {
+    pub commands: Vec<String>,
+    pub web: bool,
+    pub directories: Vec<String>,
+    pub unrestricted: bool,
+}
+
+/// The command line and the environment of one agent run.
+#[derive(Debug)]
+pub struct Invocation {
+    pub argv: Vec<String>,
+    pub env: EnvPolicy,
+}
+
+fn grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> Grants {
+    Grants {
+        commands: recipe
+            .needs
+            .commands
+            .iter()
+            .filter(|command| permissions.commands.contains(command))
+            .cloned()
+            .collect(),
+        web: recipe.needs.web && permissions.web,
+        directories: recipe.needs.extra_directories.clone(),
+        unrestricted: permissions.agent.get(name).is_some_and(|p| p.unrestricted),
+    }
+}
+
+/// The command line and environment for a recipe's agent run.
+pub fn invocation(
     name: &str,
     recipe: &Recipe,
     permissions: &Permissions,
-) -> Result<Vec<String>, String> {
-    check_supported(name)?;
-    let unrestricted = permissions.agent.get(name).is_some_and(|p| p.unrestricted);
-    Ok(claude_code_argv(
-        &binary(),
-        PROMPT,
-        &allowed_tools(recipe, permissions),
-        &recipe.needs.extra_directories,
-        unrestricted,
-    ))
+) -> Result<Invocation, String> {
+    build(name, PROMPT, &grants(recipe, permissions, name))
 }
 
-/// The command line of the canary: baseline tools only, no extra directories.
-fn canary_command(name: &str) -> Result<Vec<String>, String> {
-    check_supported(name)?;
-    let tools: Vec<String> = BASELINE_TOOLS.iter().map(|tool| tool.to_string()).collect();
-    Ok(claude_code_argv(
-        &binary(),
-        CANARY_PROMPT,
-        &tools,
-        &[],
-        false,
-    ))
+/// The canary's invocation: the baseline grants only, so it tests what every run gets.
+fn canary_invocation(name: &str) -> Result<Invocation, String> {
+    build(name, CANARY_PROMPT, &Grants::default())
 }
 
-fn binary() -> String {
-    std::env::var(BINARY_ENV).unwrap_or_else(|_| "claude".to_string())
+fn build(name: &str, prompt: &str, grants: &Grants) -> Result<Invocation, String> {
+    check_supported(name)?;
+    match name {
+        OPENCODE => {
+            let config = opencode_config(grants).to_string();
+            Ok(Invocation {
+                argv: vec![
+                    binary(OPENCODE_BINARY_ENV, "opencode"),
+                    "run".to_string(),
+                    prompt.to_string(),
+                ],
+                env: env_policy(vec![
+                    ("OPENCODE_CONFIG_CONTENT".to_string(), config),
+                    // A repository's own opencode.json must not widen the grants.
+                    (
+                        "OPENCODE_DISABLE_PROJECT_CONFIG".to_string(),
+                        "1".to_string(),
+                    ),
+                ]),
+            })
+        }
+        _ => Ok(Invocation {
+            argv: claude_code_argv(
+                &binary(BINARY_ENV, "claude"),
+                prompt,
+                &claude_tools(grants),
+                &grants.directories,
+                grants.unrestricted,
+            ),
+            env: env_policy(Vec::new()),
+        }),
+    }
+}
+
+/// The environment an agent gets: the base allowlist, its own variables, and the
+/// variables fleetify sets for this run.
+fn env_policy(set: Vec<(String, String)>) -> EnvPolicy {
+    EnvPolicy::Allowlist {
+        names: BASE_ENV
+            .iter()
+            .chain(AGENT_ENV)
+            .map(|name| name.to_string())
+            .collect(),
+        set,
+    }
+}
+
+/// opencode's permissions as one inline config. Everything not listed is denied, and
+/// the agent cannot ask a question, since nobody is there to answer.
+fn opencode_config(grants: &Grants) -> serde_json::Value {
+    let open = |allowed: bool| if allowed { "allow" } else { "deny" };
+    let everything = grants.unrestricted;
+    let mut bash = serde_json::Map::new();
+    bash.insert("*".to_string(), json!(open(everything)));
+    // Read-only git is part of the baseline. Other commands need a grant.
+    for command in ["git status", "git diff", "git log"]
+        .into_iter()
+        .map(String::from)
+        .chain(grants.commands.iter().cloned())
+    {
+        bash.insert(command.clone(), json!("allow"));
+        bash.insert(format!("{command} *"), json!("allow"));
+    }
+    let mut external = serde_json::Map::new();
+    external.insert("*".to_string(), json!(open(everything)));
+    for directory in &grants.directories {
+        external.insert(format!("{directory}/**"), json!("allow"));
+    }
+    json!({
+        "permission": {
+            "read": "allow",
+            "edit": "allow",
+            "glob": "allow",
+            "grep": "allow",
+            "list": "allow",
+            "webfetch": open(grants.web || everything),
+            "websearch": open(grants.web || everything),
+            "bash": bash,
+            "external_directory": external,
+            "task": open(everything),
+            "skill": open(everything),
+            "question": "deny",
+            "doom_loop": "deny"
+        }
+    })
+}
+
+/// The agent binary: from the environment variable when set, else from PATH.
+fn binary(variable: &str, default: &str) -> String {
+    std::env::var(variable).unwrap_or_else(|_| default.to_string())
 }
 
 /// `claude -p <prompt> [--dangerously-skip-permissions] [--add-dir <dir>]... --allowedTools <tool>...`
@@ -193,7 +351,7 @@ pub fn is_checked(workdir: &Path, name: &str) -> bool {
 /// `escape.txt` did not appear one level above. A pass writes the marker that
 /// `require_checked_agent` looks for.
 pub fn check(workdir: &Path, name: &str) -> Result<(), String> {
-    let argv = canary_command(name)?;
+    let canary = canary_invocation(name)?;
     let root = workdir.join(CHECK_DIR).join("canary").join(name);
     let _ = fs::remove_dir_all(&root);
     let workspace = root.join("workspace");
@@ -201,10 +359,10 @@ pub fn check(workdir: &Path, name: &str) -> Result<(), String> {
     let _ = fs::remove_file(checked_marker(workdir, name));
 
     let runner = Runner::new(EventBus::new(), Redactor::default());
-    let mut request = RunRequest::new(name, argv);
+    let mut request = RunRequest::new(name, canary.argv);
     request.cwd = Some(workspace.clone());
     request.timeout = Some(CANARY_TIMEOUT);
-    request.env = env_policy();
+    request.env = canary.env;
     let result = runner.run(request);
 
     if root.join("escape.txt").exists() {
@@ -257,9 +415,10 @@ text = "Do the thing."
     }
 
     #[test]
-    fn only_claude_code_is_supported() {
+    fn claude_code_and_opencode_run_and_copilot_is_refused() {
         assert!(check_supported("claude-code").is_ok());
-        let err = check_supported("opencode").unwrap_err();
+        assert!(check_supported("opencode").is_ok());
+        let err = check_supported("copilot").unwrap_err();
         assert!(err.contains("not supported"), "{err}");
     }
 
@@ -321,8 +480,9 @@ text = "Do the thing."
         let mut perms = permissions(&[], false);
         let flag = "--dangerously-skip-permissions";
         assert!(
-            !command("claude-code", &recipe, &perms)
+            !invocation("claude-code", &recipe, &perms)
                 .unwrap()
+                .argv
                 .contains(&flag.to_string())
         );
         perms.agent.insert(
@@ -330,9 +490,52 @@ text = "Do the thing."
             AgentPermissions { unrestricted: true },
         );
         assert!(
-            command("claude-code", &recipe, &perms)
+            invocation("claude-code", &recipe, &perms)
                 .unwrap()
+                .argv
                 .contains(&flag.to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_is_denied_by_default_and_granted_per_command() {
+        let grants = Grants {
+            commands: vec!["uv".to_string()],
+            ..Grants::default()
+        };
+        let config = opencode_config(&grants);
+        let permission = &config["permission"];
+        assert_eq!(permission["bash"]["*"], "deny");
+        assert_eq!(permission["bash"]["uv *"], "allow");
+        assert_eq!(permission["bash"]["git status *"], "allow");
+        assert_eq!(permission["question"], "deny");
+        assert_eq!(permission["webfetch"], "deny");
+        assert_eq!(permission["external_directory"]["*"], "deny");
+        assert_eq!(permission["edit"], "allow");
+    }
+
+    #[test]
+    fn opencode_gets_its_config_and_no_project_config() {
+        let recipe = recipe("commands = [\"uv\"]");
+        let mut perms = permissions(&["uv"], false);
+        perms.agent.insert(
+            "opencode".to_string(),
+            AgentPermissions {
+                unrestricted: false,
+            },
+        );
+        let invocation = invocation("opencode", &recipe, &perms).unwrap();
+        assert_eq!(invocation.argv[1], "run");
+        let EnvPolicy::Allowlist { set, .. } = invocation.env else {
+            panic!("opencode needs an allowlist environment");
+        };
+        assert!(
+            set.iter()
+                .any(|(k, v)| k == "OPENCODE_CONFIG_CONTENT" && v.contains("uv *"))
+        );
+        assert!(
+            set.iter()
+                .any(|(k, v)| k == "OPENCODE_DISABLE_PROJECT_CONFIG" && v == "1")
         );
     }
 
