@@ -378,6 +378,22 @@ Design questions the plan does not answer. Each entry names the milestone.
   (`needs.commands = ["sh .agent/tools/verify.sh"]`). Patterns are `<cmd>` and
   `<cmd> *`, so no other `sh` script is allowed.
 
+## Agent questions: yes/no and numbered choices
+
+- **Policy.** Nobody answers an agent's question during a run. The rules block in
+  `task.md` tells the agent to choose the most conservative option and note its
+  assumptions, so a question is a rule violation or a real blocker either way.
+- **Detection.** `agents::wants_input` runs on every output line. It matches yes/no
+  markers (`[y/n]`, `(y/n)`) and choice prompts: `/n]` or `/n)` markers (`[1/2/n]`),
+  and lists such as `Pick option 1, 2 or n` (a digit, ` or n`, and one of option,
+  pick, choose, select). A match terminates the process tree; the repo ends as
+  `needs_input` with the last output lines in the failure block.
+- **Limits.** A question that uses none of these forms is not detected. The idle
+  event and the agent timeout still end such a run. Extend the markers here, with a
+  unit test, rather than answering prompts.
+- **Why not answer.** An answer chosen by fleetify is an unreviewed decision in the
+  change. A stop with the question in the report is the safer default.
+
 ## Merging without a CI gate: per-repository rules
 
 - Merging needs three things: the recipe asks for it (`ci.merge = "when_green"`),
@@ -422,9 +438,8 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   checked against grants, agent-made commits normalised to the base, the
   `permissions_effective` event (one line per agent start in the plain output), the
   `command_idle` event (once per quiet stretch, after `limits.idle_warn_min`), the
-  stop on a yes/no question (`wants_input`: an output line with `[y/n]` or `(y/n)`
-  ends the process tree and the repo as `needs_input`), and a warning line in the run
-  header when an agent is `unrestricted`. Output lines are capped per command
+  stop on a question the agent waits on (`wants_input`, see "Agent questions" below),
+  and a warning line in the run header when an agent is `unrestricted`. Output lines are capped per command
   (`lines_dropped`). Fake-agent tests cover the edit, self-commit, blocked, crash,
   forbidden-change and question scenarios; the hang is covered by the runner's
   timeout test. Missing: the inner-loop verifier beyond the prompt rule in

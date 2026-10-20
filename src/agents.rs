@@ -339,11 +339,24 @@ fn claude_code_argv(
     argv
 }
 
-/// True when an agent output line is a yes/no question it waits on. Such an agent
-/// gets no answer, so the run stops and the repo ends as `needs_input`.
+/// True when an agent output line is a question it waits on: a yes/no prompt, or a
+/// choice between numbered options and `n` (for example `Pick option 1, 2 or n` or
+/// `[1/2/n]`). Such an agent gets no answer, so the run stops and the repo ends as
+/// `needs_input`.
 pub fn wants_input(line: &str) -> bool {
     let line = line.to_lowercase();
-    line.contains("[y/n]") || line.contains("(y/n)")
+    if line.contains("[y/n]") || line.contains("(y/n)") {
+        return true;
+    }
+    // Choice markers: `/n]`, `/n)`, or `1, 2 or n` style lists with a question word.
+    let digit = line.chars().any(|c| c.is_ascii_digit());
+    let choice_marker = line.contains("/n]") || line.contains("/n)");
+    let choice_list = digit
+        && (line.contains(" or n") || line.contains("(or n"))
+        && ["option", "pick", "choose", "select"]
+            .iter()
+            .any(|word| line.contains(word));
+    choice_marker || choice_list
 }
 
 fn checked_marker(workdir: &Path, name: &str) -> std::path::PathBuf {
@@ -397,7 +410,11 @@ mod tests {
     fn yes_no_questions_are_recognised() {
         assert!(wants_input("Overwrite the file? [y/N]"));
         assert!(wants_input("Proceed (Y/n)"));
+        assert!(wants_input("Pick option 1, 2 or n"));
+        assert!(wants_input("Which fix? [1/2/n]"));
+        assert!(wants_input("Choose 1 or 2 (or n to skip)"));
         assert!(!wants_input("Why is the build slow?"));
+        assert!(!wants_input("Built 2 crates in 3 seconds"));
     }
     use crate::config::AgentPermissions;
     use std::collections::BTreeMap;
