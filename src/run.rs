@@ -753,7 +753,7 @@ fn dry_run_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
             "dry_run",
             &format!(
                 "read access ok; would branch {} from {} at {}",
-                ctx.recipe.branch,
+                ctx.config.branch_name(&ctx.recipe.branch),
                 state.default_branch,
                 &state.base_sha[..state.base_sha.len().min(12)]
             ),

@@ -394,6 +394,20 @@ Design questions the plan does not answer. Each entry names the milestone.
 - **Why not answer.** An answer chosen by fleetify is an unreviewed decision in the
   change. A stop with the question in the report is the safer default.
 
+## Branch names: fleetify prefix
+
+- **Rule.** Every branch fleetify pushes is `<branch_prefix>/<recipe branch>`. The
+  recipe keeps its name (`chore/poetry-to-uv`); the prefix is added by fleetify.
+- **Default.** `branch_prefix` unset in `config.toml` means `fleetify`. An empty
+  string means no prefix. A trailing slash is ignored, and an invalid prefix is
+  refused when `config.toml` is loaded.
+- **Why.** A branch under the prefix shows at a glance that fleetify created it. It
+  also limits any later automatic action (cancelling superseded CI runs, cleanup)
+  to branches fleetify owns.
+- **Not decided yet.** A commit identity or a commit-message marker for fleetify's
+  commits. The prefix does not prove who pushed a commit; the report records the
+  pushed SHA for that.
+
 ## Merging without a CI gate: per-repository rules
 
 - Merging needs three things: the recipe asks for it (`ci.merge = "when_green"`),
