@@ -76,6 +76,21 @@ pub enum Event {
         successful: usize,
         remaining: usize,
     },
+    /// A command printed nothing for `idle_s` seconds. Sent once per quiet stretch.
+    CommandIdle {
+        command: u64,
+        label: String,
+        idle_s: u64,
+    },
+    /// The grants an agent starts with, sent before the agent runs.
+    PermissionsEffective {
+        repo: String,
+        agent: String,
+        commands: Vec<String>,
+        web: bool,
+        directories: Vec<String>,
+        unrestricted: bool,
+    },
 }
 
 /// Fan-out of events to any number of subscribers. Subscribers that have been

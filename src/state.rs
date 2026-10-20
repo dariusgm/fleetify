@@ -133,6 +133,8 @@ impl Recorder {
             }
             // A wave boundary belongs to the run, not to one repo.
             Event::WaveFinished { .. } => {}
+            Event::CommandIdle { .. } => {}
+            Event::PermissionsEffective { .. } => {}
         }
     }
 

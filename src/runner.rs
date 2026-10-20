@@ -200,6 +200,8 @@ pub struct RunRequest {
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub timeout: Option<Duration>,
+    /// Emit a `command_idle` event after this long without output. None: never.
+    pub idle_warn: Option<Duration>,
     pub env: EnvPolicy,
 }
 
@@ -210,6 +212,7 @@ impl RunRequest {
             argv,
             cwd: None,
             timeout: None,
+            idle_warn: None,
             env: EnvPolicy::Inherit,
         }
     }
@@ -392,10 +395,14 @@ impl Runner {
         let mut exited_at = None;
         let mut killed_at = None;
         let mut interrupted = false;
+        let mut last_output = started;
+        let mut idle_reported = false;
 
         loop {
             match rx.recv_timeout(POLL) {
                 Ok(Msg::Line(stream, text)) => {
+                    last_output = Instant::now();
+                    idle_reported = false;
                     self.record(id, &req.label, stream, text, lines, dropped)
                 }
                 Ok(Msg::Closed) => open_pipes -= 1,
@@ -404,6 +411,19 @@ impl Runner {
                     open_pipes = 0;
                     thread::sleep(POLL);
                 }
+            }
+
+            if let Some(limit) = req.idle_warn
+                && status.is_none()
+                && !idle_reported
+                && last_output.elapsed() >= limit
+            {
+                idle_reported = true;
+                self.bus.emit(crate::events::Event::CommandIdle {
+                    command: id,
+                    label: req.label.clone(),
+                    idle_s: limit.as_secs(),
+                });
             }
 
             if status.is_none() {
