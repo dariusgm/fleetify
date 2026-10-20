@@ -420,12 +420,15 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   instructions, attachments and verifier command, the `.agent/tools` copy, allowlisted
   environment, timeout (result `agent_timeout`), `blocked.md` and `result.md`, `needs`
   checked against grants, agent-made commits normalised to the base, the
-  `permissions_effective` event (one line per agent start in the plain output) and the
-  `command_idle` event (once per quiet stretch, after `limits.idle_warn_min`). Missing:
-  `wants_input()` polling (no design yet: the agent gets closed stdin, so a question
-  surfaces as `blocked.md`), the inner-loop verifier, the run-header warnings, the
-  output-line cap noted above. Fake-agent tests cover the edit, self-commit, blocked,
-  crash and forbidden-change scenarios; the hang is covered by the runner's timeout test.
+  `permissions_effective` event (one line per agent start in the plain output), the
+  `command_idle` event (once per quiet stretch, after `limits.idle_warn_min`), the
+  stop on a yes/no question (`wants_input`: an output line with `[y/n]` or `(y/n)`
+  ends the process tree and the repo as `needs_input`), and a warning line in the run
+  header when an agent is `unrestricted`. Output lines are capped per command
+  (`lines_dropped`). Fake-agent tests cover the edit, self-commit, blocked, crash,
+  forbidden-change and question scenarios; the hang is covered by the runner's
+  timeout test. Missing: the inner-loop verifier beyond the prompt rule in
+  `task.md`, and detection of questions that do not end in a `[y/n]` marker.
 - **M10 opencode and check-agent: partly done.** The opencode adapter is in;
   `check-agent` runs for both agents (the canary is still simpler than the plan). Its canary is simpler than the plan: there is no decoy marker
   and no cache per agent version. The opencode adapter is not started.

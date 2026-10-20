@@ -237,3 +237,17 @@ fn no_idle_event_without_a_threshold() {
             .any(|e| matches!(e, Event::CommandIdle { .. }))
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_matching_prompt_line_terminates_the_process_tree() {
+    let (runner, _bus) = runner();
+    let mut request = RunRequest::new("r", argv(&["sh", "-c", "echo 'Continue? [y/N]'; sleep 30"]));
+    request.prompt_check = Some(|line| line.contains("[y/N]"));
+    let started = Instant::now();
+    let result = runner.run(request);
+
+    assert_eq!(result.outcome, Outcome::WaitingForInput);
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert!(result.lines.iter().any(|l| l.text.contains("[y/N]")));
+}

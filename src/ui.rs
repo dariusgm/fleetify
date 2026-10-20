@@ -57,6 +57,9 @@ pub fn plain_line(event: &Event) -> String {
                 Outcome::Exited { code: None } => "killed by signal".to_string(),
                 Outcome::TimedOut => "timed out, process tree terminated".to_string(),
                 Outcome::Interrupted => "interrupted, process tree terminated".to_string(),
+                Outcome::WaitingForInput => {
+                    "waiting for input, process tree terminated".to_string()
+                }
                 Outcome::SpawnFailed { message } => format!("not started: {message}"),
                 Outcome::Error { message } => format!("supervision error: {message}"),
             };

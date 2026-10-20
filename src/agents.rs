@@ -339,6 +339,13 @@ fn claude_code_argv(
     argv
 }
 
+/// True when an agent output line is a yes/no question it waits on. Such an agent
+/// gets no answer, so the run stops and the repo ends as `needs_input`.
+pub fn wants_input(line: &str) -> bool {
+    let line = line.to_lowercase();
+    line.contains("[y/n]") || line.contains("(y/n)")
+}
+
 fn checked_marker(workdir: &Path, name: &str) -> std::path::PathBuf {
     workdir.join(CHECK_DIR).join(format!("{name}.checked"))
 }
@@ -385,6 +392,13 @@ pub fn check(workdir: &Path, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yes_no_questions_are_recognised() {
+        assert!(wants_input("Overwrite the file? [y/N]"));
+        assert!(wants_input("Proceed (Y/n)"));
+        assert!(!wants_input("Why is the build slow?"));
+    }
     use crate::config::AgentPermissions;
     use std::collections::BTreeMap;
 
