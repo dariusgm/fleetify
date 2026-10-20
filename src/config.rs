@@ -59,12 +59,25 @@ pub struct HostEntry {
     pub kind: HostType,
 }
 
-#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
-    /// Refuse agents that did not pass `check-agent`.
-    #[serde(default)]
+    /// Refuse agents that did not pass `check-agent`. On by default: an agent that was
+    /// never checked may write outside its workspace (see DECISIONS.md, confinement).
+    #[serde(default = "default_true")]
     pub require_checked_agent: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Policy {
+            require_checked_agent: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Merge permissions for the repositories whose `<host>/<path>` matches `pattern`.
@@ -299,7 +312,7 @@ mod tests {
     #[test]
     fn empty_config_has_restrictive_defaults() {
         let config = Config::parse("").unwrap();
-        assert!(!config.policy.require_checked_agent);
+        assert!(config.policy.require_checked_agent);
         assert!(!config.permissions.web);
         assert!(config.permissions.commands.is_empty());
         assert!(config.permissions.agent.is_empty());
