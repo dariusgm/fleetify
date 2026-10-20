@@ -109,7 +109,35 @@ const VERIFY_OK: &str =
 
 /// A fake host: no change requests yet until the first POST; then one is open.
 fn host(created: Arc<AtomicBool>) -> support::FakeHost {
+    serve(move |req: &Recorded| base_route(req, &created))
+}
+
+/// The fake host with CI: every commit asked for has one completed check run with the
+/// given conclusion, and the commit answers for itself.
+fn ci_host(created: Arc<AtomicBool>, conclusion: &'static str) -> support::FakeHost {
     serve(move |req: &Recorded| {
+        let path = req.target.split('?').next().unwrap();
+        if req.method == "GET" && path.starts_with("/repos/o/r/commits/") {
+            let sha = path
+                .trim_start_matches("/repos/o/r/commits/")
+                .trim_end_matches("/check-runs")
+                .trim_end_matches("/status");
+            if path.ends_with("/check-runs") {
+                return (
+                    200,
+                    format!(
+                        r#"{{"check_runs":[{{"name":"test","head_sha":"{sha}","status":"completed","conclusion":"{conclusion}"}}]}}"#
+                    ),
+                );
+            }
+            return (200, format!(r#"{{"sha":"{sha}","statuses":[]}}"#));
+        }
+        base_route(req, &created)
+    })
+}
+
+fn base_route(req: &Recorded, created: &Arc<AtomicBool>) -> (u16, String) {
+    {
         match (req.method.as_str(), req.target.split('?').next().unwrap()) {
         ("GET", "/repos/o/r") => (200, r#"{"default_branch":"main"}"#.into()),
         ("PUT", "/repos/o/r/pulls/1/merge") => (200, r#"{"merged":true}"#.into()),
@@ -130,7 +158,7 @@ fn host(created: Arc<AtomicBool>) -> support::FakeHost {
         }
         _ => (404, r#"{"message":"Not Found"}"#.into()),
     }
-    })
+    }
 }
 
 struct Scenario {
@@ -361,6 +389,47 @@ fn without_a_merge_rule_nothing_is_merged_and_the_pull_request_stays_open() {
         "no merge request may be sent"
     );
     let _ = fs::remove_dir_all(&s.base);
+}
+
+/// A scenario whose recipe waits for CI, with a fake host that answers CI with `conclusion`.
+fn ci_scenario(name: &str, conclusion: &'static str) -> Scenario {
+    let mut s = scenario(name, PREPARE_OK, VERIFY_OK);
+    let created = Arc::new(AtomicBool::new(false));
+    s.host = ci_host(Arc::clone(&created), conclusion);
+    s.created = created;
+    let path = s.recipe_dir.join("recipe.toml");
+    let text = fs::read_to_string(&path).unwrap() + "\n[ci]\nwait = true\ntimeout_min = 1\n";
+    fs::write(&path, text).unwrap();
+    s
+}
+
+#[test]
+fn ci_passing_on_the_pushed_commit_lets_the_merge_go_ahead() {
+    let s = ci_scenario("ci-pass", "success");
+    let result = run_with(&s, "ci-pass", true, true);
+    assert_eq!(result.result, "merged", "{result:?}");
+    assert!(
+        s.host
+            .recorded()
+            .iter()
+            .any(|r| r.target.ends_with("/pulls/1/merge")),
+        "the merge was requested"
+    );
+}
+
+#[test]
+fn failing_ci_on_the_pushed_commit_blocks_the_merge() {
+    let s = ci_scenario("ci-fail", "failure");
+    let result = run_with(&s, "ci-fail", true, true);
+    assert_eq!(result.result, "ci_failed", "{result:?}");
+    assert!(!result.successful);
+    assert!(
+        !s.host
+            .recorded()
+            .iter()
+            .any(|r| r.target.ends_with("/merge")),
+        "no merge request after failed CI"
+    );
 }
 
 #[test]

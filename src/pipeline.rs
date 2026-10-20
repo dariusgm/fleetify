@@ -93,8 +93,16 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
             result.change_request = Some(change.url.clone());
             result.rule = Some(pattern);
             if ctx.merge {
-                // The change exists already; a run with --merge still merges it.
+                // The change exists already; a run with --merge still merges it, but only
+                // after CI passed on the commit it would merge.
                 let expected = change.head_sha.clone();
+                if ctx.recipe.ci.wait {
+                    result = gate_ci(ctx, repo, token, &expected, result);
+                    if result.result != "ci_passed" {
+                        phase("finished");
+                        return result;
+                    }
+                }
                 return merge_change(ctx, repo, token, &branch, &change, &expected, result);
             }
             phase("finished");
@@ -440,7 +448,11 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     if result.successful {
         result.result = "pr_open".to_string();
         result.successful = crate::report::is_successful("pr_open");
-        if ctx.merge {
+        if ctx.recipe.ci.wait {
+            // The verdict is for the commit this run pushed, nothing else.
+            result = gate_ci(ctx, repo, token, &pushed_sha, result);
+        }
+        if ctx.merge && (!ctx.recipe.ci.wait || result.result == "ci_passed") {
             let client = ctx.clients.get(&repo.host).expect("client checked above");
             match client.find_change_request(repo, token, &branch) {
                 Ok(Some(change)) => {
@@ -464,6 +476,86 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         }
     }
     phase("finished");
+    result
+}
+
+/// How long the CI gate waits between two looks at a commit's CI items.
+const CI_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Judges CI for one commit and sets the result from the verdict: `ci_passed`,
+/// `ci_failed`, `ci_missing`, `ci_timeout`, or `ci_blocked` when the host cannot report
+/// CI. The commit is the key; no branch or pull request is looked up.
+fn gate_ci(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    token: &crate::credentials::Secret,
+    sha: &str,
+    mut result: RepoResult,
+) -> RepoResult {
+    let Some(client) = ctx.clients.get(&repo.host) else {
+        return error_result(
+            ctx.layout,
+            repo,
+            format!("no API client for {}", repo.host),
+            result.rule.clone(),
+            Vec::new(),
+        );
+    };
+    ctx.runner.bus().emit(Event::RepoPhase {
+        repo: repo.key(),
+        phase: "ci_wait".to_string(),
+    });
+    let timeout = Duration::from_secs(u64::from(ctx.recipe.ci.timeout_min) * 60);
+    let verdict = crate::ci::poll(
+        || client.commit_ci(repo, token, sha),
+        timeout,
+        CI_POLL_INTERVAL,
+    );
+    let short_sha = short(sha);
+    let (name, message) = match verdict {
+        Ok(crate::ci::Verdict::Passed) => ("ci_passed", format!("CI passed at {short_sha}")),
+        Ok(crate::ci::Verdict::Failed(items)) => (
+            "ci_failed",
+            format!("CI failed at {short_sha}: {}", items.join(", ")),
+        ),
+        Ok(crate::ci::Verdict::Pending(items)) => (
+            "ci_timeout",
+            format!(
+                "CI still running at {short_sha} after {} min: {}",
+                ctx.recipe.ci.timeout_min,
+                items.join(", ")
+            ),
+        ),
+        Ok(crate::ci::Verdict::Missing) => (
+            "ci_missing",
+            format!(
+                "no CI items for {short_sha} after {} min",
+                ctx.recipe.ci.timeout_min
+            ),
+        ),
+        Err(crate::hosts::HostError::Unsupported(what)) => ("ci_blocked", what),
+        Err(err) => {
+            return error_result(
+                ctx.layout,
+                repo,
+                err.to_string(),
+                result.rule.clone(),
+                Vec::new(),
+            );
+        }
+    };
+    result.result = name.to_string();
+    result.successful = crate::report::is_successful(name);
+    result.detail = message.clone();
+    if !result.successful {
+        result.failure = Some(Failure {
+            class: name.to_string(),
+            message,
+            rule: result.rule.clone(),
+            output_tail: Vec::new(),
+            artifacts: crate::run::artifacts(ctx.layout, repo),
+        });
+    }
     result
 }
 

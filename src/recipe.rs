@@ -723,14 +723,6 @@ impl Recipe {
         if self.ci.timeout_min == 0 {
             push("ci.timeout_min", "must be greater than 0".into());
         }
-        // The CI gate is milestone M11. Until it exists, a set `wait` must fail loudly
-        // instead of being ignored, or a run would look gated when it is not.
-        if self.ci.wait {
-            push(
-                "ci.wait",
-                "the CI gate is not implemented yet (milestone M11); set wait = false".into(),
-            );
-        }
         if self.ci.merge == "when_green" && !self.delivery.open_mr {
             push(
                 "ci.merge",
@@ -1011,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_wait_is_refused_until_the_ci_gate_exists() {
+    fn ci_wait_is_accepted_now_that_the_gate_exists() {
         let dir = valid_dir("ci-wait");
         let text = VALID.replace("wait = false", "wait = true");
         let recipe = Recipe::parse(&text).unwrap();
@@ -1020,7 +1012,7 @@ mod tests {
             .into_iter()
             .map(|i| i.field)
             .collect();
-        assert!(fields.contains(&"ci.wait".to_string()), "{fields:?}");
+        assert!(!fields.contains(&"ci.wait".to_string()), "{fields:?}");
     }
 
     #[test]
