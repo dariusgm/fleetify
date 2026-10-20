@@ -424,8 +424,8 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   `command_idle` event (once per quiet stretch, after `limits.idle_warn_min`). Missing:
   `wants_input()` polling (no design yet: the agent gets closed stdin, so a question
   surfaces as `blocked.md`), the inner-loop verifier, the run-header warnings, the
-  output-line cap noted above, and fake-agent tests for the hang, crash and
-  forbidden-change scenarios.
+  output-line cap noted above. Fake-agent tests cover the edit, self-commit, blocked,
+  crash and forbidden-change scenarios; the hang is covered by the runner's timeout test.
 - **M10 opencode and check-agent: partly done.** The opencode adapter is in;
   `check-agent` runs for both agents (the canary is still simpler than the plan). Its canary is simpler than the plan: there is no decoy marker
   and no cache per agent version. The opencode adapter is not started.
