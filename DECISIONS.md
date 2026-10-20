@@ -521,7 +521,12 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   stderr; stdout keeps the final table. The view only reads the event stream, so the
   report and the state files are the same with and without it.
   Open: the manual check on Windows Terminal and a Linux terminal (plan M13 acceptance).
-- **M14 Claude Code adapter: canary verified, `[ASK]` test open.** Claude Code 2.1.x
+- **M14 Claude Code adapter: canary verified; `[ASK]` smoke test passed.** A private
+  throwaway repo (`dariusgm/fleetify-m14-smoke`) with one unused import: the agent removed
+  it, the verifier passed, and PR #1 was opened (only `hello.py` changed, no token in
+  any run file). Open: the level-5 part beyond that smoke test (lint fix with the full
+  gate chain), and the repo can be deleted once no longer needed.
+- **M14 Claude Code adapter: canary verified, `[ASK]` test open (previous state).** Claude Code 2.1.x
   is installed. `check-agent claude-code` first failed: writes to the parent directory
   were allowed. Fixed by `Edit` path rules in the tool list; the canary now passes on
   repeated real runs. Open: the `[ASK]` level-5 test on a throwaway GitHub repo. Also
