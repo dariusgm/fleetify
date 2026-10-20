@@ -200,3 +200,40 @@ fn working_directory_is_applied() {
         dir.canonicalize().unwrap()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_silent_command_reports_idle_once_and_output_starts_a_new_stretch() {
+    let (runner, bus) = runner();
+    let rx = bus.subscribe();
+    // Silent for about 1.5 s, one line, silent again for 1.5 s: two quiet stretches.
+    let script = "sleep 1.5; echo hi; sleep 1.5";
+    let mut request = RunRequest::new("r", argv(&["sh", "-c", script]));
+    request.idle_warn = Some(Duration::from_millis(500));
+    let result = runner.run(request);
+
+    assert!(result.is_success());
+    let idle: Vec<_> = drain(&rx)
+        .into_iter()
+        .filter(|event| matches!(event, Event::CommandIdle { .. }))
+        .collect();
+    assert_eq!(idle.len(), 2, "one idle event per quiet stretch: {idle:?}");
+    assert!(matches!(
+        &idle[0],
+        Event::CommandIdle { label, idle_s: 0, .. } if label == "r"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn no_idle_event_without_a_threshold() {
+    let (runner, bus) = runner();
+    let rx = bus.subscribe();
+    let request = RunRequest::new("r", argv(&["sh", "-c", "sleep 1"]));
+    runner.run(request);
+    assert!(
+        !drain(&rx)
+            .iter()
+            .any(|e| matches!(e, Event::CommandIdle { .. }))
+    );
+}

@@ -416,13 +416,16 @@ by milestone, so that gaps are visible in the repo and not only in chat.
 - **M7 no-agent pipeline: done.** Parallelism uses threads, not `tokio` as the plan
   says. Revisit with M11, where the CI gate is planned as a separate task.
 - **M8 waves: done.** See "Waves, agent contract and OpenCode" above.
-- **M9 agent runner: partly done.** Present: task assembly from instructions and
-  attachments, allowlisted environment, timeout, `blocked.md`, `needs` checked
-  against grants, agent-made commits normalised to the base. Missing: the fixed
-  rules block and verifier command in `task.md`, the `.agent/tools` copy, the
-  inner-loop verifier, `result.md`, `wants_input()` and the idle event, the
-  `permissions_effective` event and the run-header warnings, and the output-line
-  cap noted above.
+- **M9 agent runner: mostly done.** Present: task assembly with the rules block,
+  instructions, attachments and verifier command, the `.agent/tools` copy, allowlisted
+  environment, timeout (result `agent_timeout`), `blocked.md` and `result.md`, `needs`
+  checked against grants, agent-made commits normalised to the base, the
+  `permissions_effective` event (one line per agent start in the plain output) and the
+  `command_idle` event (once per quiet stretch, after `limits.idle_warn_min`). Missing:
+  `wants_input()` polling (no design yet: the agent gets closed stdin, so a question
+  surfaces as `blocked.md`), the inner-loop verifier, the run-header warnings, the
+  output-line cap noted above. Fake-agent tests cover the edit, self-commit, blocked,
+  crash and forbidden-change scenarios; the hang is covered by the runner's timeout test.
 - **M10 opencode and check-agent: partly done.** The opencode adapter is in;
   `check-agent` runs for both agents (the canary is still simpler than the plan). Its canary is simpler than the plan: there is no decoy marker
   and no cache per agent version. The opencode adapter is not started.

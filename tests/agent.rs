@@ -40,6 +40,7 @@ test -f .agent/attachments/notes.txt || exit 8
 test -f .agent/tools/verify.sh || exit 7
 if grep -q BLOCK .agent/task.md; then echo "which python?" > .agent/blocked.md; exit 0; fi
 if grep -q FAIL .agent/task.md; then exit 1; fi
+if grep -q FORBIDDEN .agent/task.md; then sed -i 's/3.11/3.15/' pyproject.toml; echo '# NOSONAR' >> pyproject.toml; exit 0; fi
 sed -i 's/3.11/3.15/' pyproject.toml
 echo "changed pyproject" > .agent/result.md
 if grep -q COMMIT .agent/task.md; then
@@ -252,6 +253,14 @@ fn agent_runs_are_judged_like_any_other_step() {
         .failure
         .expect("needs_input carries a failure block");
     assert_eq!(failure.output_tail, vec!["which python?".to_string()]);
+
+    // The agent adds a suppression comment: the guard rejects the change, nothing is pushed.
+    let (forbidden, _, requests) = run_agent_repo("forbidden", "FORBIDDEN on purpose.");
+    assert_eq!(forbidden.result, "guard_violation", "{forbidden:?}");
+    assert!(
+        !requests.iter().any(|r| r.method == "POST"),
+        "no pull request for a rejected change"
+    );
 
     // The agent exits non-zero: the repo ends as an error at the agent step.
     let (failed, _, _) = run_agent_repo("failed", "FAIL on purpose.");

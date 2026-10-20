@@ -196,7 +196,8 @@ pub struct Invocation {
     pub env: EnvPolicy,
 }
 
-fn grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> Grants {
+/// What fleetify grants one agent run for this recipe.
+pub fn grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> Grants {
     Grants {
         commands: recipe
             .needs

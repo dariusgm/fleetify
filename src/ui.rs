@@ -29,6 +29,22 @@ pub fn plain_line(event: &Event) -> String {
         } => format!(
             "wave {wave} of {total} done: {successful} successful, {remaining} repos remaining"
         ),
+        Event::CommandIdle { label, idle_s, .. } => {
+            format!("{label} | no output for {idle_s}s")
+        }
+        Event::PermissionsEffective {
+            repo,
+            agent,
+            commands,
+            web,
+            directories,
+            unrestricted,
+        } => format!(
+            "{repo} | agent {agent} grants: commands [{}], web {web}, directories [{}]{}",
+            commands.join(", "),
+            directories.join(", "),
+            if *unrestricted { ", unrestricted" } else { "" }
+        ),
         Event::CommandFinished {
             label,
             outcome,
@@ -69,6 +85,22 @@ mod tests {
             duration_ms: 1500,
         });
         assert_eq!(line, "repo-a | exit 2 (1.5s)");
+    }
+
+    #[test]
+    fn permissions_line_names_the_grants() {
+        let line = plain_line(&Event::PermissionsEffective {
+            repo: "github.com/o/r".to_string(),
+            agent: "opencode".to_string(),
+            commands: vec!["cargo".to_string()],
+            web: false,
+            directories: Vec::new(),
+            unrestricted: false,
+        });
+        assert_eq!(
+            line,
+            "github.com/o/r | agent opencode grants: commands [cargo], web false, directories []"
+        );
     }
 
     #[test]

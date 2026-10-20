@@ -228,7 +228,14 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
                 return error_result(ctx.layout, repo, message, Some(pattern), Vec::new());
             }
             Ok(result) if !result.is_success() => {
-                return step_failure(ctx, repo, "agent", &result, pattern, Vec::new());
+                let mut failed = step_failure(ctx, repo, "agent", &result, pattern, Vec::new());
+                if matches!(result.outcome, Outcome::TimedOut) {
+                    failed.result = "agent_timeout".to_string();
+                    if let Some(block) = failed.failure.as_mut() {
+                        block.class = "agent_timeout".to_string();
+                    }
+                }
+                return failed;
             }
             Ok(_) => {}
         }
@@ -694,11 +701,22 @@ fn run_agent(
     agents::write_task(workspace, ctx.recipe_dir, ctx.recipe)
         .map_err(|err| format!("cannot write the agent task: {err}"))?;
     let invocation = agents::invocation(name, ctx.recipe, &ctx.config.permissions)?;
+    let grants = agents::grants(ctx.recipe, &ctx.config.permissions, name);
+    ctx.runner.bus().emit(Event::PermissionsEffective {
+        repo: repo.key(),
+        agent: name.to_string(),
+        commands: grants.commands,
+        web: grants.web,
+        directories: grants.directories,
+        unrestricted: grants.unrestricted,
+    });
     let mut request = RunRequest::new(repo.key(), invocation.argv);
     request.cwd = Some(workspace.to_path_buf());
     request.timeout = Some(Duration::from_secs(
         u64::from(ctx.recipe.limits.agent_timeout_min) * 60,
     ));
+    let idle_min = ctx.recipe.limits.idle_warn_min;
+    request.idle_warn = (idle_min > 0).then(|| Duration::from_secs(u64::from(idle_min) * 60));
     request.env = invocation.env;
     Ok(ctx.runner.run(request))
 }
