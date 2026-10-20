@@ -877,7 +877,7 @@ fn is_recipe_name(name: &str) -> bool {
 }
 
 /// The rules git applies to ref names, for the parts that matter here.
-fn is_valid_branch(branch: &str) -> bool {
+pub(crate) fn is_valid_branch(branch: &str) -> bool {
     !branch.is_empty()
         && !branch.starts_with('-')
         && !branch.starts_with('/')

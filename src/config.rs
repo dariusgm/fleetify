@@ -40,6 +40,10 @@ pub struct Config {
     /// Hosts beyond `github.com` and `gitlab.com`, keyed by host name.
     #[serde(default)]
     pub hosts: BTreeMap<String, HostEntry>,
+    /// Prefix for every branch fleetify pushes: `<prefix>/<recipe branch>`. Unset means
+    /// `fleetify`; an empty string means no prefix.
+    #[serde(default)]
+    pub branch_prefix: Option<String>,
     #[serde(default)]
     pub policy: Policy,
     #[serde(default)]
@@ -145,22 +149,70 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// The branch prefix when `config.toml` does not set one.
+pub const DEFAULT_BRANCH_PREFIX: &str = "fleetify";
+
 impl Config {
     /// Parses config text. Unknown keys are errors.
     pub fn parse(text: &str) -> Result<Config, ConfigError> {
-        toml::from_str(text).map_err(|err| ConfigError::Parse {
+        let config: Config = toml::from_str(text).map_err(|err| ConfigError::Parse {
             path: None,
             message: err.message().to_string(),
-        })
+        })?;
+        config
+            .check_branch_prefix()
+            .map_err(|message| ConfigError::Parse {
+                path: None,
+                message,
+            })?;
+        Ok(config)
+    }
+
+    /// The branch fleetify pushes for a recipe's branch: the prefix, a slash, then the
+    /// recipe's name. A trailing slash on the prefix is ignored.
+    pub fn branch_name(&self, recipe_branch: &str) -> String {
+        let prefix = self.prefix().trim_end_matches('/');
+        if prefix.is_empty() {
+            recipe_branch.to_string()
+        } else {
+            format!("{prefix}/{recipe_branch}")
+        }
+    }
+
+    fn prefix(&self) -> &str {
+        self.branch_prefix
+            .as_deref()
+            .unwrap_or(DEFAULT_BRANCH_PREFIX)
+    }
+
+    /// The prefix must make a valid branch name when joined with a name.
+    fn check_branch_prefix(&self) -> Result<(), String> {
+        let prefix = self.prefix().trim_end_matches('/');
+        if prefix.is_empty() || crate::recipe::is_valid_branch(&format!("{prefix}/x")) {
+            Ok(())
+        } else {
+            Err(format!(
+                "branch_prefix {prefix:?} is not valid in a git branch name"
+            ))
+        }
     }
 
     /// Loads the file. A missing file means the defaults.
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
         match fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).map_err(|err| ConfigError::Parse {
-                path: Some(path.to_path_buf()),
-                message: err.message().to_string(),
-            }),
+            Ok(text) => {
+                let config: Config = toml::from_str(&text).map_err(|err| ConfigError::Parse {
+                    path: Some(path.to_path_buf()),
+                    message: err.message().to_string(),
+                })?;
+                config
+                    .check_branch_prefix()
+                    .map_err(|message| ConfigError::Parse {
+                        path: Some(path.to_path_buf()),
+                        message,
+                    })?;
+                Ok(config)
+            }
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
             Err(source) => Err(ConfigError::Read {
                 path: path.to_path_buf(),
@@ -302,6 +354,22 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("token"), "{err}");
+    }
+
+    #[test]
+    fn branches_get_the_fleetify_prefix_unless_configured() {
+        let default = Config::default();
+        assert_eq!(default.branch_name("chore/x"), "fleetify/chore/x");
+        let none = Config::parse("branch_prefix = \"\"").unwrap();
+        assert_eq!(none.branch_name("chore/x"), "chore/x");
+        let custom = Config::parse("branch_prefix = \"bot/\"").unwrap();
+        assert_eq!(custom.branch_name("chore/x"), "bot/chore/x");
+    }
+
+    #[test]
+    fn an_invalid_branch_prefix_is_refused_at_parse_time() {
+        let err = Config::parse("branch_prefix = \"bad..prefix\"").unwrap_err();
+        assert!(err.to_string().contains("branch_prefix"), "{err}");
     }
 
     #[test]

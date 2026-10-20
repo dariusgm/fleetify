@@ -113,7 +113,7 @@ fn host(created: Arc<AtomicBool>) -> support::FakeHost {
         match (req.method.as_str(), req.target.split('?').next().unwrap()) {
         ("GET", "/repos/o/r") => (200, r#"{"default_branch":"main"}"#.into()),
         ("PUT", "/repos/o/r/pulls/1/merge") => (200, r#"{"merged":true}"#.into()),
-        ("DELETE", "/repos/o/r/git/refs/heads/chore/bump-python") => (204, String::new()),
+        ("DELETE", "/repos/o/r/git/refs/heads/fleetify/chore/bump-python") => (204, String::new()),
         ("GET", "/repos/o/r/pulls") if created.load(Ordering::SeqCst) => (
             200,
             r#"[{"number":1,"state":"open","merged_at":null,"html_url":"https://github.com/o/r/pull/1","head":{"sha":"abc"}}]"#
@@ -224,7 +224,7 @@ fn remote_has_branch(s: &Scenario) -> bool {
             "rev-parse",
             "--verify",
             "--quiet",
-            "refs/heads/chore/bump-python",
+            "refs/heads/fleetify/chore/bump-python",
         ])
         .current_dir(&s.remote)
         .output()
@@ -247,7 +247,10 @@ fn happy_path_pushes_one_commit_and_opens_one_pull_request() {
     assert!(remote_has_branch(&s));
 
     // The pushed branch contains the bump, on top of the base commit.
-    let content = git(&s.remote, &["show", "chore/bump-python:pyproject.toml"]);
+    let content = git(
+        &s.remote,
+        &["show", "fleetify/chore/bump-python:pyproject.toml"],
+    );
     assert!(content.contains("3.15"), "{content}");
 
     // The pull request carries the branch, base and title, and the token only in headers.
@@ -258,7 +261,7 @@ fn happy_path_pushes_one_commit_and_opens_one_pull_request() {
         .find(|r| r.method == "POST")
         .unwrap();
     let sent: serde_json::Value = serde_json::from_str(&post.body).unwrap();
-    assert_eq!(sent["head"], "chore/bump-python");
+    assert_eq!(sent["head"], "fleetify/chore/bump-python");
     assert_eq!(sent["base"], "main");
     assert!(!post.target.contains(TOKEN));
     let _ = fs::remove_dir_all(&s.base);
@@ -334,9 +337,9 @@ fn a_repo_is_merged_at_the_pushed_commit_when_the_policy_allows_it() {
     assert!(merge.body.contains(&pushed), "{}", merge.body);
     // The source branch is deleted only after the merge succeeded.
     assert!(
-        requests.iter().any(
-            |r| r.method == "DELETE" && r.target.ends_with("/git/refs/heads/chore/bump-python")
-        ),
+        requests.iter().any(|r| r.method == "DELETE"
+            && r.target
+                .ends_with("/git/refs/heads/fleetify/chore/bump-python")),
         "{requests:?}"
     );
     let _ = fs::remove_dir_all(&s.base);

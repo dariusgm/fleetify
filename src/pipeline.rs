@@ -66,7 +66,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         return result;
     }
 
-    let branch = ctx.recipe.branch.clone();
+    let branch = ctx.config.branch_name(&ctx.recipe.branch);
     let Some(client) = ctx.clients.get(&repo.host) else {
         return error_result(
             ctx.layout,
@@ -559,7 +559,7 @@ fn open_change_request(
             Vec::new(),
         );
     };
-    let branch = &ctx.recipe.branch;
+    let branch = &ctx.config.branch_name(&ctx.recipe.branch);
     let body = change_body(ctx, base_sha, default_branch, agent_note);
     match client.create_change_request(
         repo,
