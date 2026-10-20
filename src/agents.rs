@@ -474,6 +474,21 @@ text = "Do the thing."
     }
 
     #[test]
+    fn claude_code_runs_with_the_allowlist_and_nothing_else() {
+        let env = env_policy(Vec::new());
+        let EnvPolicy::Allowlist { names, set } = env else {
+            panic!("expected an allowlist");
+        };
+        let expected: Vec<String> = BASE_ENV
+            .iter()
+            .chain(AGENT_ENV)
+            .map(|name| name.to_string())
+            .collect();
+        assert_eq!(names, expected);
+        assert!(set.is_empty());
+    }
+
+    #[test]
     fn grants_are_described_for_the_run_header() {
         let recipe = recipe("commands = [\"cargo\"]");
         assert_eq!(
