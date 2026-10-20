@@ -292,6 +292,12 @@ pub struct Loaded {
 
 /// Loads config, credentials, repos and host clients, and runs the TLS self-test.
 pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
+    load_for(input, false)
+}
+
+/// Loads what a run needs. A dry run reports missing grants and keeps going; a real
+/// run refuses to start.
+fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
     let config = Config::load(&input.workdir.join("config.toml"))?;
     let hosts = config.host_table()?;
     let (credentials, warnings) = Credentials::load(&input.workdir.join("credentials.toml"))?;
@@ -300,7 +306,7 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
         eprintln!("warning: {warning}");
     }
     crate::logging::set_redactor(Redactor::new(credentials.secrets()));
-    let agent = check_agent(input, &config)?;
+    let agent = check_agent(input, &config, dry_run)?;
     if let Some(name) = agent.as_deref()
         && config
             .permissions
@@ -339,7 +345,11 @@ pub fn check_merge(recipe: &Recipe, merge: bool) -> Result<(), String> {
 /// Checks what an agent run needs before any repo is touched: the agent is supported,
 /// `config.toml` grants what the recipe needs, and the agent passed `check-agent` when
 /// the policy requires it. Returns the agent's name, or `None` without instructions.
-fn check_agent(input: &RunInput<'_>, config: &Config) -> Result<Option<String>, Refused> {
+fn check_agent(
+    input: &RunInput<'_>,
+    config: &Config,
+    dry_run: bool,
+) -> Result<Option<String>, Refused> {
     if input.recipe.instructions.is_empty() {
         return Ok(None);
     }
@@ -348,12 +358,20 @@ fn check_agent(input: &RunInput<'_>, config: &Config) -> Result<Option<String>, 
         .or(input.recipe.agent.as_deref())
         .ok_or_else(|| Refused("instructions are set but no agent is".into()))?;
     agents::check_supported(name).map_err(Refused)?;
+    eprintln!(
+        "agent {name}: {}",
+        agents::describe_grants(input.recipe, &config.permissions, name)
+    );
     let missing = agents::missing_permissions(input.recipe, &config.permissions);
     if !missing.is_empty() {
-        return Err(Refused(format!(
+        let message = format!(
             "config.toml does not grant what the recipe needs: {}",
             missing.join(", ")
-        )));
+        );
+        if !dry_run {
+            return Err(Refused(message));
+        }
+        eprintln!("dry run: a real run would refuse: {message}");
     }
     if config.policy.require_checked_agent
         && !input.allow_unchecked_agent
@@ -373,7 +391,7 @@ pub fn execute(input: &RunInput<'_>, mode: Mode) -> Result<Report, Refused> {
         let list: Vec<String> = issues.iter().map(ToString::to_string).collect();
         return Err(Refused(format!("recipe refused: {}", list.join("; "))));
     }
-    let loaded = load(input)?;
+    let loaded = load_for(input, matches!(mode, Mode::DryRun))?;
     execute_loaded(
         input.layout,
         input.recipe,
