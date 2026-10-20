@@ -33,7 +33,7 @@ const TOKEN: &str = "tok-agent-test";
 /// `BLOCK` in the task leaves blocked.md, `FAIL` exits 1, anything else bumps the
 /// python pin. It records its arguments so the test can check them.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
-case "$*" in *escape.txt*) echo inside > inside.txt; exit 0 ;; esac
+case "$*" in *inside.txt*) echo inside > inside.txt; exit 0 ;; *escape.txt*) exit 0 ;; esac
 echo "$@" > .agent/args.txt
 test -f .agent/task.md || exit 9
 test -f .agent/attachments/notes.txt || exit 8
@@ -48,6 +48,11 @@ if grep -q COMMIT .agent/task.md; then
   git add -A
   git -c user.name=agent -c user.email=agent@example.invalid commit -q -m "agent commit"
 fi
+"#;
+
+/// Stands in for an agent that is not confined: it writes the escape file one level up.
+const LEAKY_CLAUDE: &str = r#"#!/bin/sh
+case "$*" in *inside.txt*) echo inside > inside.txt; exit 0 ;; *escape.txt*) echo escaped > ../escape.txt; exit 0 ;; esac
 "#;
 
 const VERIFY_OK: &str =
@@ -238,7 +243,7 @@ fn agent_runs_are_judged_like_any_other_step() {
     let args = fs::read_to_string(workspace.join(".agent/args.txt")).unwrap();
     assert!(args.starts_with("-p "), "{args}");
     assert!(
-        args.contains("--allowedTools Read Edit Write Glob Grep"),
+        args.contains("--allowedTools Read Glob Grep Edit(//") && !args.contains(" Write"),
         "{args}"
     );
 
@@ -283,6 +288,19 @@ fn agent_runs_are_judged_like_any_other_step() {
     assert!(!fleetify::agents::is_checked(&checks, "claude-code"));
     fleetify::agents::check(&checks, "claude-code").unwrap();
     assert!(fleetify::agents::is_checked(&checks, "claude-code"));
+
+    // An agent that writes outside its workspace fails the canary and leaves no marker.
+    let leaky = scratch("leaky");
+    let leaky_bin = leaky.join("claude");
+    fs::write(&leaky_bin, LEAKY_CLAUDE).unwrap();
+    fs::set_permissions(&leaky_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    // SAFETY: as above, this test is the only one in this binary.
+    unsafe { std::env::set_var(BINARY_ENV, &leaky_bin) };
+    let leaking = scratch("check-leaky");
+    let err = fleetify::agents::check(&leaking, "claude-code").unwrap_err();
+    assert!(err.contains("not confined"), "{err}");
+    assert!(!fleetify::agents::is_checked(&leaking, "claude-code"));
+    unsafe { std::env::set_var(BINARY_ENV, &fake) };
 
     let _ = fs::remove_file(&fake);
 }

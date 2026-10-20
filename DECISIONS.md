@@ -488,8 +488,14 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   - *Questions without a marker.* Only the markers in "Agent questions" stop a run. A
     heuristic on silence or on a trailing `?` would stop agents that are only writing
     prose, so it is not added.
-  - *Writes outside the workspace.* Confinement is the agent CLI's job, checked by
-    `check-agent` (canary). fleetify does not watch the file system during a run.
+  - *Writes outside the workspace.* Claude Code is confined by `Edit` path rules, set
+    by fleetify in the tool list (`Edit(//<workspace>/**)` and the granted directories).
+    An earlier version assumed the CLI confined writes by itself; it did not. A real
+    `check-agent claude-code` run found an escape to the parent directory, and that is
+    why the rules exist. `check-agent` now runs two prompts, one that must write inside
+    and one that must not write outside. Reads are not limited by path in Claude Code,
+    so the agent can read files outside the workspace. fleetify does not watch the file
+    system during a run.
 - **M10 opencode and check-agent: mostly done.** The opencode adapter is in, with
   the grants as inline permission config. `check-agent` runs for both agents (the
   canary is simpler than the plan: no decoy marker, no cache per agent version). The
@@ -515,8 +521,12 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   stderr; stdout keeps the final table. The view only reads the event stream, so the
   report and the state files are the same with and without it.
   Open: the manual check on Windows Terminal and a Linux terminal (plan M13 acceptance).
-- **M14 Claude Code adapter: done in code, unverified.** The CLI is not installed
-  on the development machine, so no `[ASK]` test has run.
+- **M14 Claude Code adapter: canary verified, `[ASK]` test open.** Claude Code 2.1.x
+  is installed. `check-agent claude-code` first failed: writes to the parent directory
+  were allowed. Fixed by `Edit` path rules in the tool list; the canary now passes on
+  repeated real runs. Open: the `[ASK]` level-5 test on a throwaway GitHub repo. Also
+  open: `require_checked_agent` is false by default, so an agent that has not passed
+  `check-agent` still runs. That default is a decision for the user.
 - **M15 Copilot CLI adapter: not started.**
 - **M16 LLM judge: not started.** `judge` is accepted by the parser and not used.
 - **M17 real trial: not started.**
