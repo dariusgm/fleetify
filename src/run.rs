@@ -277,6 +277,8 @@ pub struct RunInput<'a> {
     pub waves: Waves<'a>,
     /// `--merge`: merge after the change request is open, if the recipe asks for it.
     pub merge: bool,
+    /// How progress is shown while the run runs.
+    pub view: crate::ui::View,
 }
 
 /// Everything a run needs after loading and checking the inputs.
@@ -392,7 +394,7 @@ pub fn execute(input: &RunInput<'_>, mode: Mode) -> Result<Report, Refused> {
         return Err(Refused(format!("recipe refused: {}", list.join("; "))));
     }
     let loaded = load_for(input, matches!(mode, Mode::DryRun))?;
-    execute_loaded(
+    execute_loaded_with_view(
         input.layout,
         input.recipe,
         input.recipe_dir,
@@ -400,6 +402,7 @@ pub fn execute(input: &RunInput<'_>, mode: Mode) -> Result<Report, Refused> {
         loaded,
         mode,
         &input.waves,
+        input.view,
     )
 }
 
@@ -413,6 +416,29 @@ pub fn execute_loaded(
     loaded: Loaded,
     mode: Mode,
     waves: &Waves<'_>,
+) -> Result<Report, Refused> {
+    execute_loaded_with_view(
+        layout,
+        recipe,
+        recipe_dir,
+        workdir,
+        loaded,
+        mode,
+        waves,
+        crate::ui::View::Quiet,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_loaded_with_view(
+    layout: &RunLayout,
+    recipe: &Recipe,
+    recipe_dir: &Path,
+    workdir: &Path,
+    loaded: Loaded,
+    mode: Mode,
+    waves: &Waves<'_>,
+    view: crate::ui::View,
 ) -> Result<Report, Refused> {
     // A dry run has no waves: it plans every repo once.
     let plan = match mode {
@@ -433,6 +459,7 @@ pub fn execute_loaded(
     let bus = EventBus::new();
     let recorder = spawn_recorder(bus.subscribe(), layout.clone())
         .map_err(|err| Refused(format!("cannot write events log: {err}")))?;
+    let view_thread = crate::ui::spawn_view(bus.subscribe(), view);
     let runner = Runner::new(bus.clone(), redactor.clone());
     // Steps run in the workspace, so the tools path must not depend on the current directory.
     let tools = recipe_dir.join(recipe.tools.as_deref().unwrap_or("tools"));
@@ -479,6 +506,10 @@ pub fn execute_loaded(
     drop(runner);
     drop(bus);
     let _ = recorder.join();
+    // The view ends with the stream; the final table is printed after it has left the terminal.
+    if let Some(thread) = view_thread {
+        let _ = thread.join();
+    }
 
     meta.finished = rfc3339_now();
     write_meta(layout, &meta).map_err(|err| Refused(err.to_string()))?;

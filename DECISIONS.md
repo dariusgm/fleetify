@@ -50,7 +50,7 @@ Design questions the plan does not answer. Each entry names the milestone.
   is planned before real agents run (M9).
 - **Event bus.** A plain fan-out of `mpsc` senders with dropped subscribers
   removed on emit. Enough for stage 1; not a general broadcast channel.
-- **Plain renderer** lives in `ui.rs` (M1 scope); the live view is M13.
+- **Plain renderer** lives in `ui.rs` (M1 scope). The live view is in `live.rs` (M13).
 
 ## M2 — config, repos and credentials
 
@@ -508,7 +508,13 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   paging of more than 100 check runs per commit, and a test for the timeout (the
   verdict logic is covered by unit tests).
 - **M12 Python authoring package: not started.**
-- **M13 live view: not started.** `--ui` and `--plain` are parsed but have no effect.
+- **M13 live view: done, not yet checked in a real terminal.** `--ui` on a terminal
+  draws a table of repos (phase or result, idle time) and the last output lines of the
+  running repos (`--tail`). Ctrl-C in the view stops running commands. `NO_COLOR`
+  removes the colours. Without a terminal, or with `--plain`, every event is one line on
+  stderr; stdout keeps the final table. The view only reads the event stream, so the
+  report and the state files are the same with and without it.
+  Open: the manual check on Windows Terminal and a Linux terminal (plan M13 acceptance).
 - **M14 Claude Code adapter: done in code, unverified.** The CLI is not installed
   on the development machine, so no `[ASK]` test has run.
 - **M15 Copilot CLI adapter: not started.**

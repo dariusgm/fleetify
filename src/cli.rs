@@ -14,6 +14,7 @@ use crate::recipe::Recipe;
 use crate::report::{self, RepoResult, Report};
 use crate::run::{self, Refused, RunInput, RunLayout};
 use crate::state;
+use crate::ui;
 use crate::workspace::remove_workspaces;
 
 /// Tool log for commands that have no run folder.
@@ -252,6 +253,13 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
         interactive && ask_to_continue(remaining)
     };
 
+    // The live view needs a terminal; otherwise (pipes, files, --plain) plain lines on stderr.
+    let view = if args.ui && !args.plain && std::io::stdout().is_terminal() {
+        ui::View::Live { tail: args.tail }
+    } else {
+        ui::View::Plain
+    };
+
     let input = RunInput {
         workdir,
         recipe_dir: &args.recipe_dir,
@@ -266,6 +274,7 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
             plan: &wave_plan,
             proceed: &proceed,
         },
+        view,
     };
     match run::execute(&input, mode) {
         Err(Refused(message)) => {
