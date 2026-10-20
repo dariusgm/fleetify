@@ -75,6 +75,8 @@ pub enum HostError {
     Transport(String),
     /// The answer did not have the expected shape.
     Parse(String),
+    /// The host cannot do this yet.
+    Unsupported(String),
 }
 
 impl fmt::Display for HostError {
@@ -83,6 +85,7 @@ impl fmt::Display for HostError {
             HostError::Status { status, message } => write!(f, "HTTP {status}: {message}"),
             HostError::Transport(message) => write!(f, "cannot reach the host: {message}"),
             HostError::Parse(message) => write!(f, "unexpected answer from the host: {message}"),
+            HostError::Unsupported(message) => write!(f, "not supported yet: {message}"),
         }
     }
 }
@@ -91,6 +94,21 @@ impl std::error::Error for HostError {}
 
 /// Everything host-specific. Methods that talk to the API take the token that
 /// applies to the repo (from the credential rules).
+/// The state of one check run or commit status, as the host reports it for a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiItem {
+    pub name: String,
+    pub state: CiState,
+}
+
+/// What a CI item says about its commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CiState {
+    Pending,
+    Success,
+    Failure,
+}
+
 pub trait Host: Send + Sync {
     fn probe_read_access(&self, repo: &Repo, token: &Secret) -> Result<Access, HostError>;
     fn default_branch(&self, repo: &Repo, token: &Secret) -> Result<String, HostError>;
@@ -114,6 +132,10 @@ pub trait Host: Send + Sync {
     /// Deletes a branch. Only called after its change request was merged. A branch
     /// that is already gone counts as deleted.
     fn delete_branch(&self, repo: &Repo, token: &Secret, branch: &str) -> Result<(), HostError>;
+    /// Every CI item for exactly this commit. The commit is the key, never a branch or
+    /// a pull request: a later push to the same branch has its own items. Implementations
+    /// must reject items that belong to another commit.
+    fn commit_ci(&self, repo: &Repo, token: &Secret, sha: &str) -> Result<Vec<CiItem>, HostError>;
     /// Merges only if the head is still `expected_sha`; the host enforces that.
     fn merge(
         &self,

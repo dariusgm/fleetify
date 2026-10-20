@@ -394,6 +394,24 @@ Design questions the plan does not answer. Each entry names the milestone.
 - **Why not answer.** An answer chosen by fleetify is an unreviewed decision in the
   change. A stop with the question in the report is the safer default.
 
+## CI status is bound to the pushed commit
+
+- **Rule.** The CI gate asks the host for the CI items of exactly one commit: the
+  SHA fleetify pushed. It never looks up a branch or a pull request, and it never
+  takes "the latest run" of a branch. A later push to the same branch has its own
+  items and does not change the answer for this commit.
+- **Host check.** `Host::commit_ci` returns the check runs and commit statuses of
+  that commit. Every item must name the asked SHA; an answer for another commit is
+  refused as an error, not used.
+- **Verdict.** No items: `Missing`. Any failure: `Failed`, listing the failed items,
+  even while others still run. Otherwise any pending item: `Pending`. All success
+  (neutral and skipped check runs count as success): `Passed`. Polling stops at the
+  verdict or at the timeout, and a timeout with pending items is `Pending`, which the
+  gate maps to `ci_timeout`.
+- **Not done yet.** The gate is not wired into the pipeline, so `ci.wait = true` is
+  still refused. GitLab returns `Unsupported`, since GitLab CI is skipped for now.
+  Paging beyond 100 check runs per commit is not handled.
+
 ## Branch names: fleetify prefix
 
 - **Rule.** Every branch fleetify pushes is `<branch_prefix>/<recipe branch>`. The
