@@ -521,15 +521,13 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   stderr; stdout keeps the final table. The view only reads the event stream, so the
   report and the state files are the same with and without it.
   Open: the manual check on Windows Terminal and a Linux terminal (plan M13 acceptance).
-- **M14 Claude Code adapter: canary verified; `[ASK]` smoke test passed.** A private
-  throwaway repo (`dariusgm/fleetify-m14-smoke`) with one unused import: the agent removed
-  it, the verifier passed, and PR #1 was opened (only `hello.py` changed, no token in
-  any run file). Open: the level-5 part beyond that smoke test (lint fix with the full
-  gate chain), and the repo can be deleted once no longer needed.
-- **M14 Claude Code adapter: the canary passes on repeated real runs.** The file-edit
-  confinement is in place (`Edit` path rules), and `require_checked_agent` is true by
-  default: an agent that has not passed `check-agent` is refused unless the run passes
-  `--allow-unchecked-agent`.
+- **M14 Claude Code adapter: done for the smoke test.** The canary passes on repeated
+  real runs, and the file-edit confinement is in place (`Edit` path rules). The `[ASK]`
+  smoke test ran on a private throwaway repo (`dariusgm/fleetify-m14-smoke`, one unused
+  import): the agent removed it, the verifier passed, and PR #1 was opened. Only
+  `hello.py` changed, and no token appears in any run file. `require_checked_agent` is
+  true by default. Open: the full level-5 lint test with the complete gate chain; the
+  throwaway repo can be deleted when no longer needed.
 - **M15 Copilot CLI adapter: not started.**
 - **M16 LLM judge: not started.** `judge` is accepted by the parser and not used.
 - **M17 real trial: not started.**
