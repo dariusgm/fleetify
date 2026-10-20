@@ -301,6 +301,19 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
     }
     crate::logging::set_redactor(Redactor::new(credentials.secrets()));
     let agent = check_agent(input, &config)?;
+    if let Some(name) = agent.as_deref()
+        && config
+            .permissions
+            .agent
+            .get(name)
+            .is_some_and(|p| p.unrestricted)
+    {
+        tracing::warn!(agent = name, "agent runs unrestricted");
+        eprintln!(
+            "WARNING: agent {name} runs UNRESTRICTED (unrestricted = true in config.toml). \
+             It is not confined by fleetify's grants. This is your own choice."
+        );
+    }
     check_merge(input.recipe, input.merge).map_err(Refused)?;
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
     let clients = host_clients(&repos)?;

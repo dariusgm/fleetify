@@ -202,6 +202,9 @@ pub struct RunRequest {
     pub timeout: Option<Duration>,
     /// Emit a `command_idle` event after this long without output. None: never.
     pub idle_warn: Option<Duration>,
+    /// Called on every output line. When it returns true the process tree is
+    /// terminated and the outcome is `WaitingForInput`. None: never.
+    pub prompt_check: Option<fn(&str) -> bool>,
     pub env: EnvPolicy,
 }
 
@@ -213,6 +216,7 @@ impl RunRequest {
             cwd: None,
             timeout: None,
             idle_warn: None,
+            prompt_check: None,
             env: EnvPolicy::Inherit,
         }
     }
@@ -397,12 +401,16 @@ impl Runner {
         let mut interrupted = false;
         let mut last_output = started;
         let mut idle_reported = false;
+        let mut waiting = false;
 
         loop {
             match rx.recv_timeout(POLL) {
                 Ok(Msg::Line(stream, text)) => {
                     last_output = Instant::now();
                     idle_reported = false;
+                    if req.prompt_check.is_some_and(|check| check(&text)) {
+                        waiting = true;
+                    }
                     self.record(id, &req.label, stream, text, lines, dropped)
                 }
                 Ok(Msg::Closed) => open_pipes -= 1,
@@ -444,6 +452,11 @@ impl Runner {
                 }
             }
 
+            if status.is_none() && killed_at.is_none() && waiting {
+                let _ = child.kill();
+                killed_at = Some(Instant::now());
+            }
+
             if status.is_none() && killed_at.is_none() && interrupt_requested() {
                 let _ = child.kill();
                 interrupted = true;
@@ -473,6 +486,9 @@ impl Runner {
 
         if interrupted {
             return Outcome::Interrupted;
+        }
+        if waiting && killed_at.is_some() {
+            return Outcome::WaitingForInput;
         }
         if killed_at.is_some() {
             return Outcome::TimedOut;

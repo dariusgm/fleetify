@@ -29,6 +29,9 @@ pub enum Outcome {
     Interrupted,
     /// The process started but the tool could not supervise it to the end.
     Error { message: String },
+    /// An output line matched the request's prompt check, so the process tree was
+    /// terminated. Used for agents that stop to ask a yes/no question.
+    WaitingForInput,
 }
 
 impl Outcome {

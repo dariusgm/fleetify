@@ -229,11 +229,14 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
             }
             Ok(result) if !result.is_success() => {
                 let mut failed = step_failure(ctx, repo, "agent", &result, pattern, Vec::new());
-                if matches!(result.outcome, Outcome::TimedOut) {
-                    failed.result = "agent_timeout".to_string();
-                    if let Some(block) = failed.failure.as_mut() {
-                        block.class = "agent_timeout".to_string();
-                    }
+                let (result_name, class) = match result.outcome {
+                    Outcome::TimedOut => ("agent_timeout", "agent_timeout"),
+                    Outcome::WaitingForInput => ("needs_input", "needs_input"),
+                    _ => ("error", "error"),
+                };
+                failed.result = result_name.to_string();
+                if let Some(block) = failed.failure.as_mut() {
+                    block.class = class.to_string();
                 }
                 return failed;
             }
@@ -717,6 +720,7 @@ fn run_agent(
     ));
     let idle_min = ctx.recipe.limits.idle_warn_min;
     request.idle_warn = (idle_min > 0).then(|| Duration::from_secs(u64::from(idle_min) * 60));
+    request.prompt_check = Some(agents::wants_input);
     request.env = invocation.env;
     Ok(ctx.runner.run(request))
 }

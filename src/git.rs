@@ -101,6 +101,7 @@ pub fn git(ctx: &GitContext<'_>, dir: Option<&Path>, args: &[&str]) -> Result<St
         Outcome::Exited { code: None } => "killed by a signal".to_string(),
         Outcome::TimedOut => "timed out".to_string(),
         Outcome::Interrupted => "interrupted".to_string(),
+        Outcome::WaitingForInput => "waited for input".to_string(),
         Outcome::SpawnFailed { message } | Outcome::Error { message } => message.clone(),
     };
     let tail = result.stderr_tail(5);
