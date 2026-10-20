@@ -483,9 +483,16 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   reports missing grants as warnings and continues; a real run refuses to start.
   Open: the level-3 smoke test with opencode and llama.cpp on a throwaway GitHub repo,
   which needs an explicit go-ahead.
-- **M11 CI gate and merge: partly done.** `ci::evaluate` and `ci::poll` judge one
-  commit by SHA, and `Host::commit_ci` reads its items (GitHub; GitLab is skipped).
-  Not done: the gate in the pipeline, the results `ci_*`, and the merge with two keys.
+- **M11 CI gate and merge: mostly done (GitHub).** `ci.wait = true` is implemented for
+  GitHub. The gate judges the commit fleetify pushed (or, for `already_done` with
+  `--merge`, the head of the existing change request), through `Host::commit_ci` and
+  `ci::poll`. Results: `ci_passed`, `ci_failed`, `ci_missing`, `ci_timeout`,
+  `ci_blocked` (GitLab, skipped for now). A merge runs only after `ci_passed`, with the
+  pushed or checked SHA as the expected head, and with the existing three keys.
+  Deliberate change from PLAN.md: the plan's M11 says `wait = true` on GitHub is a
+  validation error; the GitHub gate is wanted now, so that error is gone. Missing: the
+  paging of more than 100 check runs per commit, and a test for the timeout (the
+  verdict logic is covered by unit tests).
 - **M12 Python authoring package: not started.**
 - **M13 live view: not started.** `--ui` and `--plain` are parsed but have no effect.
 - **M14 Claude Code adapter: done in code, unverified.** The CLI is not installed
