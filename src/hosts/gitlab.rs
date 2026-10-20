@@ -140,6 +140,25 @@ impl Host for GitLab {
         change_request(&parse_json(&reply)?)
     }
 
+    fn delete_branch(&self, repo: &Repo, token: &Secret, branch: &str) -> Result<(), HostError> {
+        // Branch names may contain '/', which must be encoded like a project path.
+        let reply: Reply = self.http.send(
+            Method::DELETE,
+            &format!(
+                "/projects/{}/repository/branches/{}",
+                project_id(&repo.path),
+                project_id(branch)
+            ),
+            &headers(token),
+            &[],
+            None,
+        )?;
+        match reply.status {
+            204 | 404 => Ok(()),
+            _ => Err(unexpected(&reply)),
+        }
+    }
+
     fn merge(
         &self,
         repo: &Repo,

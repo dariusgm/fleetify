@@ -1,0 +1,2 @@
+# One repository per line, for example:
+# github:owner/project

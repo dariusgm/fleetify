@@ -291,8 +291,8 @@ Design questions the plan does not answer. Each entry names the milestone.
   runner with no git identity would fail every commit.
 - **Push.** Through the explicit clone URL with the askpass token. The
   workspace's disabled `pushurl` is left as it is.
-- **Refused for now.** `--merge` (M11), `--agent` and recipes with instructions
-  (M9), and any `--waves` other than the default single wave (M8).
+- **Refused for now.** `--merge` (M11) and any `--waves` other than the default
+  single wave (M8). Agent runs are M9 (see below).
   `--continue-if-green` is also M8.
 - **Results.** `pr_open`, `already_done`, `no_changes`, `skipped`, `verify_failed`,
   `guard_violation`, `error` (prepare failed or host error), `interrupted`.
@@ -301,6 +301,141 @@ Design questions the plan does not answer. Each entry names the milestone.
   path, a second run that finds the open PR, a failing verifier, a guard
   violation and a no-change run. Each checks the remote state, not only the
   status.
+
+## M9 — the claude-code agent
+
+- **Scope.** Only `claude-code` runs. `opencode` and `copilot` are still refused
+  with a message; they come with M10.
+- **Where it runs.** After the prepare step, before the commit check. The agent
+  works in the prepared workspace. The verifier and the guards then judge what it
+  changed, as for every other step. A failing agent ends the repo at `agent`.
+- **Task and attachments.** The instruction texts are joined into
+  `.agent/task.md`. Attachments are copied to `.agent/attachments/<file name>`.
+  `.agent/` is in `.git/info/exclude`, so it never reaches a commit.
+- **Tools.** Baseline `Read Edit Write Glob Grep`. `Bash(<cmd>:*)` only for a
+  command in both `needs.commands` and `config.toml` `[permissions] commands`.
+  Web tools need `needs.web` and `permissions.web`. A recipe need that
+  `config.toml` does not grant refuses the whole run before any repo is touched.
+- **Blanket permission.** `[permissions.agent.claude-code] unrestricted = true`
+  adds `--dangerously-skip-permissions`. It is the user's own choice.
+- **Environment.** The base allowlist plus `ANTHROPIC_API_KEY` and
+  `CLAUDE_CONFIG_DIR`. Nothing else is inherited.
+- **Timeout.** `limits.agent_timeout_min`, for the whole agent process.
+- **Asking for help.** A `blocked.md` left in the workspace ends the repo as
+  `needs_input`. Nothing is committed or pushed.
+- **Binary.** `claude` from PATH, or `FLEETIFY_CLAUDE_BIN` when set.
+- **check-agent.** A canary: the agent writes `inside.txt` in its workspace and
+  must not leave `escape.txt` one level above. A pass writes
+  `<workdir>/agents/<name>.checked`. With `policy.require_checked_agent`, a run
+  is refused until the marker exists, unless `--allow-unchecked-agent` is given.
+- **Not verified here.** The `claude` CLI is not installed on the development
+  machine. The argv (`-p`, `--allowedTools`, `--add-dir`,
+  `--dangerously-skip-permissions`) follows the documented Claude Code flags. The
+  integration test uses a fake binary. Run `fleetify check-agent claude-code`
+  once on a machine with the real CLI.
+
+## Delivery steps after the push
+
+- `[delivery] open_mr` (default `true`) and `delete_branch` (default `false`)
+  were added. The ladder is described in `PLAN.md` under "Delivery ladder".
+- `open_mr = false` ends the repo as `pushed`, a success. No change request is
+  looked up or created. A branch that already exists on the remote ends as
+  `already_done` instead of being pushed over.
+- `delete_branch` is only valid with `ci.merge = "when_green"`. Merge still needs
+  the CI gate (M11) and is refused until then, so branch deletion cannot run yet.
+- Host layer: `delete_branch` for GitHub (`DELETE git/refs/heads/<branch>`) and
+  GitLab (`DELETE repository/branches/<branch>`, with `/` encoded). 204 and 404
+  both count as deleted; anything else is an error. Tested against the fake host.
+
+## Waves, agent contract and OpenCode (M8, M9, M10)
+
+- **Waves (M8).** `--waves` takes sizes that end in `all` (default `1,all`).
+  `--canary-repos` makes the first wave exactly those repos. After each wave the
+  run asks `[y/N]` on a terminal, or continues only with `--continue-if-green`
+  and only when the whole wave succeeded. Otherwise it stops: the report marks the
+  rest as `summary.pending`, the exit code is 2 (1 if something failed), and a
+  second run resumes, because finished repos come back as `already_done`. Dry runs
+  ignore waves.
+- **Agent contract (M9).** `task.md` starts with the fixed rules block (`fleetify
+  rules v1`), then the instructions, the attachment paths and the verifier command.
+  The recipe's `tools` directory is copied to `.agent/tools/`, which is the copy the
+  agent runs. Blocked: `.agent/blocked.md`. Done: `.agent/result.md`, whose text goes
+  into the change request body under "Agent notes (written by the agent, not
+  reviewed)", redacted and limited to 4000 characters. The earlier root-level
+  `blocked.md` is gone.
+- **Agent commits (M9).** After the agent run the branch is reset (soft) to the
+  base commit, so the diff is the whole change and the orchestrator makes one commit.
+- **OpenCode adapter (M10).** The command is `opencode run <prompt>` in the
+  workspace. Permissions are passed as inline config through
+  `OPENCODE_CONFIG_CONTENT`, built from the same grants as for Claude Code.
+  Everything not granted is denied. `question`, `task`, `skill` and `doom_loop`
+  are denied, and external directories are denied unless granted. Bash is denied
+  except for the read-only git commands and granted command prefixes (`<cmd>` and
+  `<cmd> *`). `OPENCODE_DISABLE_PROJECT_CONFIG=1` stops a repository's own
+  `opencode.json` from widening the grants. Provider and model stay in the user's
+  own opencode config. The binary is `opencode`, or `FLEETIFY_OPENCODE_BIN`.
+- **Grants for a verifier script.** A recipe can grant the exact verifier command
+  (`needs.commands = ["sh .agent/tools/verify.sh"]`). Patterns are `<cmd>` and
+  `<cmd> *`, so no other `sh` script is allowed.
+
+## Merging without a CI gate: per-repository rules
+
+- Merging needs three things: the recipe asks for it (`ci.merge = "when_green"`),
+  the run is started with `--merge`, and a `[[merge_policy]]` rule in `config.toml`
+  matches the repository and sets `merge_without_ci = true`.
+- A rule matches `<host>/<path>` with the same glob as `credentials.toml`. The
+  first match decides. A repository without a matching rule is never merged
+  without CI: the result is `merge_blocked`, and the detail names the repository.
+- `delete_branch` in a rule is only a permission. The branch is deleted only when
+  the recipe also asks for it (`delivery.delete_branch`). The recipe requests and
+  the config grants, so a shared recipe cannot grant itself anything.
+- The merge passes the pushed commit as the expected head. The host refuses a
+  different head, and the result is `merge_blocked`.
+- The current config grants all personal repositories (`github.com/dariusgm/*`).
+  The rule set is meant to be narrowed per repository before corporate use.
+
+## Status against PLAN.md (revision 3)
+
+The plan is in `PLAN.md`. This list records what the code does today, milestone
+by milestone, so that gaps are visible in the repo and not only in chat.
+
+- **M0 skeleton: done.** Matrix CI (Windows and Linux), rustfmt, clippy with
+  `-D warnings`, release builds. The panic hook and exit code 4 are wired.
+- **M1 runner and events: done.** Process-tree termination is tested on Unix.
+  Windows Job Objects are not verified.
+- **M2 config, repos, credentials: done.** Redaction and the `GIT_ASKPASS` path
+  are in place.
+- **M3 recipe format: done.** `ci.wait = true` is refused until M11, so a
+  gate is never skipped silently.
+- **M4 cache, workspace, dry run: done.** Open: the NTFS hard-link question (plan
+  question 9) is not checked.
+- **M5 event consumers: mostly done.** State, events, report, status, logs and
+  Ctrl-C are present. The `--format json` output and `permissions_effective`
+  event are not built.
+- **M6 host layer: done.** GitHub and GitLab over REST, tested against a fake host.
+- **M7 no-agent pipeline: done.** Parallelism uses threads, not `tokio` as the plan
+  says. Revisit with M11, where the CI gate is planned as a separate task.
+- **M8 waves: done.** See "Waves, agent contract and OpenCode" above.
+- **M9 agent runner: partly done.** Present: task assembly from instructions and
+  attachments, allowlisted environment, timeout, `blocked.md`, `needs` checked
+  against grants, agent-made commits normalised to the base. Missing: the fixed
+  rules block and verifier command in `task.md`, the `.agent/tools` copy, the
+  inner-loop verifier, `result.md`, `wants_input()` and the idle event, the
+  `permissions_effective` event and the run-header warnings, and the output-line
+  cap noted above.
+- **M10 opencode and check-agent: partly done.** The opencode adapter is in;
+  `check-agent` runs for both agents (the canary is still simpler than the plan). Its canary is simpler than the plan: there is no decoy marker
+  and no cache per agent version. The opencode adapter is not started.
+- **M11 CI gate and merge: not started.** `src/ci.rs` is a stub.
+- **M12 Python authoring package: not started.**
+- **M13 live view: not started.** `--ui` and `--plain` are parsed but have no effect.
+- **M14 Claude Code adapter: done in code, unverified.** The CLI is not installed
+  on the development machine, so no `[ASK]` test has run.
+- **M15 Copilot CLI adapter: not started.**
+- **M16 LLM judge: not started.** `judge` is accepted by the parser and not used.
+- **M17 real trial: not started.**
+
+Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
 
 ## Example run — Python 3.15 on dariusgm/blog (private)
 

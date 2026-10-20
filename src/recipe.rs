@@ -78,6 +78,8 @@ pub struct Recipe {
     #[serde(default)]
     pub ci: Ci,
     #[serde(default)]
+    pub delivery: Delivery,
+    #[serde(default)]
     pub limits: Limits,
 }
 
@@ -266,6 +268,28 @@ fn default_ci_timeout() -> u32 {
 
 fn default_true() -> bool {
     true
+}
+
+/// What happens after the push. Each step is opt-in beyond the one before it, so a
+/// private repository can stop at the branch, at the merge request, or go further.
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Delivery {
+    /// Open a pull or merge request for the pushed branch. `false` ends the repo as `pushed`.
+    #[serde(default = "default_true")]
+    pub open_mr: bool,
+    /// Delete the source branch after its change request was merged. Needs `ci.merge = "when_green"`.
+    #[serde(default)]
+    pub delete_branch: bool,
+}
+
+impl Default for Delivery {
+    fn default() -> Self {
+        Delivery {
+            open_mr: true,
+            delete_branch: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -699,8 +723,26 @@ impl Recipe {
         if self.ci.timeout_min == 0 {
             push("ci.timeout_min", "must be greater than 0".into());
         }
-        if self.ci.merge == "when_green" && !self.ci.wait {
-            push("ci.merge", "when_green needs ci.wait = true".into());
+        // The CI gate is milestone M11. Until it exists, a set `wait` must fail loudly
+        // instead of being ignored, or a run would look gated when it is not.
+        if self.ci.wait {
+            push(
+                "ci.wait",
+                "the CI gate is not implemented yet (milestone M11); set wait = false".into(),
+            );
+        }
+        if self.ci.merge == "when_green" && !self.delivery.open_mr {
+            push(
+                "ci.merge",
+                "when_green needs delivery.open_mr = true".into(),
+            );
+        }
+        if self.delivery.delete_branch && self.ci.merge != "when_green" {
+            push(
+                "delivery.delete_branch",
+                "a branch is deleted only after its change is merged: needs ci.merge = \"when_green\""
+                    .into(),
+            );
         }
         if self.limits.agent_timeout_min == 0 {
             push("limits.agent_timeout_min", "must be greater than 0".into());
@@ -938,7 +980,7 @@ mod tests {
 
         [ci]
         provider = "auto"
-        wait = true
+        wait = false
         timeout_min = 30
         merge = "off"
 
@@ -966,6 +1008,43 @@ mod tests {
         let dir = valid_dir(name);
         let recipe = Recipe::parse(text).unwrap();
         recipe.validate(&dir, None)
+    }
+
+    #[test]
+    fn ci_wait_is_refused_until_the_ci_gate_exists() {
+        let dir = valid_dir("ci-wait");
+        let text = VALID.replace("wait = false", "wait = true");
+        let recipe = Recipe::parse(&text).unwrap();
+        let fields: Vec<String> = recipe
+            .validate(&dir, None)
+            .into_iter()
+            .map(|i| i.field)
+            .collect();
+        assert!(fields.contains(&"ci.wait".to_string()), "{fields:?}");
+    }
+
+    #[test]
+    fn delete_branch_needs_a_merge_and_merge_needs_a_change_request() {
+        let dir = valid_dir("delivery");
+        let fields = |text: String| -> Vec<String> {
+            Recipe::parse(&text)
+                .unwrap()
+                .validate(&dir, None)
+                .into_iter()
+                .map(|i| i.field)
+                .collect()
+        };
+        let delete = fields(format!("{VALID}\n[delivery]\ndelete_branch = true\n"));
+        assert!(
+            delete.contains(&"delivery.delete_branch".to_string()),
+            "{delete:?}"
+        );
+
+        let no_mr = fields(format!(
+            "{}\n[delivery]\nopen_mr = false\n",
+            VALID.replace("merge = \"off\"", "merge = \"when_green\"")
+        ));
+        assert!(no_mr.contains(&"ci.merge".to_string()), "{no_mr:?}");
     }
 
     #[test]

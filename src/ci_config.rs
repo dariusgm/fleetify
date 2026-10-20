@@ -73,11 +73,14 @@ fn github_workflows(root: &Path) -> Vec<PathBuf> {
 }
 
 fn check_file(root: &Path, path: &Path, check: fn(&Value) -> Vec<String>) -> Vec<Finding> {
+    // Forward slashes on every platform, so a report reads the same on Windows and Linux.
     let rel = path
         .strip_prefix(root)
         .unwrap_or(path)
-        .display()
-        .to_string();
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) => {
@@ -159,7 +162,7 @@ fn check_github(value: &Value) -> Vec<String> {
         return vec!["top level must be a mapping".to_string()];
     };
     let mut problems = Vec::new();
-    if !top.contains_key("on") && !top.contains_key(&Value::Bool(true)) {
+    if !top.contains_key("on") && !top.contains_key(Value::Bool(true)) {
         problems.push("missing `on` trigger".to_string());
     }
     let Some(jobs) = top.get("jobs").and_then(Value::as_mapping) else {

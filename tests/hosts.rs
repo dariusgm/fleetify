@@ -184,6 +184,39 @@ fn github_merge_is_guarded_by_the_expected_head_and_refusals_block() {
 }
 
 #[test]
+fn delete_branch_treats_a_missing_branch_as_deleted_and_surfaces_refusals() {
+    let host = serve(|req| {
+        if req.target.ends_with("/git/refs/heads/chore/gone") {
+            (404, r#"{"message":"Not Found"}"#.into())
+        } else if req.target.ends_with("/git/refs/heads/chore/x") {
+            (204, String::new())
+        } else {
+            (403, r#"{"message":"Forbidden"}"#.into())
+        }
+    });
+    let client = github(&host.base);
+    let repo = repo("github.com", HostType::Github, "o/r");
+    client.delete_branch(&repo, &token(), "chore/x").unwrap();
+    client.delete_branch(&repo, &token(), "chore/gone").unwrap();
+    assert!(client.delete_branch(&repo, &token(), "main").is_err());
+    assert!(host.recorded()[0].method == "DELETE");
+    assert_token_only_in_headers(&host.recorded()[0]);
+}
+
+#[test]
+fn gitlab_delete_branch_encodes_the_branch_name_as_one_segment() {
+    let host = serve(|_| (204, String::new()));
+    let client = gitlab(&host.base);
+    let repo = repo("gitlab.com", HostType::Gitlab, "team/project");
+    client.delete_branch(&repo, &token(), "chore/x").unwrap();
+    let target = &host.recorded()[0].target;
+    assert_eq!(
+        target, "/projects/team%2Fproject/repository/branches/chore%2Fx",
+        "{target}"
+    );
+}
+
+#[test]
 fn unexpected_status_is_an_error_not_a_guess() {
     let host = serve(|_| (500, r#"{"message":"boom"}"#.into()));
     let err = github(&host.base)

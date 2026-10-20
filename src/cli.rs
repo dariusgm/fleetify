@@ -1,15 +1,17 @@
 //! Command line interface. Every stage-1 subcommand exists. Some are still stubs
 //! until their milestone lands, and say so on stderr.
 
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::agents;
 use crate::clock::today_utc;
 use crate::logging;
 use crate::recipe::Recipe;
-use crate::report::{self, Report};
+use crate::report::{self, RepoResult, Report};
 use crate::run::{self, Refused, RunInput, RunLayout};
 use crate::state;
 use crate::workspace::remove_workspaces;
@@ -70,7 +72,8 @@ pub struct RunArgs {
     /// Continue to the next wave automatically when the current one is green
     #[arg(long)]
     pub continue_if_green: bool,
-    /// Merge after CI is green (second key; needs `ci.merge = "when_green"`)
+    /// Merge after the change request is open (second key; needs `ci.merge = "when_green"`
+    /// and a `[[merge_policy]]` rule for the repository in config.toml until the CI gate exists)
     #[arg(long)]
     pub merge: bool,
     /// Allow agents that did not pass `check-agent`
@@ -146,22 +149,6 @@ pub enum Command {
     DebugPanic,
 }
 
-impl Command {
-    fn name(&self) -> &'static str {
-        match self {
-            Command::Run(_) => "run",
-            Command::Validate { .. } => "validate",
-            Command::Schema => "schema",
-            Command::Report { .. } => "report",
-            Command::Status { .. } => "status",
-            Command::Logs { .. } => "logs",
-            Command::CheckAgent { .. } => "check-agent",
-            Command::Clean { .. } => "clean",
-            Command::DebugPanic => "debug-panic",
-        }
-    }
-}
-
 /// Resolves the working directory: `--workdir`, else `~/.fleetify`.
 pub fn resolve_workdir(explicit: Option<PathBuf>) -> Option<PathBuf> {
     explicit.or_else(|| {
@@ -214,31 +201,12 @@ pub fn run(cli: Cli) -> ExitCode {
             follow,
             lines,
         } => logs_command(&workdir, debug, &repo, run, follow, lines),
-        command => {
-            if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
-                return code;
-            }
-            tracing::info!(
-                command = command.name(),
-                "subcommand is not implemented yet"
-            );
-            eprintln!("fleetify: `{}` is not implemented yet", command.name());
-            ExitCode::from(1)
-        }
+        Command::CheckAgent { name } => check_agent_command(&workdir, debug, &name),
     }
 }
 
 /// `fleetify run`. A dry run plans; a real run executes the no-agent pipeline.
 fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
-    let refusal = if args.merge {
-        Some("--merge comes with milestone M11")
-    } else if args.continue_if_green || args.waves != "all" && args.waves != "1,all" {
-        Some("waves and --continue-if-green come with milestone M8; omit them or pass --waves all")
-    } else if args.agent.is_some() {
-        Some("--agent comes with milestone M9; this build runs recipes without instructions")
-    } else {
-        None
-    };
     let recipe = match Recipe::load(&args.recipe_dir) {
         Ok(recipe) => recipe,
         Err(err) => {
@@ -252,10 +220,6 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
     if let Err(code) = start_logging(&layout.log_path(), debug) {
         return code;
     }
-    if let Some(message) = refusal {
-        eprintln!("fleetify: {message}");
-        return ExitCode::from(3);
-    }
     // The first Ctrl-C stops running commands and marks the rest of the run interrupted.
     let _ = ctrlc::set_handler(crate::runner::request_interrupt);
     let mode = if args.dry_run {
@@ -267,6 +231,27 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
     };
     tracing::info!(run = %run_id, dry_run = args.dry_run, "run starts");
 
+    let sizes = match run::parse_waves(&args.waves) {
+        Ok(sizes) => sizes,
+        Err(message) => {
+            eprintln!("fleetify: --waves: {message}");
+            return ExitCode::from(3);
+        }
+    };
+    let wave_plan = run::WavePlan {
+        sizes,
+        canaries: args.canary_repos.clone(),
+    };
+    let continue_if_green = args.continue_if_green;
+    // Asking is only possible when a person can answer; otherwise the run stops at the wave.
+    let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let proceed = |done: &[RepoResult], remaining: usize| -> bool {
+        if continue_if_green {
+            return done.iter().all(|r| r.successful);
+        }
+        interactive && ask_to_continue(remaining)
+    };
+
     let input = RunInput {
         workdir,
         recipe_dir: &args.recipe_dir,
@@ -275,6 +260,12 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
         layout: &layout,
         only: &args.only,
         agent: args.agent.as_deref(),
+        allow_unchecked_agent: args.allow_unchecked_agent,
+        merge: args.merge,
+        waves: run::Waves {
+            plan: &wave_plan,
+            proceed: &proceed,
+        },
     };
     match run::execute(&input, mode) {
         Err(Refused(message)) => {
@@ -293,9 +284,26 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
                 OutputFormat::Json => print_json(&report),
                 OutputFormat::Table => print!("{}", report::render_table(&report, false)),
             }
+            if report.summary.pending > 0 {
+                eprintln!(
+                    "fleetify: stopped after a wave; {} repos not started. Run the same command again to continue.",
+                    report.summary.pending
+                );
+            }
             ExitCode::from(u8::try_from(report.exit_code).unwrap_or(1))
         }
     }
+}
+
+/// Asks on the terminal whether the next wave should start. Only `y` or `yes` say yes.
+fn ask_to_continue(remaining: usize) -> bool {
+    eprint!("Continue with {remaining} remaining repos? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    if std::io::stdin().read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn write_json(path: &Path, report: &Report) -> std::io::Result<()> {
@@ -485,6 +493,23 @@ fn logs_command(
         if text.len() > offset {
             print!("{}", &text[offset..]);
             offset = text.len();
+        }
+    }
+}
+
+/// `fleetify check-agent <name>`: the canary. Exit code 1 when the agent fails it.
+fn check_agent_command(workdir: &Path, debug: bool, name: &str) -> ExitCode {
+    if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
+        return code;
+    }
+    match agents::check(workdir, name) {
+        Ok(()) => {
+            println!("agent {name} passed check-agent");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("fleetify: agent {name} failed check-agent: {message}");
+            ExitCode::from(1)
         }
     }
 }

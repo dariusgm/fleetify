@@ -149,6 +149,21 @@ impl Host for GitHub {
         change_request(&parse_json(&reply)?)
     }
 
+    fn delete_branch(&self, repo: &Repo, token: &Secret, branch: &str) -> Result<(), HostError> {
+        let (owner, name) = owner_and_name(repo)?;
+        let reply: Reply = self.http.send(
+            Method::DELETE,
+            &format!("/repos/{owner}/{name}/git/refs/heads/{branch}"),
+            &headers(token),
+            &[],
+            None,
+        )?;
+        match reply.status {
+            204 | 404 => Ok(()),
+            _ => Err(unexpected(&reply)),
+        }
+    }
+
     fn merge(
         &self,
         repo: &Repo,

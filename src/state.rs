@@ -131,6 +131,8 @@ impl Recorder {
                 self.append_output(repo, &format!("result {result}: {message}"));
                 self.save(repo);
             }
+            // A wave boundary belongs to the run, not to one repo.
+            Event::WaveFinished { .. } => {}
         }
     }
 

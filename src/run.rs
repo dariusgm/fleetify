@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agents;
 use crate::clock::rfc3339_now;
 use crate::config::{Config, ConfigError, HostTable};
 use crate::credentials::{Credentials, CredentialsError, Secret};
@@ -164,6 +165,95 @@ impl From<CredentialsError> for Refused {
     }
 }
 
+/// How a run is cut into waves. `sizes` ends with `None`, which takes all repos that
+/// remain. `canaries` replace the first wave when given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WavePlan {
+    pub sizes: Vec<Option<usize>>,
+    pub canaries: Vec<String>,
+}
+
+impl Default for WavePlan {
+    fn default() -> Self {
+        WavePlan {
+            sizes: vec![Some(1), None],
+            canaries: Vec::new(),
+        }
+    }
+}
+
+/// The caller's side of a wave boundary. `proceed` gets the results of the wave that
+/// just finished and the number of repos still waiting; `true` starts the next wave.
+pub struct Waves<'a> {
+    pub plan: &'a WavePlan,
+    pub proceed: &'a dyn Fn(&[RepoResult], usize) -> bool,
+}
+
+/// Parses `--waves`, e.g. `1,all` or `1,5,all`. `all` must be the last wave.
+pub fn parse_waves(text: &str) -> Result<Vec<Option<usize>>, String> {
+    let tokens: Vec<&str> = text.split(',').map(str::trim).collect();
+    let mut sizes = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if *token == "all" {
+            if index + 1 != tokens.len() {
+                return Err("\"all\" must be the last wave".to_string());
+            }
+            sizes.push(None);
+        } else {
+            match token.parse::<usize>() {
+                Ok(size) if size > 0 => sizes.push(Some(size)),
+                _ => {
+                    return Err(format!(
+                        "wave size {token:?} must be a positive number or \"all\""
+                    ));
+                }
+            }
+        }
+    }
+    if sizes.last() != Some(&None) {
+        return Err("the last wave must be \"all\", for example \"1,all\"".to_string());
+    }
+    Ok(sizes)
+}
+
+/// Whether a repo's path is `suffix` or ends with `/suffix`. Used by `--only` and canaries.
+fn path_matches(repo: &Repo, suffix: &str) -> bool {
+    repo.path == suffix || repo.path.ends_with(&format!("/{suffix}"))
+}
+
+/// Cuts the repos into waves in list order. Canaries, when given, are the first wave.
+pub fn split_waves(repos: &[Repo], plan: &WavePlan) -> Result<Vec<Vec<Repo>>, Refused> {
+    let mut rest: Vec<Repo> = repos.to_vec();
+    let mut waves: Vec<Vec<Repo>> = Vec::new();
+    let mut sizes = plan.sizes.iter().copied();
+    if !plan.canaries.is_empty() {
+        for suffix in &plan.canaries {
+            if !repos.iter().any(|r| path_matches(r, suffix)) {
+                return Err(Refused(format!(
+                    "--canary-repos {suffix}: no repo has this path"
+                )));
+            }
+        }
+        let (canary, others): (Vec<Repo>, Vec<Repo>) = rest
+            .into_iter()
+            .partition(|r| plan.canaries.iter().any(|s| path_matches(r, s)));
+        rest = others;
+        waves.push(canary);
+        sizes.next();
+    }
+    for size in sizes {
+        if rest.is_empty() {
+            break;
+        }
+        let take = size.unwrap_or(rest.len()).min(rest.len());
+        waves.push(rest.drain(..take).collect());
+    }
+    if !rest.is_empty() {
+        waves.push(rest);
+    }
+    Ok(waves.into_iter().filter(|wave| !wave.is_empty()).collect())
+}
+
 /// What a run does per repo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -183,13 +273,21 @@ pub struct RunInput<'a> {
     pub layout: &'a RunLayout,
     pub only: &'a [String],
     pub agent: Option<&'a str>,
+    pub allow_unchecked_agent: bool,
+    pub waves: Waves<'a>,
+    /// `--merge`: merge after the change request is open, if the recipe asks for it.
+    pub merge: bool,
 }
 
 /// Everything a run needs after loading and checking the inputs.
 pub struct Loaded {
     pub credentials: Credentials,
+    pub config: Config,
     pub repos: Vec<Repo>,
     pub clients: BTreeMap<String, Box<dyn Host>>,
+    /// The agent that runs the recipe's instructions. `None` for a recipe without instructions.
+    pub agent: Option<String>,
+    pub merge: bool,
 }
 
 /// Loads config, credentials, repos and host clients, and runs the TLS self-test.
@@ -202,13 +300,57 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
         eprintln!("warning: {warning}");
     }
     crate::logging::set_redactor(Redactor::new(credentials.secrets()));
+    let agent = check_agent(input, &config)?;
+    check_merge(input.recipe, input.merge).map_err(Refused)?;
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
     let clients = host_clients(&repos)?;
     Ok(Loaded {
         credentials,
+        config,
         repos,
         clients,
+        agent,
+        merge: input.merge,
     })
+}
+
+/// `--merge` needs the recipe to ask for a merge. Whether a repository may be merged
+/// without CI is decided per repository in the pipeline, from `[[merge_policy]]`.
+pub fn check_merge(recipe: &Recipe, merge: bool) -> Result<(), String> {
+    if merge && recipe.ci.merge != "when_green" {
+        return Err("--merge needs ci.merge = \"when_green\" in the recipe".to_string());
+    }
+    Ok(())
+}
+
+/// Checks what an agent run needs before any repo is touched: the agent is supported,
+/// `config.toml` grants what the recipe needs, and the agent passed `check-agent` when
+/// the policy requires it. Returns the agent's name, or `None` without instructions.
+fn check_agent(input: &RunInput<'_>, config: &Config) -> Result<Option<String>, Refused> {
+    if input.recipe.instructions.is_empty() {
+        return Ok(None);
+    }
+    let name = input
+        .agent
+        .or(input.recipe.agent.as_deref())
+        .ok_or_else(|| Refused("instructions are set but no agent is".into()))?;
+    agents::check_supported(name).map_err(Refused)?;
+    let missing = agents::missing_permissions(input.recipe, &config.permissions);
+    if !missing.is_empty() {
+        return Err(Refused(format!(
+            "config.toml does not grant what the recipe needs: {}",
+            missing.join(", ")
+        )));
+    }
+    if config.policy.require_checked_agent
+        && !input.allow_unchecked_agent
+        && !agents::is_checked(input.workdir, name)
+    {
+        return Err(Refused(format!(
+            "agent {name} has not passed check-agent: run `fleetify check-agent {name}` or pass --allow-unchecked-agent"
+        )));
+    }
+    Ok(Some(name.to_string()))
 }
 
 /// Runs the whole run: validates the recipe, then processes every repo.
@@ -218,11 +360,6 @@ pub fn execute(input: &RunInput<'_>, mode: Mode) -> Result<Report, Refused> {
         let list: Vec<String> = issues.iter().map(ToString::to_string).collect();
         return Err(Refused(format!("recipe refused: {}", list.join("; "))));
     }
-    if !input.recipe.instructions.is_empty() {
-        return Err(Refused(
-            "this recipe has instructions for an agent; agent runs come with milestone M9".into(),
-        ));
-    }
     let loaded = load(input)?;
     execute_loaded(
         input.layout,
@@ -231,6 +368,7 @@ pub fn execute(input: &RunInput<'_>, mode: Mode) -> Result<Report, Refused> {
         input.workdir,
         loaded,
         mode,
+        &input.waves,
     )
 }
 
@@ -243,7 +381,13 @@ pub fn execute_loaded(
     workdir: &Path,
     loaded: Loaded,
     mode: Mode,
+    waves: &Waves<'_>,
 ) -> Result<Report, Refused> {
+    // A dry run has no waves: it plans every repo once.
+    let plan = match mode {
+        Mode::DryRun => vec![loaded.repos.clone()],
+        Mode::Pipeline { .. } => split_waves(&loaded.repos, waves.plan)?,
+    };
     fs::create_dir_all(&layout.root).map_err(|err| Refused(err.to_string()))?;
     let started = rfc3339_now();
     let mut meta = RunMeta {
@@ -266,8 +410,12 @@ pub fn execute_loaded(
         layout,
         workdir,
         recipe,
+        recipe_dir,
+        merge: loaded.merge,
         tools: &tools,
         runner: &runner,
+        config: &loaded.config,
+        agent: loaded.agent.as_deref(),
         credentials: &loaded.credentials,
         clients: &loaded.clients,
     };
@@ -276,7 +424,26 @@ pub fn execute_loaded(
         Mode::DryRun => 1,
         Mode::Pipeline { parallel } => parallel.max(1),
     };
-    let results = process_all(&ctx, &loaded.repos, mode, parallel);
+    let mut results = Vec::new();
+    let mut pending = 0;
+    let waves_total = plan.len();
+    for (index, wave) in plan.iter().enumerate() {
+        let done = process_all(&ctx, wave, mode, parallel);
+        let remaining: usize = plan[index + 1..].iter().map(Vec::len).sum();
+        let successful = done.iter().filter(|r| r.successful).count();
+        ctx.runner.bus().emit(Event::WaveFinished {
+            wave: index + 1,
+            total: waves_total,
+            successful,
+            remaining,
+        });
+        let next = remaining > 0 && !interrupt_requested() && (waves.proceed)(&done, remaining);
+        results.extend(done);
+        if remaining > 0 && !next {
+            pending = remaining;
+            break;
+        }
+    }
 
     drop(runner);
     drop(bus);
@@ -284,7 +451,7 @@ pub fn execute_loaded(
 
     meta.finished = rfc3339_now();
     write_meta(layout, &meta).map_err(|err| Refused(err.to_string()))?;
-    let report = report::build(
+    let mut report = report::build(
         &meta.run_id,
         &meta.recipe,
         &meta.started,
@@ -292,6 +459,15 @@ pub fn execute_loaded(
         results,
         &redactor,
     );
+    if pending > 0 {
+        // Stopped on purpose: 2 when everything done so far succeeded, 1 otherwise.
+        report.summary.pending = pending;
+        report.exit_code = if report.summary.successful == report.summary.total {
+            2
+        } else {
+            1
+        };
+    }
     let bytes = serde_json::to_vec_pretty(&report).map_err(|err| Refused(err.to_string()))?;
     write_atomic(&layout.report_path(), &bytes).map_err(|err| Refused(err.to_string()))?;
     Ok(report)
@@ -302,9 +478,16 @@ pub struct Ctx<'a> {
     pub layout: &'a RunLayout,
     pub workdir: &'a Path,
     pub recipe: &'a Recipe,
+    /// Where the recipe came from: instruction files and attachments are read from here.
+    pub recipe_dir: &'a Path,
+    /// Whether this run may merge change requests (`--merge`, already checked at load).
+    pub merge: bool,
     /// Trusted copy of the recipe's `tools` directory.
     pub tools: &'a Path,
     pub runner: &'a Runner,
+    pub config: &'a Config,
+    /// The agent for the recipe's instructions. `None` when there are none.
+    pub agent: Option<&'a str>,
     pub credentials: &'a Credentials,
     pub clients: &'a BTreeMap<String, Box<dyn Host>>,
 }
@@ -361,10 +544,8 @@ fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Rep
     if only.is_empty() {
         return Ok(repos);
     }
-    let selected =
-        |r: &Repo, suffix: &str| r.path == suffix || r.path.ends_with(&format!("/{suffix}"));
     for suffix in only {
-        if !repos.iter().any(|r| selected(r, suffix)) {
+        if !repos.iter().any(|r| path_matches(r, suffix)) {
             return Err(Refused(format!(
                 "--only {suffix}: no repo in {} has this path",
                 path.display()
@@ -373,7 +554,7 @@ fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Rep
     }
     Ok(repos
         .into_iter()
-        .filter(|r| only.iter().any(|s| selected(r, s)))
+        .filter(|r| only.iter().any(|s| path_matches(r, s)))
         .collect())
 }
 
@@ -570,6 +751,31 @@ fn dry_run_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     result.rule = Some(pattern);
     phase("finished");
     result
+}
+
+#[cfg(test)]
+mod merge_gate_tests {
+    use super::*;
+
+    fn recipe(ci: &str) -> Recipe {
+        Recipe::parse(&format!(
+            "schema = 1\nname = \"x\"\nbranch = \"b\"\npr_title = \"t\"\n\n[ci]\n{ci}\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn merge_needs_a_recipe_that_asks_for_it() {
+        let asks = recipe("wait = false\nmerge = \"when_green\"");
+        let plain = recipe("wait = false\nmerge = \"off\"");
+        assert!(check_merge(&asks, false).is_ok());
+        assert!(check_merge(&asks, true).is_ok());
+        assert!(
+            check_merge(&plain, true)
+                .unwrap_err()
+                .contains("when_green")
+        );
+    }
 }
 
 #[cfg(test)]

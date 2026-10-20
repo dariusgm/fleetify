@@ -6,10 +6,11 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::agents;
 use crate::events::{Event, Outcome};
 use crate::git::{GitContext, git};
 use crate::guards;
-use crate::hosts::ChangeRequest;
+use crate::hosts::{ChangeRequest, MergeOutcome};
 use crate::report::{Failure, RepoResult};
 use crate::repos::Repo;
 use crate::run::{Ctx, artifacts, error_result, git_context, git_failure, probe};
@@ -21,6 +22,8 @@ const DEFAULT_PREPARE_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_VERIFY_TIMEOUT: Duration = Duration::from_secs(300);
 /// Output lines kept in a failure block.
 const MAX_TAIL: usize = 40;
+/// Characters of the agent's `result.md` that go into the change request body.
+const MAX_AGENT_NOTE_CHARS: usize = 4000;
 
 /// Runs the whole pipeline for one repo.
 pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
@@ -74,15 +77,26 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         );
     };
     // Step 3: a change request for the branch already exists, so the repo is done.
-    match client.find_change_request(repo, token, &branch) {
+    // Without a change request there is nothing to look up; the branch check below covers it.
+    let found = if ctx.recipe.delivery.open_mr {
+        client.find_change_request(repo, token, &branch)
+    } else {
+        Ok(None)
+    };
+    match found {
         Ok(Some(change)) => {
             let mut result = RepoResult::new(
                 &key,
                 "already_done",
                 "an open change request for the branch exists",
             );
-            result.change_request = Some(change.url);
+            result.change_request = Some(change.url.clone());
             result.rule = Some(pattern);
+            if ctx.merge {
+                // The change exists already; a run with --merge still merges it.
+                let expected = change.head_sha.clone();
+                return merge_change(ctx, repo, token, &branch, &change, &expected, result);
+            }
             phase("finished");
             return result;
         }
@@ -98,6 +112,17 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         None,
         &["ls-remote", "--heads", &repo.clone_url, &branch_ref],
     ) {
+        Ok(listing) if !listing.trim().is_empty() && !ctx.recipe.delivery.open_mr => {
+            // Push-only: the branch is already on the remote, so an earlier run did this.
+            let mut result = RepoResult::new(
+                &key,
+                "already_done",
+                "the branch already exists on the remote",
+            );
+            result.rule = Some(pattern);
+            phase("finished");
+            return result;
+        }
         Ok(listing) if !listing.trim().is_empty() => {
             phase("opening_pr");
             return open_change_request(
@@ -109,6 +134,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
                 None,
                 pattern,
                 "resumed: the branch existed without a change request",
+                None,
             );
         }
         Ok(_) => {}
@@ -192,7 +218,48 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         }
     }
 
-    // Step 6 (no agent): is there anything to commit?
+    // Step 5b: the agent, when the recipe has instructions. It edits the prepared
+    // workspace; the verifier and the guards below judge what it changed.
+    let mut agent_note: Option<String> = None;
+    if let Some(name) = ctx.agent {
+        phase("agent");
+        match run_agent(ctx, repo, name, &workspace) {
+            Err(message) => {
+                return error_result(ctx.layout, repo, message, Some(pattern), Vec::new());
+            }
+            Ok(result) if !result.is_success() => {
+                return step_failure(ctx, repo, "agent", &result, pattern, Vec::new());
+            }
+            Ok(_) => {}
+        }
+        // The agent may have committed by itself. Move the branch back to the base so
+        // that the diff below is the whole change and the orchestrator makes the one commit.
+        if let Err(err) = git(
+            &local,
+            Some(&workspace),
+            &["reset", "--soft", &state.base_sha],
+        ) {
+            return git_failure(ctx.layout, repo, err, Some(pattern));
+        }
+        if let Some(lines) = blocked_lines(&workspace) {
+            let mut blocked = error_result(
+                ctx.layout,
+                repo,
+                "the agent reported that it is blocked".to_string(),
+                Some(pattern),
+                lines,
+            );
+            blocked.result = "needs_input".to_string();
+            if let Some(block) = blocked.failure.as_mut() {
+                block.class = "needs_input".to_string();
+            }
+            phase("finished");
+            return blocked;
+        }
+        agent_note = read_agent_note(ctx, &workspace);
+    }
+
+    // Step 6: is there anything to commit?
     if let Err(err) = git(&local, Some(&workspace), &["add", "-A"]) {
         return git_failure(ctx.layout, repo, err, Some(pattern));
     }
@@ -335,6 +402,18 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         Err(err) => return git_failure(ctx.layout, repo, err, Some(pattern)),
     };
 
+    // Push-only: the branch is pushed and nothing else happens.
+    if !ctx.recipe.delivery.open_mr {
+        let mut result = RepoResult::new(
+            &key,
+            "pushed",
+            &format!("pushed {branch} at {}", short(&pushed_sha)),
+        );
+        result.rule = Some(pattern);
+        phase("finished");
+        return result;
+    }
+
     // Step 9b: the change request.
     phase("opening_pr");
     let mut result = open_change_request(
@@ -346,12 +425,106 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         Some(&pushed_sha),
         pattern,
         &format!("pushed {branch} at {}", short(&pushed_sha)),
+        agent_note.as_deref(),
     );
     if result.successful {
         result.result = "pr_open".to_string();
         result.successful = crate::report::is_successful("pr_open");
+        if ctx.merge {
+            let client = ctx.clients.get(&repo.host).expect("client checked above");
+            match client.find_change_request(repo, token, &branch) {
+                Ok(Some(change)) => {
+                    result = merge_change(ctx, repo, token, &branch, &change, &pushed_sha, result);
+                }
+                Ok(None) => {
+                    result.result = "merge_blocked".to_string();
+                    result.successful = false;
+                    result.detail = "no open change request to merge".to_string();
+                }
+                Err(err) => {
+                    return error_result(
+                        ctx.layout,
+                        repo,
+                        err.to_string(),
+                        result.rule.clone(),
+                        Vec::new(),
+                    );
+                }
+            }
+        }
     }
     phase("finished");
+    result
+}
+
+/// Merges an open change request, for a run started with `--merge`. The merge rule for
+/// the repository decides whether that is allowed, and the host refuses unless the head is
+/// still `expected`, the commit fleetify pushed. A successful merge can delete the
+/// source branch when the recipe asks for it.
+#[allow(clippy::too_many_arguments)]
+fn merge_change(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    token: &crate::credentials::Secret,
+    branch: &str,
+    change: &ChangeRequest,
+    expected: &str,
+    mut result: RepoResult,
+) -> RepoResult {
+    let Some(client) = ctx.clients.get(&repo.host) else {
+        return error_result(
+            ctx.layout,
+            repo,
+            format!("no API client for {}", repo.host),
+            result.rule.clone(),
+            Vec::new(),
+        );
+    };
+    ctx.runner.bus().emit(Event::RepoPhase {
+        repo: repo.key(),
+        phase: "merging".to_string(),
+    });
+    // Without a CI gate, only a merge rule for this repository allows the merge.
+    let rule = ctx.config.merge_rule(&repo.key());
+    if !rule.is_some_and(|rule| rule.merge_without_ci) {
+        result.result = "merge_blocked".to_string();
+        result.successful = false;
+        result.detail = format!(
+            "no [[merge_policy]] rule in config.toml allows merging {} without a CI gate",
+            repo.key()
+        );
+        return result;
+    }
+    match client.merge(repo, token, change, expected) {
+        Ok(MergeOutcome::Merged) => {
+            result.result = "merged".to_string();
+            result.successful = crate::report::is_successful("merged");
+            result.detail = format!("merged {} at {}", change.url, short(expected));
+        }
+        Ok(MergeOutcome::Blocked(reason)) => {
+            result.result = "merge_blocked".to_string();
+            result.successful = false;
+            result.detail = reason;
+            return result;
+        }
+        Err(err) => {
+            return error_result(
+                ctx.layout,
+                repo,
+                err.to_string(),
+                result.rule.clone(),
+                Vec::new(),
+            );
+        }
+    }
+    if ctx.recipe.delivery.delete_branch && rule.is_some_and(|rule| rule.delete_branch) {
+        match client.delete_branch(repo, token, branch) {
+            Ok(()) => result.detail.push_str("; source branch deleted"),
+            Err(err) => result
+                .detail
+                .push_str(&format!("; source branch not deleted: {err}")),
+        }
+    }
     result
 }
 
@@ -367,6 +540,7 @@ fn open_change_request(
     pushed: Option<&str>,
     pattern: String,
     detail: &str,
+    agent_note: Option<&str>,
 ) -> RepoResult {
     let key = repo.key();
     let Some(client) = ctx.clients.get(&repo.host) else {
@@ -379,7 +553,7 @@ fn open_change_request(
         );
     };
     let branch = &ctx.recipe.branch;
-    let body = change_body(ctx, base_sha, default_branch);
+    let body = change_body(ctx, base_sha, default_branch, agent_note);
     match client.create_change_request(
         repo,
         token,
@@ -410,8 +584,13 @@ fn open_change_request(
 }
 
 /// The change request body: what the run did, not what the agent or the host wants.
-fn change_body(ctx: &Ctx<'_>, base_sha: &str, default_branch: &str) -> String {
-    format!(
+fn change_body(
+    ctx: &Ctx<'_>,
+    base_sha: &str,
+    default_branch: &str,
+    agent_note: Option<&str>,
+) -> String {
+    let mut body = format!(
         "Automated change by fleetify.\n\n\
          - Recipe: {}\n\
          - Run: {}\n\
@@ -427,7 +606,26 @@ fn change_body(ctx: &Ctx<'_>, base_sha: &str, default_branch: &str) -> String {
         } else {
             "not configured"
         },
-    )
+    );
+    if let Some(note) = agent_note {
+        // The agent wrote this, nobody reviewed it: say so, and quote it.
+        body.push_str("\n\n### Agent notes (written by the agent, not reviewed)\n\n");
+        for line in note.lines() {
+            body.push_str(&format!("> {line}\n"));
+        }
+    }
+    body
+}
+
+/// The agent's own report from `.agent/result.md`, redacted and length-limited.
+fn read_agent_note(ctx: &Ctx<'_>, workspace: &Path) -> Option<String> {
+    let text = fs::read_to_string(workspace.join(agents::RESULT_FILE)).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let limited: String = text.chars().take(MAX_AGENT_NOTE_CHARS).collect();
+    Some(ctx.runner.redactor().redact(&limited))
 }
 
 /// The CI configuration pre-check. A broken file stops the repo before the build:
@@ -484,6 +682,31 @@ fn run_step(
     request.cwd = Some(workspace.to_path_buf());
     request.timeout = Some(timeout);
     Ok(ctx.runner.run(request))
+}
+
+/// Writes the task and attachments into `.agent/`, then runs the agent in the workspace.
+fn run_agent(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    name: &str,
+    workspace: &Path,
+) -> Result<CommandResult, String> {
+    agents::write_task(workspace, ctx.recipe_dir, ctx.recipe)
+        .map_err(|err| format!("cannot write the agent task: {err}"))?;
+    let invocation = agents::invocation(name, ctx.recipe, &ctx.config.permissions)?;
+    let mut request = RunRequest::new(repo.key(), invocation.argv);
+    request.cwd = Some(workspace.to_path_buf());
+    request.timeout = Some(Duration::from_secs(
+        u64::from(ctx.recipe.limits.agent_timeout_min) * 60,
+    ));
+    request.env = invocation.env;
+    Ok(ctx.runner.run(request))
+}
+
+/// The lines of `blocked.md` when the agent left one in the workspace.
+fn blocked_lines(workspace: &Path) -> Option<Vec<String>> {
+    let text = fs::read_to_string(workspace.join(agents::BLOCKED_FILE)).ok()?;
+    Some(text.lines().take(MAX_TAIL).map(str::to_string).collect())
 }
 
 fn step_failure(

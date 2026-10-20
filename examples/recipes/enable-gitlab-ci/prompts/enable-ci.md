@@ -5,5 +5,5 @@ Enable a GitLab CI pipeline for this repository.
 - Adapt the reference pipeline in the attachments to those commands.
 - Write `.gitlab-ci.yml` in the repository root. Change nothing else.
 - Do not add suppression comments, skip markers or disabled checks.
-- If you cannot determine the build or test commands, write `blocked.md`
+- If you cannot determine the build or test commands, write `.agent/blocked.md`
   explaining what is missing instead of guessing.

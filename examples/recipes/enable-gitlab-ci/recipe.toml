@@ -30,7 +30,7 @@ max_lines_changed = 2000
 
 [ci]
 provider = "auto"
-wait = true
+wait = false
 timeout_min = 30
 merge = "off"
 

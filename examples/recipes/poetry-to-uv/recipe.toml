@@ -1,0 +1,53 @@
+# Moves a Poetry project to uv. The agent rewrites pyproject.toml and the Dockerfile,
+# runs `uv lock`, and the verifier checks the lock, a minimum-version lower bound
+# (tools/check_lower_bounds.py) and the build. Merging needs --merge, and a
+# [[merge_policy]] rule for the repository in config.toml, because there is no CI gate yet.
+schema = 1
+name = "poetry-to-uv"
+branch = "chore/poetry-to-uv"
+pr_title = "chore: move from Poetry to uv"
+commit_message = "chore: move from Poetry to uv"
+agent = "opencode"
+tools = "tools"
+
+[applies_to]
+host_type = ["github"]
+has_file = ["pyproject.toml", "poetry.lock", "Dockerfile"]
+
+[prepare]
+argv = ["sh", "{tools}/prepare.sh", "{repo}"]
+timeout_s = 120
+
+[[instructions]]
+file = "prompts/task.md"
+
+[needs]
+commands = ["uv", "sh .agent/tools/verify.sh"]
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 1800
+tail_lines = 60
+error_patterns = ['^error', '^E ', 'Error', 'Traceback']
+# The untouched base is still a Poetry project, so the uv verifier fails on it by design.
+baseline = false
+
+[guards]
+# Only the project files and the Dockerfile may change. Anything else is a violation.
+allow_paths = ["pyproject.toml", "uv.lock", "poetry.lock", "Dockerfile"]
+max_files_changed = 10
+max_lines_changed = 2000
+deny_added_patterns = ["NOSONAR", '#\s*noqa']
+
+[ci]
+provider = "auto"
+wait = false
+merge = "when_green"
+
+[delivery]
+open_mr = true
+delete_branch = true
+
+[limits]
+agent_timeout_min = 180
+idle_warn_min = 15
