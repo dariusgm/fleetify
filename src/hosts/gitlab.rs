@@ -6,8 +6,8 @@ use reqwest::Method;
 use serde_json::{Value, json};
 
 use super::{
-    Access, ChangeRequest, CrState, Host, HostError, Http, MergeOutcome, Reply, access_from_status,
-    parse_json, refusal_reason, unexpected,
+    Access, ChangeRequest, CiItem, CrState, Host, HostError, Http, MergeOutcome, Reply,
+    access_from_status, parse_json, refusal_reason, unexpected,
 };
 use crate::credentials::Secret;
 use crate::repos::Repo;
@@ -138,6 +138,17 @@ impl Host for GitLab {
             return Err(unexpected(&reply));
         }
         change_request(&parse_json(&reply)?)
+    }
+
+    fn commit_ci(
+        &self,
+        _repo: &Repo,
+        _token: &Secret,
+        _sha: &str,
+    ) -> Result<Vec<CiItem>, HostError> {
+        Err(HostError::Unsupported(
+            "commit CI status for GitLab (M11, GitLab CI is skipped for now)".into(),
+        ))
     }
 
     fn delete_branch(&self, repo: &Repo, token: &Secret, branch: &str) -> Result<(), HostError> {

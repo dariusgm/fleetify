@@ -6,8 +6,8 @@ use reqwest::Method;
 use serde_json::{Value, json};
 
 use super::{
-    Access, ChangeRequest, CrState, Host, HostError, Http, MergeOutcome, Reply, access_from_status,
-    parse_json, refusal_reason, unexpected,
+    Access, ChangeRequest, CiItem, CiState, CrState, Host, HostError, Http, MergeOutcome, Reply,
+    access_from_status, parse_json, refusal_reason, unexpected,
 };
 use crate::credentials::Secret;
 use crate::repos::Repo;
@@ -35,6 +35,28 @@ fn headers(token: &Secret) -> Vec<(&'static str, String)> {
         ("Accept", "application/vnd.github+json".to_string()),
         ("X-GitHub-Api-Version", "2022-11-28".to_string()),
     ]
+}
+
+/// A check run's state. Completed with success, neutral or skipped counts as success;
+/// anything else that completed is a failure; anything not completed is pending.
+fn check_run_state(run: &Value) -> CiState {
+    if run["status"].as_str() != Some("completed") {
+        return CiState::Pending;
+    }
+    match run["conclusion"].as_str() {
+        Some("success" | "neutral" | "skipped") => CiState::Success,
+        _ => CiState::Failure,
+    }
+}
+
+/// Refuses an answer that names another commit than the one asked for.
+fn check_commit(answered: Option<&str>, expected: &str) -> Result<(), HostError> {
+    match answered {
+        Some(sha) if sha == expected => Ok(()),
+        other => Err(HostError::Parse(format!(
+            "asked for commit {expected}, the host answered for {other:?}"
+        ))),
+    }
 }
 
 fn change_request(value: &Value) -> Result<ChangeRequest, HostError> {
@@ -147,6 +169,62 @@ impl Host for GitHub {
             return Err(unexpected(&reply));
         }
         change_request(&parse_json(&reply)?)
+    }
+
+    fn commit_ci(&self, repo: &Repo, token: &Secret, sha: &str) -> Result<Vec<CiItem>, HostError> {
+        let (owner, name) = owner_and_name(repo)?;
+        let mut items = Vec::new();
+
+        // Check runs (GitHub Actions and apps). Every item must name this exact commit.
+        let reply = self.http.send(
+            Method::GET,
+            &format!("/repos/{owner}/{name}/commits/{sha}/check-runs"),
+            &headers(token),
+            &[("per_page", "100")],
+            None,
+        )?;
+        if reply.status != 200 {
+            return Err(unexpected(&reply));
+        }
+        let runs = parse_json(&reply)?;
+        for run in runs["check_runs"]
+            .as_array()
+            .ok_or_else(|| HostError::Parse("check_runs is not an array".into()))?
+        {
+            check_commit(run["head_sha"].as_str(), sha)?;
+            items.push(CiItem {
+                name: run["name"].as_str().unwrap_or_default().to_string(),
+                state: check_run_state(run),
+            });
+        }
+
+        // Commit statuses (older CI integrations). Same rule: the commit must match.
+        let reply = self.http.send(
+            Method::GET,
+            &format!("/repos/{owner}/{name}/commits/{sha}/status"),
+            &headers(token),
+            &[],
+            None,
+        )?;
+        if reply.status != 200 {
+            return Err(unexpected(&reply));
+        }
+        let combined = parse_json(&reply)?;
+        check_commit(combined["sha"].as_str(), sha)?;
+        for status in combined["statuses"]
+            .as_array()
+            .ok_or_else(|| HostError::Parse("statuses is not an array".into()))?
+        {
+            items.push(CiItem {
+                name: status["context"].as_str().unwrap_or_default().to_string(),
+                state: match status["state"].as_str() {
+                    Some("success") => CiState::Success,
+                    Some("pending") => CiState::Pending,
+                    _ => CiState::Failure,
+                },
+            });
+        }
+        Ok(items)
     }
 
     fn delete_branch(&self, repo: &Repo, token: &Secret, branch: &str) -> Result<(), HostError> {

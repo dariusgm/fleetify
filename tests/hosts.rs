@@ -4,7 +4,9 @@ mod support;
 
 use fleetify::config::HostType;
 use fleetify::credentials::Secret;
-use fleetify::hosts::{Access, CrState, Host, HostError, MergeOutcome, client_for};
+use fleetify::hosts::{
+    Access, CiItem, CiState, CrState, Host, HostError, MergeOutcome, client_for,
+};
 use fleetify::repos::Repo;
 use support::{Recorded, serve};
 
@@ -372,4 +374,83 @@ fn github_merge_refused_by_the_host_is_a_block_with_its_reason() {
         MergeOutcome::Blocked(reason) => assert!(reason.contains("not mergeable"), "{reason}"),
         other => panic!("expected a block, got {other:?}"),
     }
+}
+
+const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+const OTHER_SHA: &str = "fedcba9876543210fedcba9876543210fedcba98";
+
+#[test]
+fn commit_ci_reads_check_runs_and_statuses_of_the_asked_commit() {
+    let host = serve(|req| {
+        if req.target.ends_with("/check-runs?per_page=100") {
+            (
+                200,
+                format!(
+                    r#"{{"check_runs":[
+                        {{"name":"lint","head_sha":"{SHA}","status":"completed","conclusion":"success"}},
+                        {{"name":"test","head_sha":"{SHA}","status":"in_progress","conclusion":null}}
+                    ]}}"#
+                ),
+            )
+        } else if req.target.ends_with("/status") {
+            (
+                200,
+                format!(
+                    r#"{{"sha":"{SHA}","statuses":[{{"context":"jenkins","state":"failure"}}]}}"#
+                ),
+            )
+        } else {
+            (404, "{}".into())
+        }
+    });
+    let items = github(&host.base)
+        .commit_ci(&repo("github.com", HostType::Github, "o/r"), &token(), SHA)
+        .unwrap();
+    assert_eq!(
+        items,
+        vec![
+            CiItem {
+                name: "lint".into(),
+                state: CiState::Success
+            },
+            CiItem {
+                name: "test".into(),
+                state: CiState::Pending
+            },
+            CiItem {
+                name: "jenkins".into(),
+                state: CiState::Failure
+            },
+        ]
+    );
+}
+
+#[test]
+fn commit_ci_refuses_items_of_another_commit() {
+    // A check run for a later push must never decide the verdict for this commit.
+    let host = serve(|req| {
+        if req.target.ends_with("/check-runs?per_page=100") {
+            (
+                200,
+                format!(
+                    r#"{{"check_runs":[{{"name":"test","head_sha":"{OTHER_SHA}","status":"completed","conclusion":"success"}}]}}"#
+                ),
+            )
+        } else {
+            (200, format!(r#"{{"sha":"{SHA}","statuses":[]}}"#))
+        }
+    });
+    let err = github(&host.base)
+        .commit_ci(&repo("github.com", HostType::Github, "o/r"), &token(), SHA)
+        .unwrap_err();
+    assert!(matches!(err, HostError::Parse(_)), "{err:?}");
+}
+
+#[test]
+fn commit_ci_is_not_supported_for_gitlab_yet() {
+    let host = serve(|_| (200, "{}".into()));
+    let err = gitlab(&host.base)
+        .commit_ci(&repo("github.com", HostType::Github, "o/r"), &token(), SHA)
+        .unwrap_err();
+    assert!(matches!(err, HostError::Unsupported(_)), "{err:?}");
 }
