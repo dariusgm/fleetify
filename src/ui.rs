@@ -75,6 +75,34 @@ pub fn print_plain(events: Receiver<Event>) {
     }
 }
 
+/// How a run shows its progress while it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// Nothing while running (tests, library use).
+    Quiet,
+    /// One plain line per event on stderr; stdout stays for the final table.
+    Plain,
+    /// The live terminal view with this many output lines per repo.
+    Live { tail: usize },
+}
+
+/// Starts the view on the event stream. Returns the thread to join once the stream ended.
+pub fn spawn_view(events: Receiver<Event>, view: View) -> Option<std::thread::JoinHandle<()>> {
+    match view {
+        View::Quiet => None,
+        View::Plain => Some(std::thread::spawn(move || {
+            for event in events {
+                eprintln!("{}", plain_line(&event));
+            }
+        })),
+        View::Live { tail } => Some(std::thread::spawn(move || {
+            if let Err(err) = crate::live::run(events, tail) {
+                eprintln!("fleetify: live view stopped: {err}");
+            }
+        })),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

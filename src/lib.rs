@@ -12,6 +12,7 @@ pub mod events;
 pub mod git;
 pub mod guards;
 pub mod hosts;
+pub mod live;
 pub mod logging;
 pub mod pipeline;
 pub mod recipe;
