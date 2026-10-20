@@ -160,3 +160,64 @@ fn dry_run_with_a_bad_repos_file_is_refused_before_any_work() {
     assert!(stderr.contains("line 1"), "{stderr}");
     let _ = fs::remove_dir_all(&workdir);
 }
+
+fn agent_recipe(workdir: &Path) -> PathBuf {
+    let recipe = workdir.join("recipe");
+    fs::create_dir_all(&recipe).unwrap();
+    fs::write(
+        recipe.join("recipe.toml"),
+        "schema = 1\nname = \"x\"\nbranch = \"b\"\npr_title = \"t\"\nagent = \"claude-code\"\n\n\
+         [[instructions]]\ntext = \"do it\"\n\n[needs]\ncommands = [\"cargo\"]\n",
+    )
+    .unwrap();
+    recipe
+}
+
+#[test]
+fn a_real_run_needing_an_ungranted_command_is_refused_before_it_starts() {
+    let workdir = fixture("ungranted");
+    let recipe = agent_recipe(&workdir);
+    let repos = workdir.join("repos.txt");
+    fs::write(&repos, "github.com/o/r\n").unwrap();
+    let output = fleetify(&workdir)
+        .args(["run"])
+        .arg(&recipe)
+        .arg(&repos)
+        .args(["--run", "ungranted"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert!(stderr.contains("command cargo"), "{stderr}");
+    assert!(
+        !workdir.join("runs/ungranted/github.com").exists(),
+        "no repo was touched"
+    );
+    let _ = fs::remove_dir_all(&workdir);
+}
+
+#[test]
+fn a_dry_run_reports_the_same_gap_as_a_warning_and_continues() {
+    let workdir = fixture("ungranted-dry");
+    let recipe = agent_recipe(&workdir);
+    let repos = workdir.join("repos.txt");
+    fs::write(&repos, "github.com/o/r\n").unwrap();
+    let output = fleetify(&workdir)
+        .args(["run"])
+        .arg(&recipe)
+        .arg(&repos)
+        .args(["--dry-run", "--run", "ungranted-dry"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("agent claude-code: commands [none]"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("dry run: a real run would refuse"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("refused"), "{stderr}");
+    let _ = fs::remove_dir_all(&workdir);
+}

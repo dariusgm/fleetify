@@ -464,18 +464,32 @@ by milestone, so that gaps are visible in the repo and not only in chat.
 - **M7 no-agent pipeline: done.** Parallelism uses threads, not `tokio` as the plan
   says. Revisit with M11, where the CI gate is planned as a separate task.
 - **M8 waves: done.** See "Waves, agent contract and OpenCode" above.
-- **M9 agent runner: mostly done.** Present: task assembly with the rules block,
-  instructions, attachments and verifier command, the `.agent/tools` copy, allowlisted
-  environment, timeout (result `agent_timeout`), `blocked.md` and `result.md`, `needs`
-  checked against grants, agent-made commits normalised to the base, the
-  `permissions_effective` event (one line per agent start in the plain output), the
-  `command_idle` event (once per quiet stretch, after `limits.idle_warn_min`), the
-  stop on a question the agent waits on (`wants_input`, see "Agent questions" below),
-  and a warning line in the run header when an agent is `unrestricted`. Output lines are capped per command
-  (`lines_dropped`). Fake-agent tests cover the edit, self-commit, blocked, crash,
-  forbidden-change and question scenarios; the hang is covered by the runner's
-  timeout test. Missing: the inner-loop verifier beyond the prompt rule in
-  `task.md`, and detection of questions that do not end in a `[y/n]` marker.
+- **M9 agent runner: done.** Acceptance points and where they are covered:
+  - Task assembly with the rules block, instructions, attachments and verifier line
+    (`tests/agent.rs`).
+  - Allowlisted environment for claude-code (`agents` unit test) and for opencode
+    (`OPENCODE_CONFIG_CONTENT`, unit test).
+  - A recipe whose `needs` exceed `config.toml` is refused before any repo is touched,
+    with exit 3 and the entry named (`tests/cli_reports.rs`). A dry run shows the same
+    gap as a warning and continues.
+  - Edit, self-commit, blocked (`needs_input`), crash, forbidden change
+    (`guard_violation`) and a yes/no question (`needs_input`) (`tests/agent.rs`).
+  - A hanging command is terminated with its process tree on Unix (`tests/runner.rs`).
+    Not verified on Windows.
+  - `permissions_effective` and `command_idle` events; `agent_timeout` result.
+  - Run header warning when an agent is `unrestricted`; output lines are capped per
+    command (`lines_dropped`).
+- **Decisions that close the open M9 points.**
+  - *Inner-loop verifier.* The agent runs the verifier command from `task.md` against
+    its copy under `.agent/tools/`. That is the inner loop. The outer gate runs the
+    trusted original after the agent exits, so a tampered copy cannot pass the gate.
+    No hard enforcement of "run it after each change" is possible; the rules block asks
+    for it.
+  - *Questions without a marker.* Only the markers in "Agent questions" stop a run. A
+    heuristic on silence or on a trailing `?` would stop agents that are only writing
+    prose, so it is not added.
+  - *Writes outside the workspace.* Confinement is the agent CLI's job, checked by
+    `check-agent` (canary). fleetify does not watch the file system during a run.
 - **M10 opencode and check-agent: mostly done.** The opencode adapter is in, with
   the grants as inline permission config. `check-agent` runs for both agents (the
   canary is simpler than the plan: no decoy marker, no cache per agent version). The
