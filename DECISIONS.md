@@ -526,12 +526,10 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   it, the verifier passed, and PR #1 was opened (only `hello.py` changed, no token in
   any run file). Open: the level-5 part beyond that smoke test (lint fix with the full
   gate chain), and the repo can be deleted once no longer needed.
-- **M14 Claude Code adapter: canary verified, `[ASK]` test open (previous state).** Claude Code 2.1.x
-  is installed. `check-agent claude-code` first failed: writes to the parent directory
-  were allowed. Fixed by `Edit` path rules in the tool list; the canary now passes on
-  repeated real runs. Open: the `[ASK]` level-5 test on a throwaway GitHub repo. Also
-  `require_checked_agent` is true by default: an agent that has not passed `check-agent`
-  is refused unless the run passes `--allow-unchecked-agent`.
+- **M14 Claude Code adapter: the canary passes on repeated real runs.** The file-edit
+  confinement is in place (`Edit` path rules), and `require_checked_agent` is true by
+  default: an agent that has not passed `check-agent` is refused unless the run passes
+  `--allow-unchecked-agent`.
 - **M15 Copilot CLI adapter: not started.**
 - **M16 LLM judge: not started.** `judge` is accepted by the parser and not used.
 - **M17 real trial: not started.**
