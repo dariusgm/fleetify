@@ -795,7 +795,7 @@ fn run_agent(
 ) -> Result<CommandResult, String> {
     agents::write_task(workspace, ctx.recipe_dir, ctx.recipe)
         .map_err(|err| format!("cannot write the agent task: {err}"))?;
-    let invocation = agents::invocation(name, ctx.recipe, &ctx.config.permissions)?;
+    let invocation = agents::invocation(name, ctx.recipe, &ctx.config.permissions, workspace)?;
     let grants = agents::grants(ctx.recipe, &ctx.config.permissions, name);
     ctx.runner.bus().emit(Event::PermissionsEffective {
         repo: repo.key(),
