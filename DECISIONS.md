@@ -476,10 +476,16 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   forbidden-change and question scenarios; the hang is covered by the runner's
   timeout test. Missing: the inner-loop verifier beyond the prompt rule in
   `task.md`, and detection of questions that do not end in a `[y/n]` marker.
-- **M10 opencode and check-agent: partly done.** The opencode adapter is in;
-  `check-agent` runs for both agents (the canary is still simpler than the plan). Its canary is simpler than the plan: there is no decoy marker
-  and no cache per agent version. The opencode adapter is not started.
-- **M11 CI gate and merge: not started.** `src/ci.rs` is a stub.
+- **M10 opencode and check-agent: mostly done.** The opencode adapter is in, with
+  the grants as inline permission config. `check-agent` runs for both agents (the
+  canary is simpler than the plan: no decoy marker, no cache per agent version). The
+  run header prints the effective grants of the agent (`describe_grants`). A dry run
+  reports missing grants as warnings and continues; a real run refuses to start.
+  Open: the level-3 smoke test with opencode and llama.cpp on a throwaway GitHub repo,
+  which needs an explicit go-ahead.
+- **M11 CI gate and merge: partly done.** `ci::evaluate` and `ci::poll` judge one
+  commit by SHA, and `Host::commit_ci` reads its items (GitHub; GitLab is skipped).
+  Not done: the gate in the pipeline, the results `ci_*`, and the merge with two keys.
 - **M12 Python authoring package: not started.**
 - **M13 live view: not started.** `--ui` and `--plain` are parsed but have no effect.
 - **M14 Claude Code adapter: done in code, unverified.** The CLI is not installed

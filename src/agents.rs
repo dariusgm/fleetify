@@ -212,6 +212,25 @@ pub fn grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> Grants 
     }
 }
 
+/// One line for the run header: what the agent gets for this recipe.
+pub fn describe_grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> String {
+    let grants = grants(recipe, permissions, name);
+    let list = |items: &[String]| {
+        if items.is_empty() {
+            "none".to_string()
+        } else {
+            items.join(", ")
+        }
+    };
+    format!(
+        "commands [{}], web {}, directories [{}], unrestricted {}",
+        list(&grants.commands),
+        if grants.web { "yes" } else { "no" },
+        list(&grants.directories),
+        if grants.unrestricted { "yes" } else { "no" },
+    )
+}
+
 /// The command line and environment for a recipe's agent run.
 pub fn invocation(
     name: &str,
@@ -452,6 +471,19 @@ text = "Do the thing."
         assert!(check_supported("opencode").is_ok());
         let err = check_supported("copilot").unwrap_err();
         assert!(err.contains("not supported"), "{err}");
+    }
+
+    #[test]
+    fn grants_are_described_for_the_run_header() {
+        let recipe = recipe("commands = [\"cargo\"]");
+        assert_eq!(
+            describe_grants(&recipe, &permissions(&["cargo"], false), "opencode"),
+            "commands [cargo], web no, directories [none], unrestricted no"
+        );
+        assert_eq!(
+            describe_grants(&recipe, &permissions(&[], false), "opencode"),
+            "commands [none], web no, directories [none], unrestricted no"
+        );
     }
 
     #[test]
