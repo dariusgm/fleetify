@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manual end-to-end check of fleetify against real hosts and real agents.
 
-Not part of CI. Run it by hand after a larger change. It creates small, private, throwaway
+Not part of CI. Run it by hand after a larger change. It creates small, public, throwaway
 repositories on GitHub and GitLab (named `fleetify-e2e-<run>-...`), runs fleetify against them with
 the selected agents, and compares each repo's result with the expected one. It never deletes a
 repository by itself; `--cleanup <run>` prints or deletes what one run created.

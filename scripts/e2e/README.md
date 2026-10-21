@@ -32,7 +32,7 @@ credential (used to push, open PRs and read CI) are checked before anything is c
 
 | Host | Needed for | Scopes |
 |------|------------|--------|
-| GitHub | create private repos, push, pull requests, Actions runs, merge | `repo`, `workflow` (pushing `.github/workflows/` needs `workflow`) |
+| GitHub | create repos, push, pull requests, Actions runs, merge | `repo`, `workflow` (pushing `.github/workflows/` needs `workflow`) |
 | GitHub (gh login only) | delete the run's repos at the end (`--cleanup --delete`, or the automatic delete on success) | additionally `delete_repo` |
 | GitLab | create projects, push, merge requests, pipelines, delete projects | `api` |
 
@@ -56,9 +56,9 @@ repositories through `gh`; fleetify's own credential does not need `delete_repo`
 
 Safety:
 
-- Repositories are private by default. `--visibility public` makes them public on both hosts. Public
-  repos show PRs, agent output and CI logs to everyone while they exist; the fixtures contain no secrets.
-  Whether GitLab gives public projects more free CI minutes is not checked here.
+- All repositories are public on both hosts, which keeps GitHub CI minutes free. Public repos show PRs,
+  agent output and CI logs to everyone while they exist; the fixtures contain no secrets. The GitLab
+  minute policy for public projects is not checked here.
 - Every repository is named `fleetify-e2e-<run>-<case>`. The script refuses a plan of more
   than 14 repositories.
 - It asks before creating anything, unless `--yes` is given.
