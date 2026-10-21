@@ -571,3 +571,29 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
   state would give the planned `ci_blocked` result; not done yet.
 - **Not covered:** `allow_failure` jobs (the pipeline status is used as is), external
   commit statuses, and the failure details of `ci_failed` for GitLab.
+
+## Outage handling (M11a)
+
+- **Implemented.** A transient host error (no answer, 429, 5xx) is retried by the CI
+  poll with exponential back-off (`ci::backoff`, capped at 5 min) until the CI budget
+  is spent. Each retry is a `host_retry` event. A failure that outlasts the budget ends
+  the repo as `host_unreachable` with a failure block; other errors stay `error`.
+- **Implemented.** Before a merge the change request is read again. A merged change
+  request is `merged`, a closed one is `merge_blocked`, an unreachable host is
+  `host_unreachable` and nothing is merged. A run that finds only a merged change request
+  for its branch ends as `already_done` and opens no second one (a merge whose response
+  was lost). New host method `latest_change_request` (any state, newest first).
+- **Implemented.** A push that fails is checked against the remote branch before anything
+  else. Same commit: the earlier push counts. Different commit: `error`, nothing is
+  overwritten. Remote not readable: `host_unreachable`.
+- **Implemented.** An unreadable remote while refreshing the cache is `host_unreachable`
+  (checked with `ls-remote`), not `error`.
+- **Not done, deviation from PLAN.md:**
+  - `Retry-After` is not parsed; 429 uses the same back-off as 5xx.
+  - Reads outside the CI poll (default branch, change request lookups, change request
+    creation) are not retried. A transient error there ends the repo as
+    `host_unreachable` at once; a re-run continues. Plan rule 1 asks for retries here too.
+  - Clone and fetch are not retried. The unreachable case is found with one `ls-remote`
+    afterwards, so the repo ends as `host_unreachable` without a second attempt.
+  - The push-divergence refusal has no test: a branch that exists before the run never
+    reaches the push, so the test needs a race. The poll and merge paths are tested.

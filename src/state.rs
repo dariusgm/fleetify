@@ -135,6 +135,8 @@ impl Recorder {
             Event::WaveFinished { .. } => {}
             Event::CommandIdle { .. } => {}
             Event::PermissionsEffective { .. } => {}
+            // The event log keeps retries; the state file only shows the phase and output.
+            Event::HostRetry { .. } => {}
         }
     }
 

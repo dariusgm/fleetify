@@ -541,3 +541,79 @@ fn a_prepare_step_that_changes_nothing_is_no_changes() {
     assert!(!remote_has_branch(&s));
     let _ = fs::remove_dir_all(&s.base);
 }
+
+/// A fake host for the change request states of one branch. `open` and `all` answer the
+/// two listings the pipeline asks for; `merge` is the answer to the merge call.
+fn change_host(
+    open: &'static str,
+    all: &'static str,
+    merge: (u16, &'static str),
+) -> support::FakeHost {
+    serve(move |req: &Recorded| {
+        let path = req.target.split('?').next().unwrap();
+        match (req.method.as_str(), path) {
+            ("GET", "/repos/o/r") => (200, r#"{"default_branch":"main"}"#.into()),
+            ("GET", "/repos/o/r/pulls") if req.target.contains("state=open") => (200, open.into()),
+            ("GET", "/repos/o/r/pulls") => (200, all.into()),
+            ("PUT", "/repos/o/r/pulls/1/merge") => (merge.0, merge.1.into()),
+            _ => (404, r#"{"message":"Not Found"}"#.into()),
+        }
+    })
+}
+
+const MERGED_PR: &str = r#"[{"number":1,"state":"closed","merged_at":"2026-10-21T08:00:00Z","html_url":"https://github.com/o/r/pull/1","head":{"sha":"abc"}}]"#;
+const OPEN_PR: &str = r#"[{"number":1,"state":"open","merged_at":null,"html_url":"https://github.com/o/r/pull/1","head":{"sha":"abc"}}]"#;
+
+#[test]
+fn a_merge_whose_response_was_lost_is_not_repeated_on_the_next_run() {
+    // No open change request, but the branch's change request is merged: the repo is done,
+    // and no second change request is opened.
+    let mut s = scenario("lost-merge", PREPARE_OK, VERIFY_OK);
+    s.host = change_host("[]", MERGED_PR, (500, "{}"));
+    let result = run_with(&s, "lost-merge", false, true);
+    assert_eq!(result.result, "already_done", "{result:?}");
+    assert!(result.detail.contains("already merged"), "{result:?}");
+    let requests = s.host.recorded();
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.method == "POST" || r.method == "PUT"),
+        "{requests:?}"
+    );
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn a_change_request_merged_during_the_run_is_reported_as_merged() {
+    // The merge call is never sent: the host already shows the change request as merged.
+    let mut s = scenario("merged-before-put", PREPARE_OK, VERIFY_OK);
+    s.host = change_host(OPEN_PR, MERGED_PR, (500, "{}"));
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text =
+        fs::read_to_string(&recipe).unwrap() + "\n[ci]\nwait = false\nmerge = \"when_green\"\n";
+    fs::write(&recipe, text).unwrap();
+    let result = run_with(&s, "merged-before-put", true, true);
+    assert_eq!(result.result, "merged", "{result:?}");
+    assert!(
+        !s.host.recorded().iter().any(|r| r.method == "PUT"),
+        "no merge call expected"
+    );
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn a_host_that_fails_during_the_merge_ends_the_repo_as_host_unreachable() {
+    let mut s = scenario("merge-503", PREPARE_OK, VERIFY_OK);
+    s.host = change_host(OPEN_PR, OPEN_PR, (503, r#"{"message":"unavailable"}"#));
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text =
+        fs::read_to_string(&recipe).unwrap() + "\n[ci]\nwait = false\nmerge = \"when_green\"\n";
+    fs::write(&recipe, text).unwrap();
+    let result = run_with(&s, "merge-503", true, true);
+    assert_eq!(result.result, "host_unreachable", "{result:?}");
+    assert!(!result.successful);
+    let failure = result.failure.expect("a failure block");
+    assert_eq!(failure.class, "host_unreachable");
+    assert!(!failure.message.is_empty());
+    let _ = fs::remove_dir_all(&s.base);
+}

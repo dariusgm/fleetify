@@ -786,7 +786,9 @@ fn dry_run_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     let cache = cache_dir(ctx.workdir, &repo.host, &repo.path);
     let state = match ensure_cache(&git, &repo.clone_url, &cache) {
         Ok(state) => state,
-        Err(err) => return git_failure(ctx.layout, repo, err, Some(pattern)),
+        Err(err) => {
+            return crate::pipeline::remote_failure(ctx.layout, &git, repo, err, Some(pattern));
+        }
     };
 
     phase("checking");

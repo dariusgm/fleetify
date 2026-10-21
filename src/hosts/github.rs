@@ -115,6 +115,38 @@ impl Host for GitHub {
             .ok_or_else(|| HostError::Parse("repository has no default_branch".into()))
     }
 
+    fn latest_change_request(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        branch: &str,
+    ) -> Result<Option<ChangeRequest>, HostError> {
+        let (owner, name) = owner_and_name(repo)?;
+        let head = format!("{owner}:{branch}");
+        let reply = self.http.send(
+            Method::GET,
+            &format!("/repos/{owner}/{name}/pulls"),
+            &headers(token),
+            &[
+                ("state", "all"),
+                ("head", &head),
+                ("sort", "created"),
+                ("direction", "desc"),
+                ("per_page", "1"),
+            ],
+            None,
+        )?;
+        if reply.status != 200 {
+            return Err(unexpected(&reply));
+        }
+        let list = parse_json(&reply)?;
+        list.as_array()
+            .ok_or_else(|| HostError::Parse("pull list is not an array".into()))?
+            .first()
+            .map(change_request)
+            .transpose()
+    }
+
     fn find_change_request(
         &self,
         repo: &Repo,

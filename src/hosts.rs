@@ -92,6 +92,19 @@ impl fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
+impl HostError {
+    /// A failure that may pass on its own: no answer at all, or the host is overloaded
+    /// (429 or 5xx). Such a failure is retried, and ends a repo as `host_unreachable`
+    /// when it outlasts the budget. Every other error is final.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            HostError::Transport(_) => true,
+            HostError::Status { status, .. } => *status == 429 || *status >= 500,
+            HostError::Parse(_) | HostError::Unsupported(_) => false,
+        }
+    }
+}
+
 /// Everything host-specific. Methods that talk to the API take the token that
 /// applies to the repo (from the credential rules).
 /// The state of one check run or commit status, as the host reports it for a commit.
@@ -115,6 +128,14 @@ pub trait Host: Send + Sync {
     /// The open change request whose source is `branch`, if any. Closed or merged
     /// ones are not returned.
     fn find_change_request(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        branch: &str,
+    ) -> Result<Option<ChangeRequest>, HostError>;
+    /// The newest change request whose source is `branch`, in any state. Used to tell a
+    /// finished change from a missing one, for example after a merge response was lost.
+    fn latest_change_request(
         &self,
         repo: &Repo,
         token: &Secret,
@@ -319,6 +340,21 @@ mod tests {
             api_base(HostType::Gitlab, "gitlab.example.com"),
             "https://gitlab.example.com/api/v4"
         );
+    }
+
+    #[test]
+    fn only_no_answer_429_and_5xx_are_transient() {
+        let status = |status| HostError::Status {
+            status,
+            message: String::new(),
+        };
+        assert!(HostError::Transport("timeout".into()).is_transient());
+        assert!(status(429).is_transient());
+        assert!(status(502).is_transient());
+        assert!(!status(401).is_transient());
+        assert!(!status(404).is_transient());
+        assert!(!HostError::Parse("bad".into()).is_transient());
+        assert!(!HostError::Unsupported("x".into()).is_transient());
     }
 
     #[test]
