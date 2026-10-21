@@ -661,3 +661,20 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
 - **Tests.** Unit tests for the argument list; `tests/copilot_fake.rs` for the canary logic
   with fake binaries (confined, leaky, silent); `tests/copilot_live.rs`, ignored by default,
   for the real CLI.
+
+## Level-5 run: Copilot CLI on a throwaway GitLab project (M15a acceptance)
+
+- **Repo.** A private, throwaway gitlab.com project with a Ruby 2.7.8 pin and a CI job.
+  Recipe `examples/recipes/ruby-34-copilot`, agent `copilot`, default model of the Copilot
+  account (no model option yet, see the model-selection story in PLAN.md).
+- **First run: `needs_input`, nothing pushed.** Copilot edited both pins but could not run
+  the verifier: the shell grant `shell(sh .agent/tools/verify.sh:*)` was denied. Copilot
+  matches shell grants on the executable only; the adapter now grants `shell(<first word>:*)`
+  (see the Copilot section above). The stop was the intended behaviour: the workspace was
+  kept and the repo was not pushed.
+- **Second run: `pr_open`.** Merge request !1 on the throwaway project. The diff contains
+  exactly `.ruby-version` (3.4) and `.gitlab-ci.yml` (`image: ruby:3.4`). The GitLab pipeline
+  on the pushed commit finished `success`. The merge is left to a human.
+- **Result.** The level-5 test of M15a passes. Observed: Copilot follows the recipe's
+  instruction, the verifier gate and the guards act as the outer check, and a denied grant
+  stops the run as `needs_input` instead of pushing.
