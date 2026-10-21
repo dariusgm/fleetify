@@ -252,6 +252,7 @@ fn a_matching_prompt_line_terminates_the_process_tree() {
     assert!(result.lines.iter().any(|l| l.text.contains("[y/N]")));
 }
 
+#[cfg(unix)]
 #[test]
 fn a_limit_line_only_counts_as_a_wait_when_it_is_the_last_output() {
     let (runner, _bus) = runner();
