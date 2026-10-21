@@ -560,6 +560,26 @@ Company repos probably must only be processed with the agent approved there (Cop
 
 Each milestone is one branch and ends with its acceptance criteria green on the Windows + Linux CI matrix. "Depends on" lists hard prerequisites; milestones without a dependency between them may be done in any order or in parallel. `[ASK]` marks a milestone where Claude Code asks before running anything against real repos, real agents or a merge.
 
+**Status (2026-10-21, all merged into `main`; details in DECISIONS.md).**
+
+| Milestone | Status | Open |
+|---|---|---|
+| M9 agent runner | done | — |
+| M10 opencode and check-agent | done, `[ASK]` smoke test pending | level-3 smoke test with opencode and llama.cpp |
+| M11 CI gate and merge | done for GitHub and GitLab | paging over 100 check runs; GitLab `manual` is `ci_timeout`, not `ci_blocked` |
+| M11a outage handling | done for hosts, CI, merge, push and rate limits (host side); agent rate limits done as classification | agent wait not capped by `max_wait_min`; reset time from agent messages; rate-limit phrases not checked against real CLIs; retries for reads outside the CI poll; `Retry-After` as HTTP date |
+| M12 Python authoring package | not started | — |
+| M13 live view | done | manual check in Windows Terminal and a Linux terminal |
+| M14 Claude Code adapter | done for the smoke test on GitHub (PR #1) | full lint test with the complete gate chain; observed rate-limit behaviour |
+| M15a Copilot CLI adapter (private) | done; live canary and level-5 run on a throwaway GitLab project (MR !1, pipeline green) | — |
+| M15b Copilot and self-hosted GitLab (work) | not started | needs the work machine and the internal CA |
+| M16 LLM judge | not started | only if the trial needs it |
+| M17 real trial | not started | `[ASK]`, three to five private repos |
+
+**Stories added:** model selection per agent run (not implemented; see the story at the end).
+
+**Known limits on the live run:** Copilot shell grants match the executable only (a command grants its first word); the Copilot web grant is `--allow-all-urls`.
+
 **M9 — Agent runner with fake agents.** Depends on M7. `Agent` trait, `Permissions` model, baseline + config grants + `needs` check, effective-permissions printing and `permissions_effective` event, `task.md` assembly (rules block, instructions, attachments, verifier command), `.agent/tools` copy, agent start with allowlisted environment and stdin closed, output streaming into the event stream, `wants_input()` polling, idle event, agent timeout, `blocked.md`/`result.md` handling, normalising agent-made commits, results `needs_input`, `blocked`, `agent_timeout` with `failure` blocks; the `fake` adapter driven by scripts. *Acceptance:* fake agents (apply a patch, hang, ask a question, crash, write `blocked.md`, forbidden change, commit by itself, write outside the workspace) each produce the specified result and failure block; a hanging fake agent is terminated with its children on both OS; a recipe whose `needs` exceed the effective permissions is refused before starting (exit 3) with the config entry named; the agent process environment contains only the allowlist.
 
 **M10 — opencode adapter and `check-agent`.** Depends on M9. Check opencode's current docs for the non-interactive invocation and permission options before writing the adapter; map `Permissions` to them and report `unsupported` entries; `env()` allowlist for opencode's config; `judge_command()`; `check-agent` with canary file, per-version cache, `require_checked_agent`, `--allow-unchecked-agent`. *Acceptance:* the adapter builds its command with the baseline grant and `--dry-run` shows the effective permissions and gaps; `fleetify check-agent opencode` passes (or the gap is documented and `unrestricted = true` is required for the smoke test); `[ASK]` level-3 smoke test with opencode and llama.cpp on a throwaway GitHub repo runs through and the invariants hold whether or not the local model solves the task.
@@ -583,7 +603,7 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 
 **M17 — Real trial.** Depends on M8, M10 or M14, M11. `[ASK]` A recipe with an agent on three to five private repos with `ci.wait` on the GitLab ones, run once in automated mode (plain, `--format json`) and once with `--ui` for the demo. Evaluate from `report.json` and the event logs: how many repos went through without intervention, time per repo, where help was needed, whether the failure blocks were enough to act on without opening the run folder. Write the numbers into `TRIAL.md`.
 
-**Suggested order for one person (remaining):** M11a (rate limits: hosts done, agents open) → M15a (Copilot adapter, private) → M17, with M12 when a second recipe is written, M15b at work, and M16 only if the trial shows the deterministic guards are not enough.
+**Suggested order for one person (remaining):** M10 level-3 smoke test (`[ASK]`) → M17 (`[ASK]`), with M12 when a second recipe is written, M15b at work, the model-selection story, and M16 only if the trial shows the deterministic guards are not enough.
 
 ## Decision after stage 1
 
