@@ -631,3 +631,30 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
     rate-limit pages do.
 - **Not done:** `Retry-After` as an HTTP date (only seconds are read); a proactive
   per-minute limit; agent rate limits (planned in the next branch).
+
+## Copilot CLI adapter (M15a)
+
+- **Version and account.** Copilot CLI 1.0.101 (`copilot --version`) on Copilot Free, on
+  this machine. `check-agent copilot` runs the canary against the real CLI.
+- **Invocation.** `copilot -p <prompt> -s --no-ask-user`, text output (not JSON), so the
+  output lines keep working with `wants_input`. Documented in the programmatic reference.
+- **Observed on 2026-10-21, real CLI:**
+  - `-p` with a tool that is not granted: the agent says the write was denied and exits 0.
+    The exit code does not show a denied permission; the canary checks the files instead.
+  - `--allow-tool=write` without a path pattern writes anywhere, with or without `--add-dir`.
+    So the adapter never emits a bare `write`.
+  - `--allow-tool=write(<dir>/*)` allows writes directly inside `<dir>`, but not in
+    subdirectories, and denies writes outside. `--allow-tool=write(<dir>/**)` allows writes
+    in subdirectories too and still denies writes outside. The adapter uses `**`.
+  - Repeated `--allow-tool` flags apply together (two directories, both writable).
+  - With the `**` write grant and no shell grant, the agent created the missing
+    directories and the file. Creating directories needs no shell grant.
+- **Environment.** Only the base allowlist; no Claude or opencode variables and no host
+  token. Copilot's login comes from its own configuration.
+- **Not verified:** whether a denied `-p` run prints a recognisable message that could
+  become a `needs_input` or `blocked` outcome; the rate-limit behaviour of the CLI (planned
+  with the agent rate-limit work); `read` grants are not path-limited (same as Claude
+  Code's baseline, covered by the canary only through the write test).
+- **Tests.** Unit tests for the argument list; `tests/copilot_fake.rs` for the canary logic
+  with fake binaries (confined, leaky, silent); `tests/copilot_live.rs`, ignored by default,
+  for the real CLI.

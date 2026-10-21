@@ -1,5 +1,5 @@
-//! Coding agent adapters (milestone M9). Only `claude-code` runs in this build;
-//! the other names in `recipe::KNOWN_AGENTS` are refused with a clear message.
+//! Coding agent adapters (milestones M9, M10, M15a). `claude-code`, `opencode` and `copilot`
+//! run in this build; the other names in `recipe::KNOWN_AGENTS` are refused with a message.
 //!
 //! An agent run gets the recipe's instructions in `.agent/task.md`, its attachments
 //! in `.agent/attachments/`, a tool allowlist and a timeout. It works in the
@@ -23,6 +23,9 @@ use crate::runner::{BASE_ENV, EnvPolicy, RunRequest, Runner};
 
 pub const CLAUDE_CODE: &str = "claude-code";
 pub const OPENCODE: &str = "opencode";
+pub const COPILOT: &str = "copilot";
+/// Replaces the `copilot` binary, the same way `FLEETIFY_CLAUDE_BIN` does for claude.
+pub const COPILOT_BINARY_ENV: &str = "FLEETIFY_COPILOT_BIN";
 /// Replaces the `opencode` binary, the same way `FLEETIFY_CLAUDE_BIN` does for claude.
 pub const OPENCODE_BINARY_ENV: &str = "FLEETIFY_OPENCODE_BIN";
 /// Replaces the `claude` binary. Used by tests and by installs outside PATH.
@@ -65,9 +68,9 @@ const CHECK_DIR: &str = "agents";
 /// Refuses agent names this build cannot run.
 pub fn check_supported(name: &str) -> Result<(), String> {
     match name {
-        CLAUDE_CODE | OPENCODE => Ok(()),
+        CLAUDE_CODE | OPENCODE | COPILOT => Ok(()),
         other => Err(format!(
-            "agent {other:?} is not supported in this build; only {CLAUDE_CODE} and {OPENCODE} run"
+            "agent {other:?} is not supported in this build; only {CLAUDE_CODE}, {OPENCODE} and {COPILOT} run"
         )),
     }
 }
@@ -282,16 +285,30 @@ fn build(
                     "run".to_string(),
                     prompt.to_string(),
                 ],
-                env: env_policy(vec![
-                    ("OPENCODE_CONFIG_CONTENT".to_string(), config),
-                    // A repository's own opencode.json must not widen the grants.
-                    (
-                        "OPENCODE_DISABLE_PROJECT_CONFIG".to_string(),
-                        "1".to_string(),
-                    ),
-                ]),
+                env: env_policy(
+                    AGENT_ENV,
+                    vec![
+                        ("OPENCODE_CONFIG_CONTENT".to_string(), config),
+                        // A repository's own opencode.json must not widen the grants.
+                        (
+                            "OPENCODE_DISABLE_PROJECT_CONFIG".to_string(),
+                            "1".to_string(),
+                        ),
+                    ],
+                ),
             })
         }
+        COPILOT => Ok(Invocation {
+            argv: copilot_argv(
+                &binary(COPILOT_BINARY_ENV, "copilot"),
+                prompt,
+                workspace,
+                grants,
+            ),
+            // Copilot keeps its own login in its own configuration. No host token and no
+            // Claude or opencode variables are passed on.
+            env: env_policy(&[], Vec::new()),
+        }),
         _ => Ok(Invocation {
             argv: claude_code_argv(
                 &binary(BINARY_ENV, "claude"),
@@ -300,18 +317,18 @@ fn build(
                 &grants.directories,
                 grants.unrestricted,
             ),
-            env: env_policy(Vec::new()),
+            env: env_policy(AGENT_ENV, Vec::new()),
         }),
     }
 }
 
 /// The environment an agent gets: the base allowlist, its own variables, and the
 /// variables fleetify sets for this run.
-fn env_policy(set: Vec<(String, String)>) -> EnvPolicy {
+fn env_policy(agent_names: &[&str], set: Vec<(String, String)>) -> EnvPolicy {
     EnvPolicy::Allowlist {
         names: BASE_ENV
             .iter()
-            .chain(AGENT_ENV)
+            .chain(agent_names)
             .map(|name| name.to_string())
             .collect(),
         set,
@@ -381,6 +398,52 @@ fn claude_code_argv(
     }
     argv.push("--allowedTools".to_string());
     argv.extend(allowed.iter().cloned());
+    argv
+}
+
+/// `copilot -p <prompt> -s --no-ask-user [--allow-all] [--add-dir <dir>]... --allow-tool=<grant>...`
+///
+/// Docs: <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference>
+/// (checked 2026-10-21, Copilot CLI 1.0.101).
+///
+/// Writes are granted per directory with a `**` pattern. A bare `write` writes anywhere, and
+/// `--add-dir` alone does not confine writes; `<dir>/*` covers one level only (both observed,
+/// see DECISIONS.md). Commands are granted as `shell(<command>:*)`, read-only git as exact
+/// `shell(git status)` entries. `--allow-all-urls` is the web grant: Copilot has no per-URL
+/// grant that fleetify could fill from the recipe.
+fn copilot_argv(binary: &str, prompt: &str, workspace: &Path, grants: &Grants) -> Vec<String> {
+    let mut argv = vec![
+        binary.to_string(),
+        "-p".to_string(),
+        prompt.to_string(),
+        "-s".to_string(),
+        "--no-ask-user".to_string(),
+    ];
+    if grants.unrestricted {
+        argv.push("--allow-all".to_string());
+    }
+    for directory in &grants.directories {
+        argv.extend(["--add-dir".to_string(), directory.clone()]);
+    }
+    argv.push("--allow-tool=read".to_string());
+    let writable =
+        std::iter::once(workspace.display().to_string()).chain(grants.directories.iter().cloned());
+    for directory in writable {
+        argv.push(format!(
+            "--allow-tool=write({}/**)",
+            directory.trim_end_matches('/')
+        ));
+    }
+    // Read-only git is part of the baseline, as for opencode.
+    for command in ["git status", "git diff", "git log"] {
+        argv.push(format!("--allow-tool=shell({command})"));
+    }
+    for command in &grants.commands {
+        argv.push(format!("--allow-tool=shell({command}:*)"));
+    }
+    if grants.web {
+        argv.push("--allow-all-urls".to_string());
+    }
     argv
 }
 
@@ -455,6 +518,87 @@ mod tests {
     use super::*;
 
     #[test]
+    fn copilot_grants_writes_per_directory_and_never_a_bare_write() {
+        let grants = Grants {
+            commands: vec!["cargo".into()],
+            web: false,
+            directories: vec!["/data/out".into()],
+            unrestricted: false,
+        };
+        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &grants);
+        assert!(
+            argv.contains(&"--allow-tool=write(/ws/**)".to_string()),
+            "{argv:?}"
+        );
+        assert!(
+            argv.contains(&"--allow-tool=write(/data/out/**)".to_string()),
+            "{argv:?}"
+        );
+        assert!(!argv.iter().any(|a| a == "--allow-tool=write"), "{argv:?}");
+        assert!(
+            argv.contains(&"--allow-tool=shell(cargo:*)".to_string()),
+            "{argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.starts_with("--allow-all")),
+            "{argv:?}"
+        );
+        assert_eq!(&argv[..5], ["copilot", "-p", "p", "-s", "--no-ask-user"]);
+    }
+
+    #[test]
+    fn copilot_baseline_is_read_git_and_writes_in_the_workspace() {
+        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &Grants::default());
+        for expected in [
+            "--allow-tool=read",
+            "--allow-tool=write(/ws/**)",
+            "--allow-tool=shell(git status)",
+            "--allow-tool=shell(git diff)",
+            "--allow-tool=shell(git log)",
+        ] {
+            assert!(
+                argv.contains(&expected.to_string()),
+                "{expected} missing in {argv:?}"
+            );
+        }
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a == "--allow-all-urls" || a == "--allow-all"),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn copilot_web_and_unrestricted_are_explicit_flags() {
+        let grants = Grants {
+            web: true,
+            unrestricted: true,
+            ..Grants::default()
+        };
+        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &grants);
+        assert!(argv.contains(&"--allow-all-urls".to_string()), "{argv:?}");
+        assert!(argv.contains(&"--allow-all".to_string()), "{argv:?}");
+    }
+
+    #[test]
+    fn copilot_is_supported_and_gets_no_claude_or_host_variables() {
+        assert!(check_supported("copilot").is_ok());
+        let invocation = build(COPILOT, "p", &Grants::default(), Path::new("/ws")).unwrap();
+        let EnvPolicy::Allowlist { names, .. } = invocation.env else {
+            panic!("expected an allowlist");
+        };
+        assert!(
+            !names.iter().any(|name| name == "ANTHROPIC_API_KEY"),
+            "{names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.contains("TOKEN")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
     fn yes_no_questions_are_recognised() {
         assert!(wants_input("Overwrite the file? [y/N]"));
         assert!(wants_input("Proceed (Y/n)"));
@@ -495,16 +639,17 @@ text = "Do the thing."
     }
 
     #[test]
-    fn claude_code_and_opencode_run_and_copilot_is_refused() {
+    fn claude_code_opencode_and_copilot_run_and_others_are_refused() {
         assert!(check_supported("claude-code").is_ok());
         assert!(check_supported("opencode").is_ok());
-        let err = check_supported("copilot").unwrap_err();
+        assert!(check_supported("copilot").is_ok());
+        let err = check_supported("unknown-agent").unwrap_err();
         assert!(err.contains("not supported"), "{err}");
     }
 
     #[test]
     fn claude_code_runs_with_the_allowlist_and_nothing_else() {
-        let env = env_policy(Vec::new());
+        let env = env_policy(AGENT_ENV, Vec::new());
         let EnvPolicy::Allowlist { names, set } = env else {
             panic!("expected an allowlist");
         };
