@@ -519,3 +519,31 @@ fn gitlab_commit_ci_with_only_skipped_pipelines_has_no_items() {
         .unwrap();
     assert!(items.is_empty());
 }
+
+#[test]
+fn gitlab_latest_change_request_returns_a_merged_one_for_the_branch() {
+    let host = serve(|req| {
+        assert!(req.target.contains("state=all"), "{}", req.target);
+        assert!(
+            req.target.contains("source_branch=fleetify%2Fchore%2Fx")
+                || req.target.contains("source_branch=fleetify/chore/x"),
+            "{}",
+            req.target
+        );
+        (
+            200,
+            r#"[{"iid":7,"state":"merged","web_url":"https://gitlab.example.com/g/p/-/merge_requests/7","sha":"abc"}]"#
+                .into(),
+        )
+    });
+    let change = gitlab(&host.base)
+        .latest_change_request(
+            &repo("gitlab.example.com", HostType::Gitlab, "group/project"),
+            &token(),
+            "fleetify/chore/x",
+        )
+        .unwrap()
+        .expect("a change request");
+    assert_eq!(change.id, "7");
+    assert_eq!(change.state, CrState::Merged);
+}

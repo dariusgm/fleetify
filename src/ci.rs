@@ -46,22 +46,54 @@ fn names(items: &[CiItem], state: CiState) -> Vec<String> {
         .collect()
 }
 
+/// The longest wait between two tries while a host is failing.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(300);
+
+/// The wait before retry number `attempt` (1 for the first retry): `interval`, doubled
+/// for each further attempt, capped at `MAX_RETRY_DELAY`.
+pub fn backoff(interval: Duration, attempt: u32) -> Duration {
+    let factor = 2u32.saturating_pow(attempt.saturating_sub(1));
+    interval.saturating_mul(factor).min(MAX_RETRY_DELAY)
+}
+
 /// Asks for the items of one commit until the verdict is final or `timeout` is over.
-/// `fetch` must answer for that commit only. A timeout while items are still pending
-/// returns `Pending`; the caller maps that to `ci_timeout`.
+/// `fetch` must answer for that commit only.
+///
+/// A transient failure (no answer, 5xx, 429) is retried with back-off and reported through
+/// `on_retry`. If the budget runs out while the host still fails, the last error is returned
+/// and the caller maps it to `host_unreachable`. Any other error is returned at once. A
+/// timeout while items are still pending returns `Pending`; the caller maps that to
+/// `ci_timeout`. A poll never returns a verdict built from a failed read.
 pub fn poll(
     mut fetch: impl FnMut() -> Result<Vec<CiItem>, HostError>,
+    mut on_retry: impl FnMut(&HostError, u32, Duration),
     timeout: Duration,
     interval: Duration,
 ) -> Result<Verdict, HostError> {
     let started = Instant::now();
+    let mut attempt = 0;
     loop {
-        let verdict = evaluate(&fetch()?);
-        let done = !matches!(verdict, Verdict::Pending(_) | Verdict::Missing);
-        if done || started.elapsed() >= timeout {
-            return Ok(verdict);
+        match fetch() {
+            Ok(items) => {
+                attempt = 0;
+                let verdict = evaluate(&items);
+                let done = !matches!(verdict, Verdict::Pending(_) | Verdict::Missing);
+                if done || started.elapsed() >= timeout {
+                    return Ok(verdict);
+                }
+                thread::sleep(interval);
+            }
+            Err(err) if err.is_transient() => {
+                attempt += 1;
+                let delay = backoff(interval, attempt);
+                if started.elapsed().saturating_add(delay) >= timeout {
+                    return Err(err);
+                }
+                on_retry(&err, attempt, delay);
+                thread::sleep(delay);
+            }
+            Err(err) => return Err(err),
         }
-        thread::sleep(interval);
     }
 }
 
@@ -121,6 +153,7 @@ mod tests {
                     vec![item("test", CiState::Success)]
                 })
             },
+            |_, _, _| {},
             Duration::from_secs(5),
             Duration::from_millis(1),
         )
@@ -133,10 +166,79 @@ mod tests {
     fn poll_gives_up_at_the_timeout_with_pending_items() {
         let verdict = poll(
             || Ok(vec![item("test", CiState::Pending)]),
+            |_, _, _| {},
             Duration::from_millis(20),
             Duration::from_millis(1),
         )
         .unwrap();
         assert_eq!(verdict, Verdict::Pending(vec!["test".to_string()]));
+    }
+
+    #[test]
+    fn backoff_doubles_and_is_capped() {
+        assert_eq!(backoff(Duration::from_secs(30), 1), Duration::from_secs(30));
+        assert_eq!(backoff(Duration::from_secs(30), 2), Duration::from_secs(60));
+        assert_eq!(
+            backoff(Duration::from_secs(30), 3),
+            Duration::from_secs(120)
+        );
+        assert_eq!(backoff(Duration::from_secs(30), 40), MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn a_transient_failure_is_retried_and_the_verdict_still_comes() {
+        let calls = Cell::new(0);
+        let retries = Cell::new(0);
+        let verdict = poll(
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() <= 2 {
+                    return Err(HostError::Status {
+                        status: 503,
+                        message: "busy".into(),
+                    });
+                }
+                Ok(vec![item("test", CiState::Success)])
+            },
+            |_, attempt, _| retries.set(attempt),
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        )
+        .unwrap();
+        assert_eq!(verdict, Verdict::Passed);
+        assert_eq!(calls.get(), 3);
+        assert_eq!(retries.get(), 2);
+    }
+
+    #[test]
+    fn a_failure_that_outlasts_the_budget_returns_the_transient_error() {
+        let err = poll(
+            || Err(HostError::Transport("connection refused".into())),
+            |_, _, _| {},
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(err.is_transient(), "{err:?}");
+    }
+
+    #[test]
+    fn a_permanent_failure_is_not_retried() {
+        let calls = Cell::new(0);
+        let err = poll(
+            || {
+                calls.set(calls.get() + 1);
+                Err(HostError::Status {
+                    status: 401,
+                    message: "bad token".into(),
+                })
+            },
+            |_, _, _| panic!("no retry for a permanent error"),
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(!err.is_transient());
+        assert_eq!(calls.get(), 1);
     }
 }

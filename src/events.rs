@@ -85,6 +85,15 @@ pub enum Event {
         label: String,
         idle_s: u64,
     },
+    /// A host or CI read failed with a transient error and will be retried after `delay_ms`.
+    HostRetry {
+        repo: String,
+        host: String,
+        operation: String,
+        attempt: u32,
+        delay_ms: u64,
+        error: String,
+    },
     /// The grants an agent starts with, sent before the agent runs.
     PermissionsEffective {
         repo: String,

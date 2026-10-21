@@ -97,6 +97,36 @@ impl Host for GitLab {
             .ok_or_else(|| HostError::Parse("project has no default_branch".into()))
     }
 
+    fn latest_change_request(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        branch: &str,
+    ) -> Result<Option<ChangeRequest>, HostError> {
+        let reply = self.http.send(
+            Method::GET,
+            &format!("/projects/{}/merge_requests", project_id(&repo.path)),
+            &headers(token),
+            &[
+                ("state", "all"),
+                ("source_branch", branch),
+                ("order_by", "created_at"),
+                ("sort", "desc"),
+                ("per_page", "1"),
+            ],
+            None,
+        )?;
+        if reply.status != 200 {
+            return Err(unexpected(&reply));
+        }
+        let list = parse_json(&reply)?;
+        list.as_array()
+            .ok_or_else(|| HostError::Parse("merge request list is not an array".into()))?
+            .first()
+            .map(change_request)
+            .transpose()
+    }
+
     fn find_change_request(
         &self,
         repo: &Repo,

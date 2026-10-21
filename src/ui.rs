@@ -29,6 +29,17 @@ pub fn plain_line(event: &Event) -> String {
         } => format!(
             "wave {wave} of {total} done: {successful} successful, {remaining} repos remaining"
         ),
+        Event::HostRetry {
+            repo,
+            host,
+            operation,
+            attempt,
+            delay_ms,
+            error,
+        } => format!(
+            "{repo} | {host} {operation} failed (attempt {attempt}), retrying in {}s: {error}",
+            delay_ms / 1000
+        ),
         Event::CommandIdle { label, idle_s, .. } => {
             format!("{label} | no output for {idle_s}s")
         }

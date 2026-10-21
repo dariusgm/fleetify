@@ -10,7 +10,7 @@ use crate::agents;
 use crate::events::{Event, Outcome};
 use crate::git::{GitContext, git};
 use crate::guards;
-use crate::hosts::{ChangeRequest, MergeOutcome};
+use crate::hosts::{ChangeRequest, CrState, MergeOutcome};
 use crate::report::{Failure, RepoResult};
 use crate::repos::Repo;
 use crate::run::{Ctx, artifacts, error_result, git_context, git_failure, probe};
@@ -49,7 +49,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     let cache = cache_dir(ctx.workdir, &repo.host, &repo.path);
     let state = match ensure_cache(&git_ctx, &repo.clone_url, &cache) {
         Ok(state) => state,
-        Err(err) => return git_failure(ctx.layout, repo, err, Some(pattern)),
+        Err(err) => return remote_failure(ctx.layout, &git_ctx, repo, err, Some(pattern)),
     };
 
     phase("checking");
@@ -83,6 +83,28 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     } else {
         Ok(None)
     };
+    // No open change request: a merged one still means the repo is done. Without this a
+    // merge whose response was lost would open a second change request on the next run.
+    let found = match found {
+        Ok(None) if ctx.recipe.delivery.open_mr => {
+            match client.latest_change_request(repo, token, &branch) {
+                Ok(Some(change)) if change.state == CrState::Merged => {
+                    let mut result = RepoResult::new(
+                        &key,
+                        "already_done",
+                        "the change request for the branch was already merged",
+                    );
+                    result.change_request = Some(change.url.clone());
+                    result.rule = Some(pattern);
+                    phase("finished");
+                    return result;
+                }
+                Ok(_) => Ok(None),
+                Err(err) => Err(err),
+            }
+        }
+        other => other,
+    };
     match found {
         Ok(Some(change)) => {
             let mut result = RepoResult::new(
@@ -110,6 +132,11 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         }
         Ok(None) => {}
         Err(err) => {
+            if err.is_transient() {
+                let mut result = RepoResult::new(&key, "error", &err.to_string());
+                result.rule = Some(pattern.clone());
+                return unreachable_result(ctx.layout, repo, result, &err);
+            }
             return error_result(ctx.layout, repo, err.to_string(), Some(pattern), Vec::new());
         }
     }
@@ -406,6 +433,10 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     if let Err(err) = git(&local, Some(&workspace), &commit_args) {
         return git_failure(ctx.layout, repo, err, Some(pattern));
     }
+    let pushed_sha = match git(&local, Some(&workspace), &["rev-parse", "HEAD"]) {
+        Ok(sha) => sha.trim().to_string(),
+        Err(err) => return git_failure(ctx.layout, repo, err, Some(pattern)),
+    };
     phase("pushing");
     let refspec = format!("HEAD:refs/heads/{branch}");
     if let Err(err) = git(
@@ -413,12 +444,46 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         Some(&workspace),
         &["push", "--quiet", &repo.clone_url, &refspec],
     ) {
-        return git_failure(ctx.layout, repo, err, Some(pattern));
+        // A push can fail after the remote accepted it (the answer got lost), or because
+        // the remote is gone. Ask the remote before deciding; never overwrite a branch
+        // that points at another commit.
+        let ask = git(
+            &git_ctx,
+            None,
+            &[
+                "ls-remote",
+                "--heads",
+                &repo.clone_url,
+                &format!("refs/heads/{branch}"),
+            ],
+        );
+        let early = match ask {
+            Err(unreachable) => {
+                let mut result = RepoResult::new(&key, "error", &unreachable.message);
+                result.rule = Some(pattern.clone());
+                let cause = crate::hosts::HostError::Transport(unreachable.message);
+                Some(unreachable_result(ctx.layout, repo, result, &cause))
+            }
+            Ok(listing) => match listing.split_whitespace().next() {
+                Some(remote_sha) if remote_sha == pushed_sha => None,
+                Some(remote_sha) => Some(error_result(
+                    ctx.layout,
+                    repo,
+                    format!(
+                        "branch {branch} exists on the remote at {}, not at {}; not overwritten",
+                        short(remote_sha),
+                        short(&pushed_sha)
+                    ),
+                    Some(pattern.clone()),
+                    Vec::new(),
+                )),
+                None => Some(git_failure(ctx.layout, repo, err, Some(pattern.clone()))),
+            },
+        };
+        if let Some(result) = early {
+            return result;
+        }
     }
-    let pushed_sha = match git(&local, Some(&workspace), &["rev-parse", "HEAD"]) {
-        Ok(sha) => sha.trim().to_string(),
-        Err(err) => return git_failure(ctx.layout, repo, err, Some(pattern)),
-    };
 
     // Push-only: the branch is pushed and nothing else happens.
     if !ctx.recipe.delivery.open_mr {
@@ -485,6 +550,57 @@ const CI_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// Judges CI for one commit and sets the result from the verdict: `ci_passed`,
 /// `ci_failed`, `ci_missing`, `ci_timeout`, or `ci_blocked` when the host cannot report
 /// CI. The commit is the key; no branch or pull request is looked up.
+/// A git failure while reading the remote. If the remote cannot be asked at all, the host is
+/// unreachable and a re-run continues; otherwise the repo is in error.
+pub(crate) fn remote_failure(
+    layout: &crate::run::RunLayout,
+    git_ctx: &GitContext<'_>,
+    repo: &Repo,
+    error: crate::git::GitError,
+    rule: Option<String>,
+) -> RepoResult {
+    let probe = git(
+        git_ctx,
+        None,
+        &[
+            "ls-remote",
+            "--heads",
+            &repo.clone_url,
+            "refs/heads/fleetify-probe",
+        ],
+    );
+    match probe {
+        Err(unreachable) => {
+            let mut result = RepoResult::new(&repo.key(), "error", &error.message);
+            result.rule = rule;
+            let cause = crate::hosts::HostError::Transport(unreachable.message);
+            unreachable_result(layout, repo, result, &cause)
+        }
+        Ok(_) => crate::run::git_failure(layout, repo, error, rule),
+    }
+}
+
+/// A repo whose host did not answer within the budget. Not successful; a re-run continues.
+fn unreachable_result(
+    layout: &crate::run::RunLayout,
+    repo: &Repo,
+    mut result: RepoResult,
+    err: &crate::hosts::HostError,
+) -> RepoResult {
+    let message = format!("{} did not answer: {err}", repo.host);
+    result.result = "host_unreachable".to_string();
+    result.successful = crate::report::is_successful("host_unreachable");
+    result.detail = message.clone();
+    result.failure = Some(Failure {
+        class: "host_unreachable".to_string(),
+        message,
+        rule: result.rule.clone(),
+        output_tail: Vec::new(),
+        artifacts: crate::run::artifacts(layout, repo),
+    });
+    result
+}
+
 fn gate_ci(
     ctx: &Ctx<'_>,
     repo: &Repo,
@@ -508,6 +624,16 @@ fn gate_ci(
     let timeout = Duration::from_secs(u64::from(ctx.recipe.ci.timeout_min) * 60);
     let verdict = crate::ci::poll(
         || client.commit_ci(repo, token, sha),
+        |err, attempt, delay| {
+            ctx.runner.bus().emit(Event::HostRetry {
+                repo: repo.key(),
+                host: repo.host.clone(),
+                operation: "ci status".to_string(),
+                attempt,
+                delay_ms: delay.as_millis() as u64,
+                error: err.to_string(),
+            });
+        },
         timeout,
         CI_POLL_INTERVAL,
     );
@@ -534,6 +660,13 @@ fn gate_ci(
             ),
         ),
         Err(crate::hosts::HostError::Unsupported(what)) => ("ci_blocked", what),
+        Err(err) if err.is_transient() => (
+            "host_unreachable",
+            format!(
+                "{} did not answer for the CI status of {short_sha} within {} min: {err}",
+                repo.host, ctx.recipe.ci.timeout_min
+            ),
+        ),
         Err(err) => {
             return error_result(
                 ctx.layout,
@@ -598,6 +731,35 @@ fn merge_change(
         );
         return result;
     }
+    // Before the merge: a change request that is already merged (the response of an
+    // earlier merge was lost) is done; one that was closed is not merged.
+    match client.latest_change_request(repo, token, branch) {
+        Ok(Some(latest)) if latest.state == CrState::Merged => {
+            result.result = "merged".to_string();
+            result.successful = crate::report::is_successful("merged");
+            result.detail = format!("already merged {}", latest.url);
+            return result;
+        }
+        Ok(Some(latest)) if latest.state == CrState::Closed => {
+            result.result = "merge_blocked".to_string();
+            result.successful = false;
+            result.detail = format!("change request {} is closed", latest.url);
+            return result;
+        }
+        Ok(_) => {}
+        Err(err) if err.is_transient() => {
+            return unreachable_result(ctx.layout, repo, result, &err);
+        }
+        Err(err) => {
+            return error_result(
+                ctx.layout,
+                repo,
+                err.to_string(),
+                result.rule.clone(),
+                Vec::new(),
+            );
+        }
+    }
     match client.merge(repo, token, change, expected) {
         Ok(MergeOutcome::Merged) => {
             result.result = "merged".to_string();
@@ -609,6 +771,9 @@ fn merge_change(
             result.successful = false;
             result.detail = reason;
             return result;
+        }
+        Err(err) if err.is_transient() => {
+            return unreachable_result(ctx.layout, repo, result, &err);
         }
         Err(err) => {
             return error_result(
