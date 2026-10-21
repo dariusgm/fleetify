@@ -568,7 +568,7 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 | M10 opencode and check-agent | done, `[ASK]` smoke test pending | level-3 smoke test with opencode and llama.cpp |
 | M11 CI gate and merge | done for GitHub and GitLab; paging and `ci_blocked` done | — |
 | M11a outage handling | done for hosts, CI, merge, push, rate limits, reads, cache fetch/clone, `Retry-After` dates, agent wait ceiling and `api_limit` | reset time from agent messages is carried as printed, not parsed; rate-limit phrases not checked against real CLIs (only the credits sentence was observed); push-divergence test needs a race; agent silence ceiling can end a slow local model that is silent after a limit line as its last output |
-| M12 Python authoring package | not started | — |
+| M12 Python authoring package | done in `authoring/` (writer, dataclasses, schema check, byte-for-byte example) | not published to an index; no second recipe yet |
 | M13 live view | done | manual check in Windows Terminal and a Linux terminal |
 | M14 Claude Code adapter | done for the smoke test on GitHub (PR #1) | full lint test with the complete gate chain; observed rate-limit behaviour |
 | M15a Copilot CLI adapter (private) | done; live canary and level-5 run on a throwaway GitLab project (MR !1, pipeline green) | — |
@@ -603,7 +603,7 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 
 **M17 — Real trial.** Depends on M8, M10 or M14, M11. `[ASK]` A recipe with an agent on three to five private repos with `ci.wait` on the GitLab ones, run once in automated mode (plain, `--format json`) and once with `--ui` for the demo. Evaluate from `report.json` and the event logs: how many repos went through without intervention, time per repo, where help was needed, whether the failure blocks were enough to act on without opening the run folder. Write the numbers into `TRIAL.md`.
 
-**Suggested order for one person (remaining):** M10 level-3 smoke test (`[ASK]`) → M17 (`[ASK]`), with M12 now (no `[ASK]`, no second recipe needed for its acceptance), M15b at work, and M16 only if the trial shows the deterministic guards are not enough.
+**Suggested order for one person (remaining):** M10 level-3 smoke test (`[ASK]`) → M17 (`[ASK]`), M15b at work, and M16 only if the trial shows the deterministic guards are not enough.
 
 ## Decision after stage 1
 

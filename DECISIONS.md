@@ -750,3 +750,18 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
 - **Not done:** a test for the push-divergence refusal (it needs a race between the state check
   and the push); the rate-limit phrases for Claude Code, Copilot and opencode are still a
   starting list, to be confirmed in level-5 runs.
+
+## Authoring package `fleetify-recipes` (M12)
+
+- **Location.** `authoring/` in this repo. It is a separate uv project with no runtime
+  dependencies; `jsonschema` is only needed for the schema check (`validate` extra and dev group).
+- **Byte-for-byte output.** The writer emits keys in dataclass declaration order, a blank line
+  before each table, and LF endings. Quoting is explicit: strings are double-quoted, strings with a
+  backslash are literal (single-quoted) automatically, and `Literal` forces single quotes. The
+  hand-written example mixes both inside one array, so a pure rule could not reproduce it.
+- **Version.** `write()` refuses any `schema` other than 1. The schema check reads the JSON Schema
+  from the binary (`fleetify schema`), so it follows the binary that runs the recipe.
+- **Scope.** The dataclasses cover the top-level keys and tables of schema 1 that a recipe written by
+  hand uses (applies_to, instructions, prepare, verify, needs, delivery, guards, ci, limits).
+  `judge` is not mirrored yet; add it when a recipe needs it.
+- **Not done:** publishing to PyPI (the plan's name check is still open).
