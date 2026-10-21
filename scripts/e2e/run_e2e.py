@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -76,6 +77,8 @@ class Case:
     merge: bool = False
     repo: str = ""  # filled in when the repository is created
     result: str = ""
+    setup_s: float = 0.0  # repository creation and push
+    run_s: float = 0.0  # fleetify run, from start to the final result
 
 
 def run(args: list[str], cwd: Path | None = None, check: bool = True, capture: bool = True) -> str:
@@ -422,8 +425,10 @@ def execute(args: argparse.Namespace) -> int:
         case.repo = name
         owner = owners[case.host]
         local = scratch / name
+        started = time.monotonic()
         make_repo_dir(case.host, local)
         create_remote_repo(case.host, owner, name, local)
+        case.setup_s = time.monotonic() - started
         recipe = write_recipe(workdir, name, case.host, case)
         repos_file = workdir / f"{name}.repos"
         repos_file.write_text(f"{HOSTS[case.host].spec}:{owner}/{name}\n")
@@ -436,7 +441,9 @@ def execute(args: argparse.Namespace) -> int:
         if case.merge:
             command += ["--merge"]
         print(f"running {case.key} ...", flush=True)
+        started = time.monotonic()
         subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        case.run_s = time.monotonic() - started
         report = workdir / "runs" / f"e2e-{run_id}-{case.key}" / "report.json"
         try:
             data = json.loads(report.read_text())
@@ -446,13 +453,29 @@ def execute(args: argparse.Namespace) -> int:
 
     width = max(len(c.key) for c in cases)
     failed = 0
-    lines = ["| case | host | expected | got | repo |", "|---|---|---|---|---|"]
+    lines = [
+        "| case | host | expected | got | setup s | run s | total s | repo |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
     for case in cases:
         ok = case.result == case.expected
         failed += 0 if ok else 1
         mark = "" if ok else " **MISMATCH**"
-        print(f"{case.key:{width}}  expected {case.expected:14} got {case.result}{mark}")
-        lines.append(f"| {case.key} | {case.host} | {case.expected} | {case.result}{mark} | {case.repo} |")
+        total = case.setup_s + case.run_s
+        print(f"{case.key:{width}}  expected {case.expected:14} got {case.result:14} "
+              f"setup {case.setup_s:6.1f}s run {case.run_s:7.1f}s{mark}")
+        lines.append(f"| {case.key} | {case.host} | {case.expected} | {case.result}{mark} | "
+                     f"{case.setup_s:.0f} | {case.run_s:.0f} | {total:.0f} | {case.repo} |")
+    timings = {
+        "run": run_id,
+        "started": dt.datetime.now().isoformat(timespec="seconds"),
+        "cases": [
+            {"case": c.key, "host": c.host, "agent": c.agent, "expected": c.expected, "result": c.result,
+             "setup_s": round(c.setup_s, 1), "run_s": round(c.run_s, 1)}
+            for c in cases
+        ],
+    }
+    (workdir / "timings.json").write_text(json.dumps(timings, indent=2) + "\n")
     summary = workdir / "e2e-summary.md"
     summary.write_text("\n".join(lines) + "\n")
     print(f"summary: {summary}")
