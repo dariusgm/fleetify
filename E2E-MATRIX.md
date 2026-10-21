@@ -45,6 +45,7 @@ Ignored by default; see its header.
 |-------|-------|------|--------|------|
 | v1 (main) | openai/gpt-5-nano | 3 | 0 | wrapper in one run (`bash -lc`), no verifier call in two |
 | v2 (PR #25) | openai/gpt-5-nano | 4 | 4 | verifier ran as `sh .agent/tools/verify.sh .` |
+| v2 (PR #25) | llama.cpp qwen3.8-flash-next | 1 | 1 | 159 s; verifier ran unwrapped |
 
 ## Canary checks (`check-agent`)
 
