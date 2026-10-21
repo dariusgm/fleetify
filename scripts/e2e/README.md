@@ -51,15 +51,15 @@ repositories through `gh`; fleetify's own credential does not need `delete_repo`
     python3 scripts/e2e/run_e2e.py --plan                          # print the plan, create nothing
     python3 scripts/e2e/run_e2e.py                                 # opencode-llamacpp on both hosts
     python3 scripts/e2e/run_e2e.py --agents opencode-llamacpp,copilot --hosts github
-    python3 scripts/e2e/run_e2e.py --visibility public             # GitHub repos public (free Actions minutes)
+    python3 scripts/e2e/run_e2e.py --visibility public             # repos public on both hosts (CI minutes)
     python3 scripts/e2e/run_e2e.py --cleanup <run-id>              # list a run's repositories
     python3 scripts/e2e/run_e2e.py --cleanup <run-id> --delete    # delete them
 
 Safety:
 
-- GitLab repositories are always private. GitHub repositories are private by default; `--visibility
-  public` makes them public, which gives free Actions minutes. Public repos show PRs, agent output and
-  workflow logs to everyone while they exist; the fixtures contain no secrets.
+- Repositories are private by default. `--visibility public` makes them public on both hosts. Public
+  repos show PRs, agent output and CI logs to everyone while they exist; the fixtures contain no secrets.
+  Whether GitLab gives public projects more free CI minutes is not checked here.
 - Every repository is named `fleetify-e2e-<run>-<case>`. The script refuses a plan of more
   than 14 repositories.
 - It asks before creating anything, unless `--yes` is given.
