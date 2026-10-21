@@ -296,20 +296,25 @@ def check_tokens(hosts: list[str], delete: bool) -> list[str]:
         if host == "github":
             needed = REQUIRED_GITHUB | (DELETE_GITHUB if delete else set())
             cli_scopes = gh_cli_scopes()
-            for label, token in (("gh login", None), ("fleetify credential", credential_token(host))):
+            # Creating and deleting repositories go through the gh login; fleetify's own credential
+            # only pushes and opens pull requests, so it never needs delete_repo.
+            for label, token, wanted in (
+                ("gh login", None, needed),
+                ("fleetify credential", credential_token(host), REQUIRED_GITHUB),
+            ):
                 try:
                     scopes = cli_scopes if token is None else scopes_github(token)
                 except OSError as err:
                     problems.append(f"github {label}: cannot read scopes ({err})")
                     continue
                 if scopes is None:
-                    print(f"github {label}: fine-grained token, scopes not visible; check by hand: {sorted(needed)}")
+                    print(f"github {label}: fine-grained token, scopes not visible; check by hand: {sorted(wanted)}")
                     continue
-                missing = needed - scopes
+                missing = wanted - scopes
                 if missing:
                     problems.append(f"github {label}: missing scope(s) {sorted(missing)}")
                 else:
-                    print(f"github {label}: scopes ok ({', '.join(sorted(needed))})")
+                    print(f"github {label}: scopes ok ({', '.join(sorted(wanted))})")
         else:
             token = credential_token(host)
             glab_token = glab_cli_token()

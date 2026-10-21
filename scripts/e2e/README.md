@@ -33,7 +33,7 @@ credential (used to push, open PRs and read CI) are checked before anything is c
 | Host | Needed for | Scopes |
 |------|------------|--------|
 | GitHub | create private repos, push, pull requests, Actions runs, merge | `repo`, `workflow` (pushing `.github/workflows/` needs `workflow`) |
-| GitHub | delete the run's repos at the end (`--cleanup --delete`, or the automatic delete on success) | additionally `delete_repo` |
+| GitHub (gh login only) | delete the run's repos at the end (`--cleanup --delete`, or the automatic delete on success) | additionally `delete_repo` |
 | GitLab | create projects, push, merge requests, pipelines, delete projects | `api` |
 
 Classic GitHub tokens show their scopes; a fine-grained token shows none, and the check then asks you to
@@ -43,8 +43,8 @@ verify it by hand. Check the current tokens without creating anything:
     python3 scripts/e2e/run_e2e.py --check-tokens --delete   # plus delete
 
 To add the delete scope to the GitHub login: `gh auth refresh -s delete_repo` (interactive, run it
-yourself with `!` in the prompt). The fleetify credential in `credentials.toml` needs it too for an
-automatic delete on success.
+yourself with `!` in the prompt). Only the `gh` login needs it: the script creates and deletes
+repositories through `gh`; fleetify's own credential does not need `delete_repo`.
 
 ## Usage
 
