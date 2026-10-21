@@ -40,6 +40,7 @@ test -f .agent/attachments/notes.txt || exit 8
 test -f .agent/tools/verify.sh || exit 7
 if grep -q BLOCK .agent/task.md; then echo "which python?" > .agent/blocked.md; exit 0; fi
 if grep -q FAIL .agent/task.md; then exit 1; fi
+if grep -q LIMIT .agent/task.md; then echo "Error: rate limit reached, try again later" >&2; exit 1; fi
 if grep -q ASK .agent/task.md; then echo 'Overwrite the lock file? [y/N]'; sleep 30; exit 0; fi
 if grep -q FORBIDDEN .agent/task.md; then sed -i 's/3.11/3.15/' pyproject.toml; echo '# NOSONAR' >> pyproject.toml; exit 0; fi
 sed -i 's/3.11/3.15/' pyproject.toml
@@ -277,6 +278,16 @@ fn agent_runs_are_judged_like_any_other_step() {
     // The agent exits non-zero: the repo ends as an error at the agent step.
     let (failed, _, _) = run_agent_repo("failed", "FAIL on purpose.");
     assert_eq!(failed.result, "error", "{failed:?}");
+
+    // The agent stops on its own rate limit: the repo ends as rate_limited, with the message.
+    let (limited, _, _) = run_agent_repo("limited", "LIMIT on purpose.");
+    assert_eq!(limited.result, "rate_limited", "{limited:?}");
+    assert!(!limited.successful, "{limited:?}");
+    let block = limited
+        .failure
+        .expect("rate_limited carries a failure block");
+    assert_eq!(block.class, "rate_limited", "{block:?}");
+    assert!(block.message.contains("rate limit reached"), "{block:?}");
     let message = failed
         .failure
         .expect("error carries a failure block")
