@@ -15,7 +15,10 @@ fn root() -> &'static Path {
 fn the_schema_snapshot_is_the_binary_schema() {
     let output = fleetify().arg("schema").output().unwrap();
     assert!(output.status.success());
-    let snapshot = std::fs::read_to_string(root().join("contract/recipe.schema.json")).unwrap();
+    // Checkouts on Windows may turn the snapshot's line endings into CRLF.
+    let snapshot = std::fs::read_to_string(root().join("contract/recipe.schema.json"))
+        .unwrap()
+        .replace("\r\n", "\n");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim_end(),
         snapshot.trim_end(),
