@@ -765,3 +765,22 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
   hand uses (applies_to, instructions, prepare, verify, needs, delivery, guards, ci, limits).
   `judge` is not mirrored yet; add it when a recipe needs it.
 - **Not done:** publishing to PyPI (the plan's name check is still open).
+
+## Level-3 smoke test with opencode (M10, 2026-10-21)
+
+- **Setup.** Private throwaway repo `dariusgm/fleetify-m10-smoke` (Ruby 3.2 in `.ruby-version` and
+  `.github/workflows/ci.yml`). Recipe `~/.fleetify/recipes/ruby-34-opencode-github` (not in the repo):
+  agent `opencode`, model `openai/gpt-5-nano` passed with `--model`, verifier `tools/verify.sh`, guards
+  allow only the two pins. `check-agent opencode --model openai/gpt-5-nano` passed first.
+- **Result.** `pr_open`: PR #1 (`fleetify/chore/ruby-3.4-opencode`) changes only `.ruby-version` and
+  `.github/workflows/ci.yml`. The gate ran the verifier after the agent and passed. Nothing was merged.
+- **Finding: the agent could not run its own verifier.** opencode ran the command as
+  `bash -lc 'sh .agent/tools/verify.sh'`. The grant `sh .agent/tools/verify.sh` does not match that
+  form, and the rule `bash *` is denied by the generated config. The agent's `result.md` therefore says
+  "the verifier would pass", which was not checked. The gate verified the result; the agent did not.
+  Fix to decide: grant the wrapped form (`bash -lc *` for that script only) or accept that the agent
+  cannot verify itself with opencode. Not changed yet.
+- **Invariants.** Held: no push before the gate, only allowed paths changed, no merge, no secret in the
+  run files.
+- **Still open for M10.** The test ran against OpenAI, not against llama.cpp (the local server was not
+  running). The throwaway repo can be deleted after the PR is reviewed.
