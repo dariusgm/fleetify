@@ -61,6 +61,8 @@ Safety:
 - It asks before creating anything, unless `--yes` is given.
 - Results are compared with the expected results above; the summary is written to
   `<workdir>/e2e-summary.md`.
+- Timings per case (repository setup, fleetify run, total) are in the summary and in
+  `<workdir>/timings.json`. Reference numbers from earlier runs are in `REFERENCE.md`.
 
 After the run:
 
