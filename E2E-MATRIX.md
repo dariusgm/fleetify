@@ -30,6 +30,7 @@ opencode models are kept as rows.
 | 12 | GitHub | ruby-34-opencode | opencode | OpenAI gpt-5-nano | off | off | real | pr_open | throwaway PR #1; agent ran the verifier through `bash -lc` and was denied (see finding A) |
 | 13 | GitHub | ruby-34-opencode | opencode | llama.cpp qwen3.8-flash-next | off | off | real | pr_open | throwaway PR #2; agent ran the verifier directly, passed |
 | 14 | GitHub | ruby-34-opencode | opencode | OpenAI gpt-5-nano | off | off | dry run | dry_run | `m10-smoke-dry` |
+| 15 | GitHub | any | any | any | on | off | real | pr_ci_green | reported by the owner as tested; no run record on this machine |
 
 Rows 1–10 used repos that were deleted (2026-10-21) except csvtojson, blog, git2duck, cargo-deps and
 fleetify. Rows 7–10 can no longer be re-run without new repos. Rows 12–13 use
@@ -61,12 +62,14 @@ fleetify. Rows 7–10 can no longer be re-run without new repos. Rows 12–13 us
 
 ## Open combinations (not run for real)
 
-- **GitHub with CI wait on** (`ci.wait = true`): the gate is tested on fakes only.
 - **GitHub with merge when_green**, real: no run yet.
 - **GitLab with an agent other than Copilot**: claude-code and opencode on GitLab never ran.
 - **Copilot on GitHub**: never run for real.
-- **Agent rate limit for real**: no CLI has hit a limit under fleetify; the phrases are a starting list.
+- **Agent rate limit for real**: deliberately not provoked. A real call into a limit costs money, so it
+  waits until a limit is hit by chance. The phrases are a starting list.
 - **Windows real runs**: only the CI matrix builds and tests on Windows; no real pipeline run there.
+  PowerShell on Linux (7.6.7) runs the `verify.ps1` scripts, which is parity for the scripts, not for
+  Windows itself (paths, CRLF, Windows PowerShell 5.1, process spawning).
 - **Re-run after `api_limit` or `rate_limited`**: the resume path after these new results is untested.
 - **`--model` per agent for claude-code and copilot on the real CLIs**: adapters are unit-tested only.
 - **Local llama.cpp with a larger repo or a longer task**: the 3.2→3.4 task is small; time per token is
@@ -75,7 +78,8 @@ fleetify. Rows 7–10 can no longer be re-run without new repos. Rows 12–13 us
 
 ## Findings
 
-- **A. The wrapped verifier call (opencode with OpenAI).** The agent ran `bash -lc 'sh .agent/tools/verify.sh .'`
+- **A. The wrapped verifier call (opencode with OpenAI).** Fix in PR #25 (rules v2: the verifier command
+  must run as its own command). Not yet re-run. The agent ran `bash -lc 'sh .agent/tools/verify.sh .'`
   and was denied by the grant. A direct test shows the plain form `sh .agent/tools/verify.sh .` passes under
   the generated grant `sh .agent/tools/verify.sh *`. So the grant is correct and the wrapper came from the
   model. The llama.cpp model ran the plain form. Options: state the exact command in the task file (no
