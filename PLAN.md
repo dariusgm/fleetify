@@ -641,3 +641,25 @@ If most repos go through without intervention, extending is worth it. If the res
 ## Todo
 
 - **Config and data directories.** Decide whether configuration (`config.toml`, `credentials.toml`) moves to `~/.config/fleetify/` (XDG) and run data stays under `~/.fleetify/` or moves to `~/.local/share/fleetify/`. Windows and macOS need their own system locations (e.g. via the `directories` crate). Not implemented yet; the defaults above stay until this is decided and recorded in `DECISIONS.md`.
+
+## Stories
+
+### Model selection per agent run
+
+**Goal.** Choose the model per run, not only the agent's default. The caller of `fleetify run` says which agent and which model solve the task, for example a cheaper model for the easy repos and a stronger one for the hard ones.
+
+**Scope.**
+
+- **Options, in order of precedence:** `--model NAME` on `fleetify run`; `model` in the recipe (`[agent] model = "..."`, the recipe's default); `[agents.<name>] model = "..."` in `config.toml` (the user's default per agent); otherwise the agent's own default. Nothing is passed when none is set, so the agent's own configuration decides, as it does today.
+- **Passed through, not interpreted.** fleetify does not keep a list of models. The name goes to the agent CLI unchanged, through that CLI's own option. The agent rejects a name it does not know, and the run ends as `error` with the agent's message in the failure block.
+- **Adapters (flags to be checked in each CLI's current docs before use, as for every flag in this plan):** Claude Code `--model`; Copilot CLI `--model` (to verify, Copilot CLI 1.0.101 is installed); opencode `--model <provider>/<model>`. opencode reaches only the llama.cpp provider for now; a provider for Anthropic models needs its own token (see open question below).
+- **Visible.** The run header and the `permissions_effective`-style start event name the agent and the model, so a report shows which model solved which repo. The model is part of the report's per-repo data.
+- **Canary.** `check-agent` runs with the model the run would use, because a model can behave differently under the same grants. The pass marker is keyed by agent, version and model.
+
+**Acceptance.** Unit tests: each adapter puts the model flag into its argument list only when a model is set, and takes the precedence order above; `--model` without a recipe that asks for an agent is refused like any other missing agent. A live run (level 5) per agent with two models shows the chosen model in the report.
+
+**Open questions.**
+
+1. Anthropic models through opencode (or any other Anthropic route) cost API credit outside Claude Code. The user would create that API token and decide whether it is used at all. Until then, no test uses it.
+2. Which default models to use in the recipes and in the examples: left to the user, fleetify ships none.
+

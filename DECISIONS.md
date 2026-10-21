@@ -647,6 +647,9 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
     subdirectories, and denies writes outside. `--allow-tool=write(<dir>/**)` allows writes
     in subdirectories too and still denies writes outside. The adapter uses `**`.
   - Repeated `--allow-tool` flags apply together (two directories, both writable).
+  - Shell grants match the executable only. `shell(sh:*)` ran `sh .agent/tools/verify.sh`;
+    `shell(sh .agent/tools/verify.sh:*)` and `shell(sh .agent/tools/verify.sh)` were denied.
+    So a command grant is `shell(<first word>:*)`, which is broader than the recipe's command.
   - With the `**` write grant and no shell grant, the agent created the missing
     directories and the file. Creating directories needs no shell grant.
 - **Environment.** Only the base allowlist; no Claude or opencode variables and no host
