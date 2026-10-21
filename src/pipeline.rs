@@ -586,9 +586,10 @@ fn merge_change(
         repo: repo.key(),
         phase: "merging".to_string(),
     });
-    // Without a CI gate, only a merge rule for this repository allows the merge.
+    // Without a CI gate, only a merge rule for this repository allows the merge. With
+    // `ci.wait` both callers merge only after the gate passed for `expected`.
     let rule = ctx.config.merge_rule(&repo.key());
-    if !rule.is_some_and(|rule| rule.merge_without_ci) {
+    if !ctx.recipe.ci.wait && !rule.is_some_and(|rule| rule.merge_without_ci) {
         result.result = "merge_blocked".to_string();
         result.successful = false;
         result.detail = format!(
