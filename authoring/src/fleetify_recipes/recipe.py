@@ -117,7 +117,8 @@ def check_version(recipe: Recipe) -> None:
     """Refuses a recipe whose schema version this package does not write."""
     if recipe.schema != SCHEMA_VERSION:
         raise SchemaVersionError(
-            f"recipe schema {recipe.schema} is not supported; this package writes schema {SCHEMA_VERSION}"
+            f"recipe schema {recipe.schema} is not supported; "
+            f"this package writes schema {SCHEMA_VERSION}"
         )
 
 

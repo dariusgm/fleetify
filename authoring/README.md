@@ -5,12 +5,17 @@ An optional authoring aid. It writes `recipe.toml` files for `fleetify`. The `fl
 ```python
 from fleetify_recipes import AppliesTo, Ci, Limits, Recipe, write
 
-write("recipe.toml", Recipe(
-    name="example", branch="chore/example", pr_title="chore: example",
-    applies_to=AppliesTo(host_type=["gitlab"]),
-    ci=Ci(provider="auto", wait=False, timeout_min=30, merge="off"),
-    limits=Limits(agent_timeout_min=60, idle_warn_min=10),
-))
+write(
+    "recipe.toml",
+    Recipe(
+        name="example",
+        branch="chore/example",
+        pr_title="chore: example",
+        applies_to=AppliesTo(host_type=["gitlab"]),
+        ci=Ci(provider="auto", wait=False, timeout_min=30, merge="off"),
+        limits=Limits(agent_timeout_min=60, idle_warn_min=10),
+    ),
+)
 ```
 
 - Fields that stay `None` (or an empty list) are left out of the file.

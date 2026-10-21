@@ -36,6 +36,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - name: Ruff lint
+        working-directory: authoring
+        run: uv run --locked --group dev ruff check .
+      - name: Ruff format
+        working-directory: authoring
+        run: uv run --locked --group dev ruff format --check .
       - name: Python tests
         working-directory: authoring
         run: uv run --locked --group dev pytest -m "not binary"

@@ -1,4 +1,6 @@
-"""Writes the enable-gitlab-ci recipe. Its output equals examples/recipes/enable-gitlab-ci/recipe.toml byte for byte.
+"""Writes the enable-gitlab-ci recipe.
+
+Its output equals examples/recipes/enable-gitlab-ci/recipe.toml byte for byte.
 
 Usage: python examples/enable_gitlab_ci.py <output-path>
 """

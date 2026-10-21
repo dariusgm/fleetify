@@ -25,7 +25,9 @@ def problems(text: str, schema: dict[str, Any]) -> list[str]:
     try:
         from jsonschema import Draft202012Validator
     except ImportError as err:
-        raise RuntimeError("validation needs jsonschema: pip install fleetify-recipes[validate]") from err
+        raise RuntimeError(
+            "validation needs jsonschema: pip install fleetify-recipes[validate]"
+        ) from err
     document = tomllib.loads(text)
     validator = Draft202012Validator(schema)
     return [

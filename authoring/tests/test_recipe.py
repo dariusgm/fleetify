@@ -13,6 +13,7 @@ CONTRACT_SCHEMA = ROOT / "contract" / "recipe.schema.json"
 sys.path.insert(0, str(ROOT / "authoring" / "examples"))
 
 from enable_gitlab_ci import enable_gitlab_ci  # noqa: E402
+
 from fleetify_recipes import (  # noqa: E402
     AppliesTo,
     Limits,
@@ -41,7 +42,9 @@ def contract_schema() -> dict:
 
 
 needs_binary = pytest.mark.binary
-skip_without_binary = pytest.mark.skipif(fleetify_binary() is None, reason="no fleetify binary built")
+skip_without_binary = pytest.mark.skipif(
+    fleetify_binary() is None, reason="no fleetify binary built"
+)
 
 
 def test_the_example_reproduces_the_hand_written_recipe_byte_for_byte(tmp_path):
@@ -77,8 +80,13 @@ def test_backslash_strings_are_written_as_literal_strings():
 
 
 def test_unset_fields_are_left_out():
-    text = to_text(Recipe(name="x", branch="b", pr_title="t", applies_to=AppliesTo(host_type=["github"])))
-    assert text == 'schema = 1\nname = "x"\nbranch = "b"\npr_title = "t"\n\n[applies_to]\nhost_type = ["github"]\n'
+    text = to_text(
+        Recipe(name="x", branch="b", pr_title="t", applies_to=AppliesTo(host_type=["github"]))
+    )
+    assert (
+        text == 'schema = 1\nname = "x"\nbranch = "b"\npr_title = "t"\n\n'
+        '[applies_to]\nhost_type = ["github"]\n'
+    )
 
 
 @needs_binary

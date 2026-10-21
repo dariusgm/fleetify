@@ -3,8 +3,8 @@
 from .recipe import (
     SCHEMA_VERSION,
     AppliesTo,
-    CommandTable,
     Ci,
+    CommandTable,
     Delivery,
     Guards,
     Instruction,
