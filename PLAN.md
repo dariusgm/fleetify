@@ -565,7 +565,7 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 | Milestone | Status | Open |
 |---|---|---|
 | M9 agent runner | done | — |
-| M10 opencode and check-agent | done, `[ASK]` smoke test pending | level-3 smoke test with opencode and llama.cpp |
+| M10 opencode and check-agent | done; level-3 smoke test passed with opencode and OpenAI `gpt-5-nano` (PR #1 on the throwaway repo, see DECISIONS.md) | opencode wraps verifier commands in `bash -lc`, so the agent cannot run its own verifier under the grant; llama.cpp variant not run |
 | M11 CI gate and merge | done for GitHub and GitLab; paging and `ci_blocked` done | — |
 | M11a outage handling | done for hosts, CI, merge, push, rate limits, reads, cache fetch/clone, `Retry-After` dates, agent wait ceiling and `api_limit` | reset time from agent messages is carried as printed, not parsed; rate-limit phrases not checked against real CLIs (only the credits sentence was observed); push-divergence test needs a race; agent silence ceiling can end a slow local model that is silent after a limit line as its last output |
 | M12 Python authoring package | done in `authoring/` (writer, dataclasses, schema check, byte-for-byte example) | not published to an index; no second recipe yet |
