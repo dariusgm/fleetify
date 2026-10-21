@@ -1,0 +1,39 @@
+# Moves a Ruby project to Ruby 3.4.
+# Prepare: .ruby-version and the CI image tag. Verify: both pins agree and the
+# CI file still names an image. Requires a POSIX shell (sh).
+schema = 1
+name = "ruby-34-update"
+branch = "chore/ruby-3.4"
+pr_title = "chore: update to Ruby 3.4"
+commit_message = "chore: update to Ruby 3.4"
+tools = "tools"
+
+[applies_to]
+host_type = ["gitlab"]
+has_file = [".ruby-version", ".gitlab-ci.yml"]
+
+[prepare]
+argv = ["sh", "{tools}/prepare.sh", "{repo}"]
+timeout_s = 60
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 60
+tail_lines = 20
+error_patterns = ['^E ', 'error:']
+# The verifier checks the 3.4 state, which the untouched base does not have yet.
+baseline = false
+
+[guards]
+# Only the Ruby pins may change.
+allow_paths = [".ruby-version", ".gitlab-ci.yml"]
+max_files_changed = 2
+max_lines_changed = 20
+deny_added_patterns = ["NOSONAR"]
+
+[ci]
+wait = true
+merge = "when_green"
+
+[limits]
+agent_timeout_min = 5

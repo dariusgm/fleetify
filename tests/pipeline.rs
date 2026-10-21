@@ -418,6 +418,15 @@ fn ci_passing_on_the_pushed_commit_lets_the_merge_go_ahead() {
 }
 
 #[test]
+fn ci_passing_lets_the_merge_go_ahead_without_a_merge_rule() {
+    // The merge rule is only for merges without a CI gate. With a passing gate on the
+    // pushed commit, `merge = "when_green"` and `--merge` are enough.
+    let s = ci_scenario("ci-pass-no-rule", "success");
+    let result = run_with(&s, "ci-pass-no-rule", false, true);
+    assert_eq!(result.result, "merged", "{result:?}");
+}
+
+#[test]
 fn failing_ci_on_the_pushed_commit_blocks_the_merge() {
     let s = ci_scenario("ci-fail", "failure");
     let result = run_with(&s, "ci-fail", true, true);
