@@ -616,9 +616,18 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
 - **Events.** `rate_limited` is emitted with host, wait and reason for each wait that is
   taken. The client keeps only a weak handle on the event bus; a strong one kept the
   event stream open and hung the run (found by the agent test).
-- **Not verified yet:** the header names (`x-ratelimit-remaining`, `x-ratelimit-reset`,
-  `ratelimit-remaining`, `ratelimit-reset`) and the GitHub secondary-limit message are
-  taken from memory. They must be checked against the current API docs before this is
-  relied on.
+- **Checked against the docs (2026-10-21):**
+  - GitHub (docs.github.com, REST rate limits): `x-ratelimit-remaining`,
+    `x-ratelimit-reset` (UTC epoch seconds), `retry-after` (secondary limits, when
+    present). Primary limit: 403 or 429 with remaining `0`. Secondary limit: 403 or 429;
+    the exact message text is not documented, so the body check is a heuristic. Wait order
+    as implemented: `retry-after`, then reset, then 60 s.
+  - GitLab (docs.gitlab.com, user and IP rate limits; GitLab.com rate limits): throttled
+    requests return 429. `RateLimit-Remaining` and `RateLimit-Limit` are on all responses.
+    `RateLimit-Reset` (Unix time) is documented on responses; `RateLimit-ResetTime` and
+    `Retry-After` (seconds) on 429 only. A 403 without headers (failed-auth ban) is not a
+    rate limit and stays `Forbidden`.
+  - The GitLab REST page itself does not document the headers; the admin and GitLab.com
+    rate-limit pages do.
 - **Not done:** `Retry-After` as an HTTP date (only seconds are read); a proactive
   per-minute limit; agent rate limits (planned in the next branch).

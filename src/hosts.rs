@@ -431,12 +431,19 @@ fn quota_used_up(headers: &HeaderMap) -> bool {
     remaining.is_some_and(|value| value.trim() == "0")
 }
 
-/// Recognises a refusal for rate-limit reasons: HTTP 429, or the 403 that GitHub uses for
-/// secondary limits. `Retry-After` in seconds wins over the reset time.
+/// Recognises a refusal for rate-limit reasons, per the hosts' docs:
+/// - HTTP 429 is always a rate limit (GitHub, GitLab).
+/// - HTTP 403 with `x-ratelimit-remaining: 0` is GitHub's primary limit.
+/// - HTTP 403 with `retry-after` or a "rate limit" message is GitHub's secondary limit. The
+///   message text is not documented, so the body check is a heuristic.
+/// `Retry-After` in seconds wins over the reset time.
 fn rate_limit(status: u16, headers: &HeaderMap, body: &str, now: u64) -> Option<Attempt> {
     let reason = match status {
         429 => "HTTP 429 Too Many Requests".to_string(),
-        403 if body.to_ascii_lowercase().contains("rate limit") => {
+        403 if quota_used_up(headers) => "primary rate limit (HTTP 403)".to_string(),
+        403 if header_u64(headers, "retry-after").is_some()
+            || body.to_ascii_lowercase().contains("rate limit") =>
+        {
             "secondary rate limit (HTTP 403)".to_string()
         }
         _ => return None,
@@ -597,9 +604,13 @@ mod tests {
     }
 
     #[test]
-    fn a_403_is_a_rate_limit_only_for_the_secondary_limit_message() {
+    fn a_403_is_a_rate_limit_only_with_an_exhausted_quota_or_a_secondary_limit() {
         let none = HeaderMap::new();
         assert!(rate_limit(403, &none, r#"{"message":"Forbidden"}"#, 0).is_none());
+        let exhausted = headers(&[("x-ratelimit-remaining", "0")]);
+        assert!(rate_limit(403, &exhausted, "{}", 0).is_some());
+        let retry = headers(&[("retry-after", "30")]);
+        assert!(rate_limit(403, &retry, "{}", 0).is_some());
         assert!(rate_limit(403, &none, "You have exceeded a secondary rate limit.", 0).is_some());
         assert!(rate_limit(401, &none, "rate limit", 0).is_none());
     }
