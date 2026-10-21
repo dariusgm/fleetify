@@ -355,6 +355,24 @@ Merging stays a two-key operation (`merge = "when_green"` and `--merge`). In add
 
 Against a fake GitLab API: success; failed; canceled; no pipeline ever; only skipped; manual-blocked; slow pipeline until timeout; pipeline appearing late; branch pipeline and MR pipeline with one failing; rate limit (429) while polling; head commit changed before merge; unknown status. Plus one real run against a private gitlab.com project with a trivial pipeline, and later one against the self-hosted GitLab at work.
 
+## Availability: outages of hosts and CI
+
+Hosts and CI servers can be unreachable for minutes or hours: the company GitLab is only reachable inside the network, GitHub and gitlab.com have outages, and a scheduled run may start while a server is down. The rule is that an outage never produces a false result and never produces a merge.
+
+1. **Transient errors are retried, not fatal.** Connection errors, timeouts, HTTP 5xx and 429 (with `Retry-After` when present) are retried with exponential back-off and jitter, inside the same budget as the CI gate (`timeout_min`). The current code ends the repo as `error` on the first failed request in `ci::poll`; that is wrong for these errors. Other 4xx answers stay immediate errors.
+2. **No verdict from partial data.** A poll that could not read every item of the commit gives no verdict for that poll. Only a complete, successful read can end the gate as `ci_passed`. A failed read never counts as green, pending or missing.
+3. **Outage beyond the budget: `host_unreachable`.** A new result, not successful, with a `failure` block that names the host, the operation, the last error, the last time a read succeeded, the pushed SHA and the change request URL. It is distinct from `error` (a bug or a bad answer) and from `ci_timeout` (the pipeline is still running). Exit code 1 as for other unsuccessful results.
+4. **Resume is the normal path.** A re-run with the same run id reads `state.json`, sees the pushed SHA and the change request, and continues at the CI gate for that SHA (rule 3 of "Run flow per repo"). It never pushes again and never opens a second change request. The CI verdict of an earlier poll is stored in `state.json` with its time, so a re-run after a long outage shows what was known before.
+5. **Merge is never retried blindly.** Before a merge the orchestrator reads the change request. If it is already `merged`, the result is `merged`, not `merge_blocked` (a merge call may have succeeded on the server while its response was lost). If the host is unreachable when the merge is sent, the repo ends as `host_unreachable` and the merge is repeated only by a re-run, which starts with the same check. The expected-head guard stays on every attempt.
+6. **Other repos go on.** An outage of one host ends only the repos that use it. With `--parallel`, repos on other hosts keep running. The run does not abort, and the report lists the affected repos with `host_unreachable`.
+7. **Git operations get the same treatment.** `ls-remote`, `fetch` and `clone` are retried like API calls. A `push` that timed out is checked before it is repeated: if the remote branch already points at the pushed SHA, the push is done; if it points elsewhere, the repo ends as `error` (a branch with foreign commits is never overwritten).
+8. **Automated callers can act on it.** The report carries `host_unreachable` with the host and the time of the last successful read, so a scheduler can rerun later. The exit code does not change: 1 means "not successful", and the report says why.
+9. **Visible in the event stream.** Every retry is an event (`host_retry` with host, operation, attempt, delay, error class), so a live view or a log can show a server being down without treating it as a failure.
+
+**Tests** (against the fake host and fake CI server): a read that fails twice and then succeeds gives the normal verdict; a 429 with `Retry-After` is honoured; an outage longer than `timeout_min` gives `host_unreachable` with the failure block; a re-run after recovery continues at the gate without a second push or change request; a merge response lost after the server merged gives `merged` on the re-run; a push whose remote branch points elsewhere is refused, not overwritten; a repo on an unreachable host does not stop a repo on a reachable host.
+
+**Why this is stage 1, not stage 2:** the company GitLab is only reachable inside the company network, and scheduled runs will hit outages. Without rules 1–5 a single network blip gives a wrong result and a retry gives a duplicate or a missed merge.
+
 ## Guards (diff guards)
 
 Guards decide whether the agent's diff may leave the machine. They are layered so that the cheap, reliable layer always runs and the expensive, fuzzy layer is optional.
@@ -525,6 +543,8 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 
 **M11 — CI layer, CI gate and merge.** Depends on M6, M7 (can run in parallel with M9–M10). `CiProvider`, `ci/gitlab_ci.rs`, the gate as a separate `tokio` task, failure details into events and report, results `ci_passed`, `ci_failed`, `ci_missing`, `ci_blocked`, `ci_timeout`, resume at the CI gate, two-key merge with the expected-head guard, `merged` and `merge_blocked`, validation error for `wait = true` on GitHub. *Acceptance:* every scenario under "Tests for the CI layer" produces the specified result against the fake GitLab API and the matching `failure` block; failed, missing or blocked CI never leads to a merge; a merge happens only with both keys and a matching head; `[ASK]` one real run against the private gitlab.com project with a trivial pipeline ends as `ci_passed`, and one with `--merge` on a throwaway branch ends as `merged`.
 
+**M11a — Outage handling.** Depends on M11. Retry with back-off for host and CI reads (rule 1), no verdict from partial reads (rule 2), `host_unreachable` with its failure block (rule 3), `host_retry` events, merge check before merging and retry-safe push check (rules 5 and 7), and the resume behaviour of rule 4. *Acceptance:* every test listed under "Availability: outages of hosts and CI" passes against the fake host and fake CI server on both OS; a `host_unreachable` result carries a non-empty `failure` block; no test sends a second push or a second change request. Must be done before the first real run against the company GitLab (M15).
+
 **M12 — Python authoring package (optional).** Depends on M3. Separate `uv` project `fleetify-recipes`: dataclasses mirroring the TOML schema, `write()`, validation against `fleetify schema` output, one example that reproduces the `enable-gitlab-ci` recipe byte-for-byte. *Acceptance:* the generated `recipe.toml` passes `fleetify validate` and equals the hand-written one; a schema-version mismatch is an error.
 
 **M13 — Live view (optional, demo).** Depends on M9. ratatui renderer on the event stream as specified under "Live view", `--ui`, `--tail`, `NO_COLOR`, fallback to plain. *Acceptance:* manual check on Windows Terminal and a Linux terminal with the fake agents; piping to a file ignores `--ui` and produces plain output; the level-2 tests are unchanged.
@@ -591,3 +611,7 @@ If most repos go through without intervention, extending is worth it. If the res
 - Never write secrets into logs, events, task files, state files, PR bodies or the report.
 - Every new failure path must produce a `failure` block in the report with a non-empty message; a test asserts it.
 - When a design question is not answered by this plan, choose the most conservative option, note it in `DECISIONS.md` and continue; do not block on it.
+
+## Todo
+
+- **Config and data directories.** Decide whether configuration (`config.toml`, `credentials.toml`) moves to `~/.config/fleetify/` (XDG) and run data stays under `~/.fleetify/` or moves to `~/.local/share/fleetify/`. Windows and macOS need their own system locations (e.g. via the `directories` crate). Not implemented yet; the defaults above stay until this is decided and recorded in `DECISIONS.md`.
