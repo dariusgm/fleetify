@@ -42,6 +42,17 @@ pub fn serve<F>(handler: F) -> FakeHost
 where
     F: Fn(&Recorded) -> (u16, String) + Send + Sync + 'static,
 {
+    serve_with_headers(move |req| {
+        let (status, body) = handler(req);
+        (status, Vec::new(), body)
+    })
+}
+
+/// Like `serve`, with extra response headers (for rate-limit answers).
+pub fn serve_with_headers<F>(handler: F) -> FakeHost
+where
+    F: Fn(&Recorded) -> (u16, Vec<(String, String)>, String) + Send + Sync + 'static,
+{
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -52,10 +63,14 @@ where
             let Some(request) = read_request(&mut stream) else {
                 continue;
             };
-            let (status, body) = handler(&request);
+            let (status, extra, body) = handler(&request);
             recorded.lock().unwrap().push(request);
+            let extra: String = extra
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
+                .collect();
             let response = format!(
-                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes());

@@ -50,6 +50,28 @@ pub struct Config {
     pub merge_policy: Vec<MergeRule>,
     #[serde(default)]
     pub permissions: Permissions,
+    #[serde(default)]
+    pub rate_limit: RateLimit,
+}
+
+/// `[rate_limit]`: how long fleetify waits when a host asks it to hold back.
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimit {
+    /// The longest wait for one rate limit, in minutes. A longer wait ends the repo as
+    /// `rate_limited` and is not taken. `0` means never wait. Unset means 15.
+    #[serde(default)]
+    pub max_wait_min: Option<u32>,
+}
+
+impl RateLimit {
+    /// The ceiling as a duration.
+    pub fn max_wait(&self) -> std::time::Duration {
+        match self.max_wait_min {
+            Some(minutes) => std::time::Duration::from_secs(u64::from(minutes) * 60),
+            None => crate::hosts::DEFAULT_MAX_RATE_WAIT,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -418,5 +440,21 @@ mod tests {
         let other = config.merge_rule("github.com/owner/service").unwrap();
         assert!(!other.merge_without_ci);
         assert!(config.merge_rule("gitlab.com/owner/service").is_none());
+    }
+
+    #[test]
+    fn rate_limit_ceiling_defaults_to_fifteen_minutes_and_zero_means_never() {
+        let unset: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            unset.rate_limit.max_wait(),
+            crate::hosts::DEFAULT_MAX_RATE_WAIT
+        );
+        let never: Config = toml::from_str("[rate_limit]\nmax_wait_min = 0\n").unwrap();
+        assert_eq!(never.rate_limit.max_wait(), std::time::Duration::ZERO);
+        let short: Config = toml::from_str("[rate_limit]\nmax_wait_min = 2\n").unwrap();
+        assert_eq!(
+            short.rate_limit.max_wait(),
+            std::time::Duration::from_secs(120)
+        );
     }
 }

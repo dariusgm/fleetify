@@ -18,6 +18,7 @@ use fleetify::hosts::{Host, client_for};
 use fleetify::recipe::Recipe;
 use fleetify::repos::Repo;
 use fleetify::run::{Loaded, Mode, RunLayout, WavePlan, Waves, execute_loaded};
+use support::serve_with_headers;
 use support::{Recorded, serve};
 
 const TOKEN: &str = "tok-pipeline-test";
@@ -615,5 +616,37 @@ fn a_host_that_fails_during_the_merge_ends_the_repo_as_host_unreachable() {
     let failure = result.failure.expect("a failure block");
     assert_eq!(failure.class, "host_unreachable");
     assert!(!failure.message.is_empty());
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn a_rate_limit_longer_than_the_ceiling_ends_the_repo_as_rate_limited() {
+    let mut s = scenario("merge-429", PREPARE_OK, VERIFY_OK);
+    s.host = serve_with_headers(|req| {
+        let path = req.target.split('?').next().unwrap();
+        match (req.method.as_str(), path) {
+            ("GET", "/repos/o/r") => (200, Vec::new(), r#"{"default_branch":"main"}"#.into()),
+            ("GET", "/repos/o/r/pulls") if req.target.contains("state=open") => {
+                (200, Vec::new(), OPEN_PR.into())
+            }
+            ("GET", "/repos/o/r/pulls") => (200, Vec::new(), OPEN_PR.into()),
+            ("PUT", "/repos/o/r/pulls/1/merge") => (
+                429,
+                vec![("Retry-After".into(), "3600".into())],
+                "{}".into(),
+            ),
+            _ => (404, Vec::new(), r#"{"message":"Not Found"}"#.into()),
+        }
+    });
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text =
+        fs::read_to_string(&recipe).unwrap() + "\n[ci]\nwait = false\nmerge = \"when_green\"\n";
+    fs::write(&recipe, text).unwrap();
+    let result = run_with(&s, "merge-429", true, true);
+    assert_eq!(result.result, "rate_limited", "{result:?}");
+    assert!(!result.successful);
+    let failure = result.failure.expect("a failure block");
+    assert_eq!(failure.class, "rate_limited");
+    assert!(failure.message.contains("3600"), "{}", failure.message);
     let _ = fs::remove_dir_all(&s.base);
 }

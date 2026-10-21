@@ -11,6 +11,7 @@ use super::{
     access_from_status, parse_json, refusal_reason, unexpected,
 };
 use crate::credentials::Secret;
+use crate::events::EventBus;
 use crate::repos::Repo;
 
 pub struct GitLab {
@@ -69,6 +70,10 @@ fn pipeline_state(status: &str) -> Option<CiState> {
 }
 
 impl Host for GitLab {
+    fn attach_events(&self, bus: &EventBus) {
+        self.http.attach_events(bus);
+    }
+
     fn probe_read_access(&self, repo: &Repo, token: &Secret) -> Result<Access, HostError> {
         let reply = self.http.send(
             Method::GET,

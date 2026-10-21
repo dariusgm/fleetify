@@ -6,14 +6,18 @@ pub mod github;
 pub mod gitlab;
 
 use std::fmt;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::Method;
 use reqwest::blocking::Client;
+use reqwest::header::HeaderMap;
 use serde_json::Value;
 
 use crate::config::HostType;
 use crate::credentials::Secret;
+use crate::events::{Event, EventBus, WeakEventBus};
 use crate::repos::Repo;
 
 /// Timeout for one API call.
@@ -77,6 +81,9 @@ pub enum HostError {
     Parse(String),
     /// The host cannot do this yet.
     Unsupported(String),
+    /// The host asked us to hold back for `wait`, and that is longer than the configured
+    /// ceiling. Not waited for; the repo ends as `rate_limited`.
+    RateLimited { wait: Duration, reason: String },
 }
 
 impl fmt::Display for HostError {
@@ -86,6 +93,11 @@ impl fmt::Display for HostError {
             HostError::Transport(message) => write!(f, "cannot reach the host: {message}"),
             HostError::Parse(message) => write!(f, "unexpected answer from the host: {message}"),
             HostError::Unsupported(message) => write!(f, "not supported yet: {message}"),
+            HostError::RateLimited { wait, reason } => write!(
+                f,
+                "rate limited ({reason}); the host allows requests again in {} s",
+                wait.as_secs()
+            ),
         }
     }
 }
@@ -100,8 +112,15 @@ impl HostError {
         match self {
             HostError::Transport(_) => true,
             HostError::Status { status, .. } => *status == 429 || *status >= 500,
-            HostError::Parse(_) | HostError::Unsupported(_) => false,
+            HostError::Parse(_) | HostError::Unsupported(_) | HostError::RateLimited { .. } => {
+                false
+            }
         }
+    }
+
+    /// A rate limit longer than the configured ceiling.
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, HostError::RateLimited { .. })
     }
 }
 
@@ -123,6 +142,8 @@ pub enum CiState {
 }
 
 pub trait Host: Send + Sync {
+    /// Routes this client's rate-limit events to the run's event stream.
+    fn attach_events(&self, bus: &EventBus);
     fn probe_read_access(&self, repo: &Repo, token: &Secret) -> Result<Access, HostError>;
     fn default_branch(&self, repo: &Repo, token: &Secret) -> Result<String, HostError>;
     /// The open change request whose source is `branch`, if any. Closed or merged
@@ -183,20 +204,44 @@ pub fn client_for(
     host: &str,
     base: Option<&str>,
 ) -> Result<Box<dyn Host>, HostError> {
+    client_for_policy(host_type, host, base, DEFAULT_MAX_RATE_WAIT)
+}
+
+/// Like `client_for`, with the longest rate-limit wait from `[rate_limit]` in config.toml.
+pub fn client_for_policy(
+    host_type: HostType,
+    host: &str,
+    base: Option<&str>,
+    max_rate_wait: Duration,
+) -> Result<Box<dyn Host>, HostError> {
     let base = base
         .map(str::to_string)
         .unwrap_or_else(|| api_base(host_type, host));
-    let http = Http::new(base)?;
+    let http = Http::with_policy(base, host.to_string(), max_rate_wait)?;
     Ok(match host_type {
         HostType::Github => Box::new(github::GitHub::new(http)),
         HostType::Gitlab => Box::new(gitlab::GitLab::new(http)),
     })
 }
 
-/// A shared HTTP client with one API base.
+/// The longest rate-limit wait fleetify takes on its own, when `[rate_limit]` in config.toml
+/// does not say otherwise. A longer wait ends the repo as `rate_limited`.
+pub const DEFAULT_MAX_RATE_WAIT: Duration = Duration::from_secs(15 * 60);
+/// The wait when the host gives neither `Retry-After` nor a reset time.
+const FALLBACK_RATE_WAIT: Duration = Duration::from_secs(60);
+/// Rate-limit waits one request may take before it gives up.
+const MAX_RATE_WAITS: u32 = 3;
+
+/// A shared HTTP client with one API base. All repos of one host share one client, so a
+/// rate limit that one repo hits also holds back the others on that host.
 pub struct Http {
     client: Client,
     base: String,
+    host: String,
+    max_wait: Duration,
+    /// Until when the host asked us to hold back. Shared by every request of this client.
+    blocked_until: Mutex<Option<Instant>>,
+    events: OnceLock<WeakEventBus>,
 }
 
 /// A status and body. Bodies are read as text; JSON is parsed by the caller.
@@ -205,17 +250,49 @@ pub struct Reply {
     pub body: String,
 }
 
+/// The answer to one request, before any rate-limit handling.
+enum Attempt {
+    Done(Reply),
+    /// The host refused for now. `wait` is how long it asked us to hold back.
+    Limited {
+        wait: Duration,
+        reason: String,
+    },
+}
+
 impl Http {
     pub fn new(base: String) -> Result<Self, HostError> {
+        Self::with_policy(base.clone(), base, DEFAULT_MAX_RATE_WAIT)
+    }
+
+    /// `host` names the host in events and errors; `max_wait` is the longest rate-limit wait.
+    pub fn with_policy(base: String, host: String, max_wait: Duration) -> Result<Self, HostError> {
         let client = Client::builder()
             .user_agent(concat!("fleetify/", env!("CARGO_PKG_VERSION")))
             .timeout(API_TIMEOUT)
             .build()
             .map_err(|err| HostError::Transport(err.to_string()))?;
-        Ok(Http { client, base })
+        Ok(Http {
+            client,
+            base,
+            host,
+            max_wait,
+            blocked_until: Mutex::new(None),
+            events: OnceLock::new(),
+        })
+    }
+
+    /// Routes rate-limit events of this client to the run's event stream. Set once per run.
+    /// Only a weak handle is kept, so the client does not hold the stream open.
+    pub fn attach_events(&self, bus: &EventBus) {
+        let _ = self.events.set(bus.downgrade());
     }
 
     /// Sends one request. `path` starts with `/`. Headers carry the token.
+    ///
+    /// A rate limit within `max_wait` is waited out and the request repeated. A longer one
+    /// is returned as `HostError::RateLimited` without waiting. A reply that comes with an
+    /// exhausted quota stands, and the host is held back for the next requests.
     pub fn send(
         &self,
         method: Method,
@@ -224,6 +301,30 @@ impl Http {
         query: &[(&str, &str)],
         body: Option<&Value>,
     ) -> Result<Reply, HostError> {
+        let mut waits = 0;
+        loop {
+            self.respect_block()?;
+            match self.attempt(method.clone(), path, headers, query, body)? {
+                Attempt::Done(reply) => return Ok(reply),
+                Attempt::Limited { wait, reason } => {
+                    if wait > self.max_wait || waits == MAX_RATE_WAITS {
+                        return Err(HostError::RateLimited { wait, reason });
+                    }
+                    waits += 1;
+                    self.hold_back(wait, &reason);
+                }
+            }
+        }
+    }
+
+    fn attempt(
+        &self,
+        method: Method,
+        path: &str,
+        headers: &[(&str, String)],
+        query: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> Result<Attempt, HostError> {
         let mut request = self
             .client
             .request(method, format!("{}{path}", self.base))
@@ -238,11 +339,121 @@ impl Http {
             .send()
             .map_err(|err| HostError::Transport(err.to_string()))?;
         let status = response.status().as_u16();
+        let response_headers = response.headers().clone();
         let body = response
             .text()
             .map_err(|err| HostError::Transport(err.to_string()))?;
-        Ok(Reply { status, body })
+        let now = unix_now();
+        if let Some(limit) = rate_limit(status, &response_headers, &body, now) {
+            return Ok(limit);
+        }
+        if quota_used_up(&response_headers) {
+            // The reply stands; the next requests wait for the reset.
+            let wait = reset_wait(&response_headers, now).unwrap_or(FALLBACK_RATE_WAIT);
+            self.hold_back(wait, "the host's rate-limit quota is used up");
+        }
+        Ok(Attempt::Done(Reply { status, body }))
     }
+
+    /// Waits while the host has asked us to hold back. A wait longer than the ceiling is
+    /// not taken: the request fails with `RateLimited`.
+    fn respect_block(&self) -> Result<(), HostError> {
+        let until = *self
+            .blocked_until
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(until) = until else {
+            return Ok(());
+        };
+        let Some(wait) = until.checked_duration_since(Instant::now()) else {
+            return Ok(());
+        };
+        if wait > self.max_wait {
+            return Err(HostError::RateLimited {
+                wait,
+                reason: "the host asked us to hold back".to_string(),
+            });
+        }
+        thread::sleep(wait);
+        Ok(())
+    }
+
+    /// Records that the host asked us to hold back for `wait`, and tells the event stream.
+    /// Waits above the ceiling are recorded but not reported as taken.
+    fn hold_back(&self, wait: Duration, reason: &str) {
+        {
+            let mut blocked = self
+                .blocked_until
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let until = Instant::now() + wait;
+            if blocked.is_none_or(|current| current < until) {
+                *blocked = Some(until);
+            }
+        }
+        if wait <= self.max_wait
+            && let Some(bus) = self.events.get()
+        {
+            bus.emit(Event::RateLimited {
+                host: self.host.clone(),
+                wait_ms: wait.as_millis() as u64,
+                reason: reason.to_string(),
+            });
+        }
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+fn header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
+    headers.get(name)?.to_str().ok()?.trim().parse().ok()
+}
+
+/// The wait the reset header of the quota asks for (GitHub `x-ratelimit-reset`, GitLab
+/// `RateLimit-Reset`), counted from `now`.
+fn reset_wait(headers: &HeaderMap, now: u64) -> Option<Duration> {
+    let reset = header_u64(headers, "x-ratelimit-reset")
+        .or_else(|| header_u64(headers, "ratelimit-reset"))?;
+    Some(Duration::from_secs(reset.saturating_sub(now)))
+}
+
+/// The quota is used up when the remaining count says zero.
+fn quota_used_up(headers: &HeaderMap) -> bool {
+    let remaining = headers
+        .get("x-ratelimit-remaining")
+        .or_else(|| headers.get("ratelimit-remaining"))
+        .and_then(|value| value.to_str().ok());
+    remaining.is_some_and(|value| value.trim() == "0")
+}
+
+/// Recognises a refusal for rate-limit reasons, per the hosts' docs:
+/// - HTTP 429 is always a rate limit (GitHub, GitLab).
+/// - HTTP 403 with `x-ratelimit-remaining: 0` is GitHub's primary limit.
+/// - HTTP 403 with `retry-after` or a "rate limit" message is GitHub's secondary limit.
+///   The message text is not documented, so the body check is a heuristic.
+///
+/// `Retry-After` in seconds wins over the reset time.
+fn rate_limit(status: u16, headers: &HeaderMap, body: &str, now: u64) -> Option<Attempt> {
+    let reason = match status {
+        429 => "HTTP 429 Too Many Requests".to_string(),
+        403 if quota_used_up(headers) => "primary rate limit (HTTP 403)".to_string(),
+        403 if header_u64(headers, "retry-after").is_some()
+            || body.to_ascii_lowercase().contains("rate limit") =>
+        {
+            "secondary rate limit (HTTP 403)".to_string()
+        }
+        _ => return None,
+    };
+    let wait = header_u64(headers, "retry-after")
+        .map(Duration::from_secs)
+        .or_else(|| reset_wait(headers, now))
+        .unwrap_or(FALLBACK_RATE_WAIT);
+    Some(Attempt::Limited { wait, reason })
 }
 
 /// Maps the status of a read to an access result. `None` for other statuses.
@@ -355,6 +566,64 @@ mod tests {
         assert!(!status(404).is_transient());
         assert!(!HostError::Parse("bad".into()).is_transient());
         assert!(!HostError::Unsupported("x".into()).is_transient());
+    }
+
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(*name, value.parse().unwrap());
+        }
+        map
+    }
+
+    #[test]
+    fn retry_after_wins_over_the_reset_time() {
+        let h = headers(&[("retry-after", "7"), ("x-ratelimit-reset", "2000")]);
+        assert_eq!(
+            header_u64(&h, "retry-after").map(Duration::from_secs),
+            Some(Duration::from_secs(7))
+        );
+        match rate_limit(429, &h, "", 1000) {
+            Some(Attempt::Limited { wait, .. }) => assert_eq!(wait, Duration::from_secs(7)),
+            _ => panic!("429 is a rate limit"),
+        }
+    }
+
+    #[test]
+    fn a_reset_time_is_counted_from_now() {
+        let h = headers(&[("x-ratelimit-reset", "1090")]);
+        assert_eq!(reset_wait(&h, 1000), Some(Duration::from_secs(90)));
+        // Already in the past: no wait, not a negative one.
+        assert_eq!(reset_wait(&h, 2000), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn gitlab_reset_header_is_read_too() {
+        let h = headers(&[("ratelimit-remaining", "0"), ("ratelimit-reset", "1060")]);
+        assert!(quota_used_up(&h));
+        assert_eq!(reset_wait(&h, 1000), Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_403_is_a_rate_limit_only_with_an_exhausted_quota_or_a_secondary_limit() {
+        let none = HeaderMap::new();
+        assert!(rate_limit(403, &none, r#"{"message":"Forbidden"}"#, 0).is_none());
+        let exhausted = headers(&[("x-ratelimit-remaining", "0")]);
+        assert!(rate_limit(403, &exhausted, "{}", 0).is_some());
+        let retry = headers(&[("retry-after", "30")]);
+        assert!(rate_limit(403, &retry, "{}", 0).is_some());
+        assert!(rate_limit(403, &none, "You have exceeded a secondary rate limit.", 0).is_some());
+        assert!(rate_limit(401, &none, "rate limit", 0).is_none());
+    }
+
+    #[test]
+    fn a_rate_limit_is_neither_transient_nor_a_permanent_error() {
+        let err = HostError::RateLimited {
+            wait: Duration::from_secs(3600),
+            reason: "HTTP 429".into(),
+        };
+        assert!(err.is_rate_limited());
+        assert!(!err.is_transient());
     }
 
     #[test]

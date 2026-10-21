@@ -94,6 +94,12 @@ pub enum Event {
         delay_ms: u64,
         error: String,
     },
+    /// The host asked us to hold back. Sent for every wait fleetify takes on its own.
+    RateLimited {
+        host: String,
+        wait_ms: u64,
+        reason: String,
+    },
     /// The grants an agent starts with, sent before the agent runs.
     PermissionsEffective {
         repo: String,
@@ -127,6 +133,14 @@ impl EventBus {
         self.lock().retain(|tx| tx.send(event.clone()).is_ok());
     }
 
+    /// A handle that does not keep the stream open. The stream ends when the last strong
+    /// `EventBus` is dropped; a component that only emits holds this instead.
+    pub fn downgrade(&self) -> WeakEventBus {
+        WeakEventBus {
+            subscribers: Arc::downgrade(&self.subscribers),
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<mpsc::Sender<Event>>> {
         // A poisoned lock only means a subscriber panicked; the list is still valid.
         self.subscribers
@@ -137,6 +151,20 @@ impl EventBus {
 
 /// Replaces known secret values in text. Applied to every argv, output line and
 /// log line before it leaves the orchestrator. Token rules come with M2.
+/// Emits to an `EventBus` without keeping it open. Nothing is emitted once the bus is gone.
+#[derive(Clone, Default)]
+pub struct WeakEventBus {
+    subscribers: std::sync::Weak<Mutex<Vec<mpsc::Sender<Event>>>>,
+}
+
+impl WeakEventBus {
+    pub fn emit(&self, event: Event) {
+        if let Some(subscribers) = self.subscribers.upgrade() {
+            EventBus { subscribers }.emit(event);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Redactor {
     secrets: Vec<String>,

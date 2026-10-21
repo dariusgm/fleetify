@@ -4,11 +4,13 @@ mod support;
 
 use fleetify::config::HostType;
 use fleetify::credentials::Secret;
+use fleetify::hosts::client_for_policy;
 use fleetify::hosts::{
     Access, CiItem, CiState, CrState, Host, HostError, MergeOutcome, client_for,
 };
 use fleetify::repos::Repo;
-use support::{Recorded, serve};
+use std::time::{Duration, Instant};
+use support::{Recorded, serve, serve_with_headers};
 
 const TOKEN: &str = "tok-host-test-123";
 
@@ -546,4 +548,100 @@ fn gitlab_latest_change_request_returns_a_merged_one_for_the_branch() {
         .expect("a change request");
     assert_eq!(change.id, "7");
     assert_eq!(change.state, CrState::Merged);
+}
+
+fn github_with_ceiling(base: &str, max_wait: Duration) -> Box<dyn Host> {
+    client_for_policy(HostType::Github, "github.com", Some(base), max_wait).unwrap()
+}
+
+#[test]
+fn a_retry_after_wait_is_taken_and_the_request_repeated() {
+    let answers = std::sync::atomic::AtomicUsize::new(0);
+    let host = serve_with_headers(move |_| {
+        if answers.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return (429, vec![("Retry-After".into(), "1".into())], "{}".into());
+        }
+        (200, Vec::new(), r#"{"default_branch":"main"}"#.into())
+    });
+    let client = github_with_ceiling(&host.base, Duration::from_secs(60));
+    let started = Instant::now();
+    let branch = client
+        .default_branch(&repo("github.com", HostType::Github, "o/r"), &token())
+        .unwrap();
+    assert_eq!(branch, "main");
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(host.recorded().len(), 2);
+}
+
+#[test]
+fn a_wait_longer_than_the_ceiling_is_not_taken() {
+    let host = serve_with_headers(|_| {
+        (
+            429,
+            vec![("Retry-After".into(), "3600".into())],
+            "{}".into(),
+        )
+    });
+    let client = github_with_ceiling(&host.base, Duration::from_secs(60));
+    let err = client
+        .default_branch(&repo("github.com", HostType::Github, "o/r"), &token())
+        .unwrap_err();
+    match err {
+        HostError::RateLimited { wait, .. } => assert_eq!(wait, Duration::from_secs(3600)),
+        other => panic!("{other:?}"),
+    }
+    // One request only: the wait was not taken, so no retry was sent.
+    assert_eq!(host.recorded().len(), 1);
+}
+
+#[test]
+fn a_zero_ceiling_never_waits() {
+    let host = serve_with_headers(|_| (429, vec![("Retry-After".into(), "1".into())], "{}".into()));
+    let client = github_with_ceiling(&host.base, Duration::ZERO);
+    assert!(
+        client
+            .default_branch(&repo("github.com", HostType::Github, "o/r"), &token())
+            .unwrap_err()
+            .is_rate_limited()
+    );
+    assert_eq!(host.recorded().len(), 1);
+}
+
+#[test]
+fn an_exhausted_quota_holds_back_the_next_request_of_the_same_host() {
+    // The first reply stands, but the quota is used up until the reset time. The reset is
+    // given in whole seconds, so the second request must not come back before that instant.
+    let reset_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 2;
+    let reset = reset_at.to_string();
+    let host = serve_with_headers(move |_| {
+        (
+            200,
+            vec![
+                ("x-ratelimit-remaining".into(), "0".into()),
+                ("x-ratelimit-reset".into(), reset.clone()),
+            ],
+            r#"{"default_branch":"main"}"#.into(),
+        )
+    });
+    let client = github_with_ceiling(&host.base, Duration::from_secs(60));
+    let repo = repo("github.com", HostType::Github, "o/r");
+    client.default_branch(&repo, &token()).unwrap();
+    client.default_branch(&repo, &token()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(
+        now >= reset_at,
+        "second request came back at {now}, before the reset at {reset_at}"
+    );
+    assert_eq!(host.recorded().len(), 2);
 }
