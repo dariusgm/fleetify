@@ -20,7 +20,7 @@ use crate::config::{Config, ConfigError, HostTable};
 use crate::credentials::{Credentials, CredentialsError, Secret};
 use crate::events::{Event, EventBus, Redactor};
 use crate::git::{Auth, GitContext, GitError, username_for};
-use crate::hosts::{Access, Host, TlsCheck, api_base, client_for, tls_self_test};
+use crate::hosts::{Access, Host, TlsCheck, api_base, tls_self_test};
 use crate::pipeline;
 use crate::recipe::{Recipe, RepoFacts};
 use crate::report::{self, Failure, RepoResult, Report};
@@ -324,7 +324,7 @@ fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
     }
     check_merge(input.recipe, input.merge).map_err(Refused)?;
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
-    let clients = host_clients(&repos)?;
+    let clients = host_clients(&repos, config.rate_limit.max_wait())?;
     Ok(Loaded {
         credentials,
         config,
@@ -457,6 +457,10 @@ fn execute_loaded_with_view(
 
     let redactor = Redactor::new(loaded.credentials.secrets());
     let bus = EventBus::new();
+    // Rate-limit waits of the host clients go to the same event stream as everything else.
+    for client in loaded.clients.values() {
+        client.attach_events(&bus);
+    }
     let recorder = spawn_recorder(bus.subscribe(), layout.clone())
         .map_err(|err| Refused(format!("cannot write events log: {err}")))?;
     let view_thread = crate::ui::spawn_view(bus.subscribe(), view);
@@ -623,7 +627,10 @@ fn load_repos(path: &Path, hosts: &HostTable, only: &[String]) -> Result<Vec<Rep
 /// One API client per host used by the repos, after a TLS self-test per host. A
 /// certificate the OS does not trust stops the run: the internal CA is missing.
 /// Other connection failures are reported and the run goes on.
-fn host_clients(repos: &[Repo]) -> Result<BTreeMap<String, Box<dyn Host>>, Refused> {
+fn host_clients(
+    repos: &[Repo],
+    max_rate_wait: std::time::Duration,
+) -> Result<BTreeMap<String, Box<dyn Host>>, Refused> {
     let mut clients: BTreeMap<String, Box<dyn Host>> = BTreeMap::new();
     for repo in repos {
         if clients.contains_key(&repo.host) {
@@ -643,8 +650,11 @@ fn host_clients(repos: &[Repo]) -> Result<BTreeMap<String, Box<dyn Host>>, Refus
                 eprintln!("warning: cannot reach {base} for the TLS check: {detail}");
             }
         }
-        let client = client_for(repo.host_type, &repo.host, None)
-            .map_err(|err| Refused(format!("cannot set up the client for {}: {err}", repo.host)))?;
+        let client =
+            crate::hosts::client_for_policy(repo.host_type, &repo.host, None, max_rate_wait)
+                .map_err(|err| {
+                    Refused(format!("cannot set up the client for {}: {err}", repo.host))
+                })?;
         clients.insert(repo.host.clone(), client);
     }
     Ok(clients)

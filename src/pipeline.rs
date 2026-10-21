@@ -132,9 +132,12 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         }
         Ok(None) => {}
         Err(err) => {
-            if err.is_transient() {
+            if err.is_rate_limited() || err.is_transient() {
                 let mut result = RepoResult::new(&key, "error", &err.to_string());
                 result.rule = Some(pattern.clone());
+                if err.is_rate_limited() {
+                    return rate_limited_result(ctx.layout, repo, result, &err);
+                }
                 return unreachable_result(ctx.layout, repo, result, &err);
             }
             return error_result(ctx.layout, repo, err.to_string(), Some(pattern), Vec::new());
@@ -580,6 +583,28 @@ pub(crate) fn remote_failure(
     }
 }
 
+/// A repo whose host asked us to hold back for longer than the ceiling. Not successful; a
+/// re-run after the reset continues.
+fn rate_limited_result(
+    layout: &crate::run::RunLayout,
+    repo: &Repo,
+    mut result: RepoResult,
+    err: &crate::hosts::HostError,
+) -> RepoResult {
+    let message = format!("{}: {err}", repo.host);
+    result.result = "rate_limited".to_string();
+    result.successful = crate::report::is_successful("rate_limited");
+    result.detail = message.clone();
+    result.failure = Some(Failure {
+        class: "rate_limited".to_string(),
+        message,
+        rule: result.rule.clone(),
+        output_tail: Vec::new(),
+        artifacts: crate::run::artifacts(layout, repo),
+    });
+    result
+}
+
 /// A repo whose host did not answer within the budget. Not successful; a re-run continues.
 fn unreachable_result(
     layout: &crate::run::RunLayout,
@@ -660,6 +685,9 @@ fn gate_ci(
             ),
         ),
         Err(crate::hosts::HostError::Unsupported(what)) => ("ci_blocked", what),
+        Err(err) if err.is_rate_limited() => {
+            return rate_limited_result(ctx.layout, repo, result, &err);
+        }
         Err(err) if err.is_transient() => (
             "host_unreachable",
             format!(
@@ -747,6 +775,9 @@ fn merge_change(
             return result;
         }
         Ok(_) => {}
+        Err(err) if err.is_rate_limited() => {
+            return rate_limited_result(ctx.layout, repo, result, &err);
+        }
         Err(err) if err.is_transient() => {
             return unreachable_result(ctx.layout, repo, result, &err);
         }
@@ -771,6 +802,9 @@ fn merge_change(
             result.successful = false;
             result.detail = reason;
             return result;
+        }
+        Err(err) if err.is_rate_limited() => {
+            return rate_limited_result(ctx.layout, repo, result, &err);
         }
         Err(err) if err.is_transient() => {
             return unreachable_result(ctx.layout, repo, result, &err);

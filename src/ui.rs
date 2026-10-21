@@ -29,6 +29,14 @@ pub fn plain_line(event: &Event) -> String {
         } => format!(
             "wave {wave} of {total} done: {successful} successful, {remaining} repos remaining"
         ),
+        Event::RateLimited {
+            host,
+            wait_ms,
+            reason,
+        } => format!(
+            "{host} | rate limited, waiting {}s: {reason}",
+            wait_ms / 1000
+        ),
         Event::HostRetry {
             repo,
             host,
