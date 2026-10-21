@@ -139,6 +139,9 @@ pub enum CiState {
     Pending,
     Success,
     Failure,
+    /// Waits for a person to act (a GitLab `manual` job, a GitHub `action_required`
+    /// conclusion). Waiting does not end it, so the gate ends the repo as `ci_blocked`.
+    Blocked,
 }
 
 pub trait Host: Send + Sync {
@@ -231,6 +234,26 @@ pub const DEFAULT_MAX_RATE_WAIT: Duration = Duration::from_secs(15 * 60);
 const FALLBACK_RATE_WAIT: Duration = Duration::from_secs(60);
 /// Rate-limit waits one request may take before it gives up.
 const MAX_RATE_WAITS: u32 = 3;
+/// Tries of one read outside the CI poll while the host fails transiently.
+const READ_ATTEMPTS: u32 = 3;
+/// The first wait between two tries of a read; it doubles for each further try.
+const READ_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Runs a read again while the host fails transiently (no answer, 5xx), with back-off, and
+/// returns the last error when the tries run out. Only reads go through here: a write that
+/// timed out may have happened, so repeating it could open a second change request.
+pub fn retry_read<T>(mut read: impl FnMut() -> Result<T, HostError>) -> Result<T, HostError> {
+    let mut attempt = 1;
+    loop {
+        match read() {
+            Err(err) if err.is_transient() && attempt < READ_ATTEMPTS => {
+                thread::sleep(crate::ci::backoff(READ_RETRY_INTERVAL, attempt));
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
 
 /// A shared HTTP client with one API base. All repos of one host share one client, so a
 /// rate limit that one repo hits also holds back the others on that host.
@@ -422,6 +445,49 @@ fn reset_wait(headers: &HeaderMap, now: u64) -> Option<Duration> {
     Some(Duration::from_secs(reset.saturating_sub(now)))
 }
 
+/// The wait `Retry-After` asks for. It is either seconds or an HTTP date (IMF-fixdate, RFC
+/// 9110), counted from `now`.
+fn retry_after_wait(headers: &HeaderMap, now: u64) -> Option<Duration> {
+    let value = headers.get("retry-after")?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let date = imf_fixdate_epoch(value)?;
+    Some(Duration::from_secs(date.saturating_sub(now)))
+}
+
+/// Epoch seconds of an IMF-fixdate such as `Wed, 21 Oct 2015 07:28:00 GMT`.
+fn imf_fixdate_epoch(text: &str) -> Option<u64> {
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    let [_, day, month, year, time, zone] = parts.as_slice() else {
+        return None;
+    };
+    if *zone != "GMT" {
+        return None;
+    }
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month = MONTHS.iter().position(|name| name == month)? as i64 + 1;
+    let day: i64 = day.parse().ok()?;
+    let year: i64 = year.parse().ok()?;
+    let mut clock = time.split(':').map(|part| part.parse::<i64>().ok());
+    let (hour, minute, second) = (clock.next()??, clock.next()??, clock.next()??);
+    let seconds = days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second;
+    u64::try_from(seconds).ok()
+}
+
+/// Days since 1970-01-01 of a Gregorian date (the civil-from-days algorithm, inverted).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let year_of_era = y - era * 400;
+    let month_from_march = (month + 9) % 12;
+    let day_of_year = (153 * month_from_march + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
 /// The quota is used up when the remaining count says zero.
 fn quota_used_up(headers: &HeaderMap) -> bool {
     let remaining = headers
@@ -442,15 +508,14 @@ fn rate_limit(status: u16, headers: &HeaderMap, body: &str, now: u64) -> Option<
     let reason = match status {
         429 => "HTTP 429 Too Many Requests".to_string(),
         403 if quota_used_up(headers) => "primary rate limit (HTTP 403)".to_string(),
-        403 if header_u64(headers, "retry-after").is_some()
+        403 if headers.contains_key("retry-after")
             || body.to_ascii_lowercase().contains("rate limit") =>
         {
             "secondary rate limit (HTTP 403)".to_string()
         }
         _ => return None,
     };
-    let wait = header_u64(headers, "retry-after")
-        .map(Duration::from_secs)
+    let wait = retry_after_wait(headers, now)
         .or_else(|| reset_wait(headers, now))
         .unwrap_or(FALLBACK_RATE_WAIT);
     Some(Attempt::Limited { wait, reason })
@@ -587,6 +652,50 @@ mod tests {
             Some(Attempt::Limited { wait, .. }) => assert_eq!(wait, Duration::from_secs(7)),
             _ => panic!("429 is a rate limit"),
         }
+    }
+
+    #[test]
+    fn a_read_is_retried_only_while_the_host_fails_transiently() {
+        let mut calls = 0;
+        let answer = retry_read(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(HostError::Transport("no answer".into()))
+            } else {
+                Ok("main")
+            }
+        });
+        assert_eq!(answer.unwrap(), "main");
+        assert_eq!(calls, 2);
+
+        let mut calls = 0;
+        let refused: Result<(), HostError> = retry_read(|| {
+            calls += 1;
+            Err(HostError::Status {
+                status: 404,
+                message: "gone".into(),
+            })
+        });
+        assert!(refused.is_err());
+        assert_eq!(calls, 1, "a permanent error is not repeated");
+    }
+
+    #[test]
+    fn retry_after_takes_seconds_or_an_http_date() {
+        let now = 1_445_412_480 - 90;
+        let date = headers(&[("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT")]);
+        assert_eq!(retry_after_wait(&date, now), Some(Duration::from_secs(90)));
+        let seconds = headers(&[("retry-after", "7")]);
+        assert_eq!(
+            retry_after_wait(&seconds, now),
+            Some(Duration::from_secs(7))
+        );
+        let past = headers(&[("retry-after", "Wed, 21 Oct 2015 07:28:00 GMT")]);
+        assert_eq!(retry_after_wait(&past, now + 500), Some(Duration::ZERO));
+        let garbage = headers(&[("retry-after", "soon, maybe")]);
+        assert_eq!(retry_after_wait(&garbage, now), None);
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
     }
 
     #[test]

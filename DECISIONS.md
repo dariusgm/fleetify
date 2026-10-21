@@ -694,3 +694,59 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
 - **Not done:** the agent's own wait is not capped by `[rate_limit] max_wait_min`. An agent
   that waits on its limit runs until `agent_timeout_min`. Reading the reset time from the
   agent's message is not implemented.
+
+## Model selection per agent run (story)
+
+- **Implemented.** The model is chosen in this order: `fleetify run --model NAME`, then the
+  recipe's `model` key, then `[agents.<name>] model` in config.toml. Nothing is passed when
+  none is set, so the agent's own configuration decides, as before.
+- **Recipe key is top level.** The story wrote `[agent] model`, but `agent` is already a
+  string key in recipe.toml (`agent = "claude-code"`), so `model` sits next to it instead.
+- **Recipe model only for the recipe's own agent.** With `--agent opencode` on a recipe that
+  names `claude-code`, the recipe's model is not passed to opencode. A model name belongs to
+  one agent; a `--model` value is passed to whichever agent runs.
+- **Passed through unchanged.** Flags: Claude Code `--model`, Copilot CLI `--model`, opencode
+  `run --model` (the `provider/model` form). The name is only checked to be non-empty, free of
+  whitespace and not starting with `-`, so it cannot be read as an option. The adapters'
+  flags were not run against the real CLIs for every model yet; the level-5 run per model
+  is still open.
+- **check-agent per model.** The pass marker is keyed by agent and model. Without a model the
+  marker name is unchanged (`<agent>.checked`), so earlier passes still count. Version is not
+  part of the key yet (the plan asks for it; no version is read today).
+- **Visible.** The run header and the `permissions_effective` event name the model.
+- **Report.** Each repo's entry in `report.json` carries `model` when the agent ran with one
+  (added to every outcome after the agent step, so a failed repo names its model too).
+
+## API usage credits (`api_limit`) and the outage items of M11 and M11a
+
+- **Observed wording.** `claude -p --model fable` on this account (2026-10-21) prints on
+  stdout and exits 1: `Fable 5.1 requires usage credits. Switch to another model, or manage
+  usage credits at https://claude.ai/settings/usage?...`. stderr stays empty. The Claude CLI
+  binary also contains `You don't have usage credits yet.`
+- **`api_limit` is its own result.** Phrases in `API_LIMIT_MARKERS` (`usage credits`,
+  `credit balance`) end a failed agent run as `api_limit`, not `rate_limited`: waiting does not
+  help until the account has credits. It is checked before the rate-limit phrases and is not
+  successful. The failure block carries the CLI's sentence.
+- **Wait ceiling for agents.** The runner ends an agent that prints a rate-limit line and then
+  stays silent for `[rate_limit] max_wait_min` (default 15 min; `0` ends it at once). The run
+  then ends as a timeout, and the rate-limit line in its output makes the repo `rate_limited`.
+  A rate-limit phrase followed by more output does not start the clock, so code the agent
+  prints cannot end its run. Not verified against the real CLIs.
+- **Reset time from the agent.** The agent's own sentence (which may contain the reset time)
+  is carried in the failure block as printed. fleetify does not parse it: the CLI's reset format
+  was not observed in `-p` mode.
+- **Reads are retried.** `hosts::retry_read` tries a host read up to three times with back-off
+  (2 s, then 4 s) when it gets no answer or a 5xx. It covers the access probe, the lookup of the
+  change request, and the latest change request before a merge. Writes are not retried: a create
+  that timed out may have happened, and a second try could open a second change request.
+- **Cache fetch and clone are retried** the same way (three tries, back-off).
+- **`Retry-After` as an HTTP date.** The IMF-fixdate form (`Wed, 21 Oct 2015 07:28:00 GMT`) is
+  read, counted from now; seconds still work. Other date formats are ignored.
+- **GitHub lists are paged.** Check runs and commit statuses are read page by page (100 per page,
+  at most 50 pages), until `total_count` is reached.
+- **`ci_blocked`.** A GitLab `manual` job and a GitHub `action_required` check run are blocked,
+  not pending. The gate does not wait for them: the repo ends as `ci_blocked` at once, and a
+  failed item still wins. Before, `manual` became `ci_timeout` after the full wait.
+- **Not done:** a test for the push-divergence refusal (it needs a race between the state check
+  and the push); the rate-limit phrases for Claude Code, Copilot and opencode are still a
+  starting list, to be confirmed in level-5 runs.

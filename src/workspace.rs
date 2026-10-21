@@ -10,6 +10,8 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use crate::git::{GitContext, GitError, git};
 
@@ -17,6 +19,29 @@ use crate::git::{GitContext, GitError, git};
 pub const DISABLED_PUSH_URL: &str = "invalid://fleetify-push-disabled";
 
 /// Where the cache clone of a repo lives.
+/// Tries of one network step (fetch, clone) of the cache, and the first wait between them.
+const GIT_ATTEMPTS: u32 = 3;
+const GIT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Runs a git step that reaches the remote again after a failure, with back-off. The last
+/// error is returned when the tries run out. Local steps use `git` directly.
+fn network_git(
+    ctx: &GitContext<'_>,
+    dir: Option<&Path>,
+    args: &[&str],
+) -> Result<String, GitError> {
+    let mut attempt = 1;
+    loop {
+        match git(ctx, dir, args) {
+            Err(_) if attempt < GIT_ATTEMPTS => {
+                thread::sleep(crate::ci::backoff(GIT_RETRY_INTERVAL, attempt));
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
 pub fn cache_dir(workdir: &Path, host: &str, path: &str) -> std::path::PathBuf {
     workdir.join("clones").join(host).join(path)
 }
@@ -57,13 +82,13 @@ pub fn ensure_cache(
             Some(cache),
             &["remote", "set-url", "origin", clone_url],
         )?;
-        git(ctx, Some(cache), &["fetch", "--prune", "--force", "origin"])?;
+        network_git(ctx, Some(cache), &["fetch", "--prune", "--force", "origin"])?;
     } else {
         if let Some(parent) = cache.parent() {
             fs::create_dir_all(parent).map_err(|err| io_error(cache, err))?;
         }
         let cache_arg = cache.display().to_string();
-        git(ctx, None, &["clone", "--quiet", clone_url, &cache_arg])?;
+        network_git(ctx, None, &["clone", "--quiet", clone_url, &cache_arg])?;
     }
 
     let remote_ref = format!("refs/remotes/origin/{default_branch}");

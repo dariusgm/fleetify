@@ -205,6 +205,13 @@ pub struct RunRequest {
     /// Called on every output line. When it returns true the process tree is
     /// terminated and the outcome is `WaitingForInput`. None: never.
     pub prompt_check: Option<fn(&str) -> bool>,
+    /// Marks an output line as a rate limit. When such a line is the last output and the
+    /// process then stays silent for `limit_wait`, the process tree is terminated (the
+    /// ceiling for waiting on a limit; `Duration::ZERO` ends it at once). Silence after
+    /// other output is not counted. The run then ends as a timeout, and the caller classifies
+    /// it from the output. None: never.
+    pub limit_check: Option<fn(&str) -> bool>,
+    pub limit_wait: Option<Duration>,
     pub env: EnvPolicy,
 }
 
@@ -217,6 +224,8 @@ impl RunRequest {
             timeout: None,
             idle_warn: None,
             prompt_check: None,
+            limit_check: None,
+            limit_wait: None,
             env: EnvPolicy::Inherit,
         }
     }
@@ -402,6 +411,7 @@ impl Runner {
         let mut last_output = started;
         let mut idle_reported = false;
         let mut waiting = false;
+        let mut limited = false;
 
         loop {
             match rx.recv_timeout(POLL) {
@@ -411,6 +421,9 @@ impl Runner {
                     if req.prompt_check.is_some_and(|check| check(&text)) {
                         waiting = true;
                     }
+                    // Only a limit line that is the last output counts: any later line means the
+                    // agent is still working, even if an earlier line quoted a limit message.
+                    limited = req.limit_check.is_some_and(|check| check(&text));
                     self.record(id, &req.label, stream, text, lines, dropped)
                 }
                 Ok(Msg::Closed) => open_pipes -= 1,
@@ -453,6 +466,16 @@ impl Runner {
             }
 
             if status.is_none() && killed_at.is_none() && waiting {
+                let _ = child.kill();
+                killed_at = Some(Instant::now());
+            }
+
+            if status.is_none()
+                && killed_at.is_none()
+                && limited
+                && let Some(wait) = req.limit_wait
+                && last_output.elapsed() >= wait
+            {
                 let _ = child.kill();
                 killed_at = Some(Instant::now());
             }

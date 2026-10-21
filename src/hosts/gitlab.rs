@@ -62,8 +62,8 @@ fn pipeline_state(status: &str) -> Option<CiState> {
         "success" => Some(CiState::Success),
         "failed" | "canceled" => Some(CiState::Failure),
         "skipped" => None,
-        // `manual` waits for a human. `CiState` has no blocked state yet, so the gate
-        // keeps waiting and ends as `ci_timeout`, never as a merge.
+        // `manual` waits for a person: the gate ends as `ci_blocked`, never as a merge.
+        "manual" => Some(CiState::Blocked),
         // Unknown statuses are treated as pending, the same as running ones.
         _ => Some(CiState::Pending),
     }
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(pipeline_state("failed"), Some(CiState::Failure));
         assert_eq!(pipeline_state("canceled"), Some(CiState::Failure));
         assert_eq!(pipeline_state("skipped"), None);
-        assert_eq!(pipeline_state("manual"), Some(CiState::Pending));
+        assert_eq!(pipeline_state("manual"), Some(CiState::Blocked));
         assert_eq!(pipeline_state("running"), Some(CiState::Pending));
         assert_eq!(pipeline_state("created"), Some(CiState::Pending));
         assert_eq!(pipeline_state("something-new"), Some(CiState::Pending));

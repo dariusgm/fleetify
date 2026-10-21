@@ -64,6 +64,9 @@ pub struct RunArgs {
     /// Agent to use when the recipe names none
     #[arg(long)]
     pub agent: Option<String>,
+    /// Model for the agent, passed to the agent CLI unchanged (overrides the recipe and config.toml)
+    #[arg(long)]
+    pub model: Option<String>,
     /// Wave sizes, e.g. "1,all"
     #[arg(long, default_value = "1,all")]
     pub waves: String,
@@ -100,7 +103,7 @@ pub struct RunArgs {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a recipe over the repositories listed in a repos file
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     /// Check a recipe: schema, referenced files and rendered commands per OS
     Validate {
         recipe_dir: PathBuf,
@@ -138,7 +141,12 @@ pub enum Command {
         lines: usize,
     },
     /// Canary test: is the agent confined to its workspace?
-    CheckAgent { name: String },
+    CheckAgent {
+        name: String,
+        /// Check this model: a pass counts for that model only
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Delete the workspaces of a run (clones are kept)
     Clean {
         /// Run to clean [default: the most recently modified run]
@@ -177,7 +185,7 @@ pub fn run(cli: Cli) -> ExitCode {
     let debug = cli.debug;
 
     match cli.command {
-        Command::Run(args) => run_command(&workdir, debug, args),
+        Command::Run(args) => run_command(&workdir, debug, *args),
         Command::DebugPanic => {
             if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
                 return code;
@@ -202,7 +210,9 @@ pub fn run(cli: Cli) -> ExitCode {
             follow,
             lines,
         } => logs_command(&workdir, debug, &repo, run, follow, lines),
-        Command::CheckAgent { name } => check_agent_command(&workdir, debug, &name),
+        Command::CheckAgent { name, model } => {
+            check_agent_command(&workdir, debug, &name, model.as_deref())
+        }
     }
 }
 
@@ -268,6 +278,7 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
         layout: &layout,
         only: &args.only,
         agent: args.agent.as_deref(),
+        model: args.model.as_deref(),
         allow_unchecked_agent: args.allow_unchecked_agent,
         merge: args.merge,
         waves: run::Waves {
@@ -507,17 +518,18 @@ fn logs_command(
 }
 
 /// `fleetify check-agent <name>`: the canary. Exit code 1 when the agent fails it.
-fn check_agent_command(workdir: &Path, debug: bool, name: &str) -> ExitCode {
+fn check_agent_command(workdir: &Path, debug: bool, name: &str, model: Option<&str>) -> ExitCode {
     if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
         return code;
     }
-    match agents::check(workdir, name) {
+    let label = model.map_or_else(|| name.to_string(), |model| format!("{name} model {model}"));
+    match agents::check(workdir, name, model) {
         Ok(()) => {
-            println!("agent {name} passed check-agent");
+            println!("agent {label} passed check-agent");
             ExitCode::SUCCESS
         }
         Err(message) => {
-            eprintln!("fleetify: agent {name} failed check-agent: {message}");
+            eprintln!("fleetify: agent {label} failed check-agent: {message}");
             ExitCode::from(1)
         }
     }

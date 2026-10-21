@@ -61,6 +61,9 @@ pub struct RepoResult {
     pub rule: Option<String>,
     pub change_request: Option<String>,
     pub pushed_sha: Option<String>,
+    /// The model the agent ran with, when the agent ran and a model was set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub failure: Option<Failure>,
 }
 
@@ -74,6 +77,7 @@ impl RepoResult {
             rule: None,
             change_request: None,
             pushed_sha: None,
+            model: None,
             failure: None,
         }
     }
@@ -313,6 +317,8 @@ mod tests {
             "interrupted",
             "ci_failed",
             "needs_input",
+            "api_limit",
+            "rate_limited",
         ] {
             assert!(!is_successful(bad), "{bad}");
         }

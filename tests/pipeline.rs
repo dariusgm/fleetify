@@ -229,6 +229,7 @@ fn run_with(
         repos: vec![repo],
         clients,
         agent: None,
+        model: None,
         merge,
     };
     let report = execute_loaded(

@@ -566,8 +566,8 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 |---|---|---|
 | M9 agent runner | done | — |
 | M10 opencode and check-agent | done, `[ASK]` smoke test pending | level-3 smoke test with opencode and llama.cpp |
-| M11 CI gate and merge | done for GitHub and GitLab | paging over 100 check runs; GitLab `manual` is `ci_timeout`, not `ci_blocked` |
-| M11a outage handling | done for hosts, CI, merge, push and rate limits (host side); agent rate limits done as classification | agent wait not capped by `max_wait_min`; reset time from agent messages; rate-limit phrases not checked against real CLIs; retries for reads outside the CI poll; `Retry-After` as HTTP date |
+| M11 CI gate and merge | done for GitHub and GitLab; paging and `ci_blocked` done | — |
+| M11a outage handling | done for hosts, CI, merge, push, rate limits, reads, cache fetch/clone, `Retry-After` dates, agent wait ceiling and `api_limit` | reset time from agent messages is carried as printed, not parsed; rate-limit phrases not checked against real CLIs (only the credits sentence was observed); push-divergence test needs a race |
 | M12 Python authoring package | not started | — |
 | M13 live view | done | manual check in Windows Terminal and a Linux terminal |
 | M14 Claude Code adapter | done for the smoke test on GitHub (PR #1) | full lint test with the complete gate chain; observed rate-limit behaviour |
@@ -670,7 +670,7 @@ If most repos go through without intervention, extending is worth it. If the res
 
 **Scope.**
 
-- **Options, in order of precedence:** `--model NAME` on `fleetify run`; `model` in the recipe (`[agent] model = "..."`, the recipe's default); `[agents.<name>] model = "..."` in `config.toml` (the user's default per agent); otherwise the agent's own default. Nothing is passed when none is set, so the agent's own configuration decides, as it does today.
+- **Options, in order of precedence:** `--model NAME` on `fleetify run`; `model` in the recipe, next to `agent` (the recipe's default, for the recipe's own agent only); `[agents.<name>] model = "..."` in `config.toml` (the user's default per agent); otherwise the agent's own default. Implemented; see DECISIONS.md. Nothing is passed when none is set, so the agent's own configuration decides, as it does today.
 - **Passed through, not interpreted.** fleetify does not keep a list of models. The name goes to the agent CLI unchanged, through that CLI's own option. The agent rejects a name it does not know, and the run ends as `error` with the agent's message in the failure block.
 - **Adapters (flags to be checked in each CLI's current docs before use, as for every flag in this plan):** Claude Code `--model`; Copilot CLI `--model` (to verify, Copilot CLI 1.0.101 is installed); opencode `--model <provider>/<model>`. opencode reaches only the llama.cpp provider for now; a provider for Anthropic models needs its own token (see open question below).
 - **Visible.** The run header and the `permissions_effective`-style start event name the agent and the model, so a report shows which model solved which repo. The model is part of the report's per-repo data.

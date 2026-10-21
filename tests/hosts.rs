@@ -384,7 +384,7 @@ const OTHER_SHA: &str = "fedcba9876543210fedcba9876543210fedcba98";
 #[test]
 fn commit_ci_reads_check_runs_and_statuses_of_the_asked_commit() {
     let host = serve(|req| {
-        if req.target.ends_with("/check-runs?per_page=100") {
+        if req.target.contains("/check-runs?") {
             (
                 200,
                 format!(
@@ -394,7 +394,7 @@ fn commit_ci_reads_check_runs_and_statuses_of_the_asked_commit() {
                     ]}}"#
                 ),
             )
-        } else if req.target.ends_with("/status") {
+        } else if req.target.contains("/status") {
             (
                 200,
                 format!(
@@ -431,7 +431,7 @@ fn commit_ci_reads_check_runs_and_statuses_of_the_asked_commit() {
 fn commit_ci_refuses_items_of_another_commit() {
     // A check run for a later push must never decide the verdict for this commit.
     let host = serve(|req| {
-        if req.target.ends_with("/check-runs?per_page=100") {
+        if req.target.contains("/check-runs?") {
             (
                 200,
                 format!(
@@ -644,4 +644,55 @@ fn an_exhausted_quota_holds_back_the_next_request_of_the_same_host() {
         "second request came back at {now}, before the reset at {reset_at}"
     );
     assert_eq!(host.recorded().len(), 2);
+}
+
+#[test]
+fn commit_ci_reads_every_page_of_check_runs() {
+    // 150 check runs on two pages of 100 and 50: the second page must be read too.
+    let host = serve(|req| {
+        if req.target.contains("/check-runs?") {
+            let page = if req.target.contains("page=2") { 2 } else { 1 };
+            let count = if page == 1 { 100 } else { 50 };
+            let runs: Vec<String> = (0..count)
+                .map(|i| {
+                    format!(
+                        r#"{{"name":"job-{page}-{i}","head_sha":"{SHA}","status":"completed","conclusion":"success"}}"#
+                    )
+                })
+                .collect();
+            (
+                200,
+                format!(r#"{{"total_count":150,"check_runs":[{}]}}"#, runs.join(",")),
+            )
+        } else if req.target.contains("/status") {
+            (200, format!(r#"{{"sha":"{SHA}","statuses":[]}}"#))
+        } else {
+            (404, "{}".into())
+        }
+    });
+    let items = github(&host.base)
+        .commit_ci(&repo("github.com", HostType::Github, "o/r"), &token(), SHA)
+        .unwrap();
+    assert_eq!(items.len(), 150);
+    assert_eq!(items.last().unwrap().name, "job-2-49");
+}
+
+#[test]
+fn a_check_run_that_needs_action_is_blocked_not_failed() {
+    let host = serve(|req| {
+        if req.target.contains("/check-runs?") {
+            (
+                200,
+                format!(
+                    r#"{{"total_count":1,"check_runs":[{{"name":"deploy","head_sha":"{SHA}","status":"completed","conclusion":"action_required"}}]}}"#
+                ),
+            )
+        } else {
+            (200, format!(r#"{{"sha":"{SHA}","statuses":[]}}"#))
+        }
+    });
+    let items = github(&host.base)
+        .commit_ci(&repo("github.com", HostType::Github, "o/r"), &token(), SHA)
+        .unwrap();
+    assert_eq!(items[0].state, CiState::Blocked);
 }

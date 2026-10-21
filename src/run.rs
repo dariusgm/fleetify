@@ -20,7 +20,7 @@ use crate::config::{Config, ConfigError, HostTable};
 use crate::credentials::{Credentials, CredentialsError, Secret};
 use crate::events::{Event, EventBus, Redactor};
 use crate::git::{Auth, GitContext, GitError, username_for};
-use crate::hosts::{Access, Host, TlsCheck, api_base, tls_self_test};
+use crate::hosts::{self, Access, Host, TlsCheck, api_base, tls_self_test};
 use crate::pipeline;
 use crate::recipe::{Recipe, RepoFacts};
 use crate::report::{self, Failure, RepoResult, Report};
@@ -273,6 +273,8 @@ pub struct RunInput<'a> {
     pub layout: &'a RunLayout,
     pub only: &'a [String],
     pub agent: Option<&'a str>,
+    /// `--model`: the model for the agent, overriding the recipe and config.toml.
+    pub model: Option<&'a str>,
     pub allow_unchecked_agent: bool,
     pub waves: Waves<'a>,
     /// `--merge`: merge after the change request is open, if the recipe asks for it.
@@ -289,6 +291,8 @@ pub struct Loaded {
     pub clients: BTreeMap<String, Box<dyn Host>>,
     /// The agent that runs the recipe's instructions. `None` for a recipe without instructions.
     pub agent: Option<String>,
+    /// The model for that agent. `None` leaves the choice to the agent's configuration.
+    pub model: Option<String>,
     pub merge: bool,
 }
 
@@ -308,7 +312,10 @@ fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
         eprintln!("warning: {warning}");
     }
     crate::logging::set_redactor(Redactor::new(credentials.secrets()));
-    let agent = check_agent(input, &config, dry_run)?;
+    let (agent, model) = match check_agent(input, &config, dry_run)? {
+        Some((name, model)) => (Some(name), model),
+        None => (None, None),
+    };
     if let Some(name) = agent.as_deref()
         && config
             .permissions
@@ -331,6 +338,7 @@ fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
         repos,
         clients,
         agent,
+        model,
         merge: input.merge,
     })
 }
@@ -345,13 +353,14 @@ pub fn check_merge(recipe: &Recipe, merge: bool) -> Result<(), String> {
 }
 
 /// Checks what an agent run needs before any repo is touched: the agent is supported,
-/// `config.toml` grants what the recipe needs, and the agent passed `check-agent` when
-/// the policy requires it. Returns the agent's name, or `None` without instructions.
+/// the model is a valid name, `config.toml` grants what the recipe needs, and the agent
+/// passed `check-agent` for that model when the policy requires it. Returns the agent's
+/// name and model, or `None` without instructions.
 fn check_agent(
     input: &RunInput<'_>,
     config: &Config,
     dry_run: bool,
-) -> Result<Option<String>, Refused> {
+) -> Result<Option<(String, Option<String>)>, Refused> {
     if input.recipe.instructions.is_empty() {
         return Ok(None);
     }
@@ -360,8 +369,15 @@ fn check_agent(
         .or(input.recipe.agent.as_deref())
         .ok_or_else(|| Refused("instructions are set but no agent is".into()))?;
     agents::check_supported(name).map_err(Refused)?;
+    let model = agents::resolve_model(input.model, input.recipe, config, name);
+    if let Some(model) = &model {
+        agents::check_model(model).map_err(Refused)?;
+    }
     eprintln!(
-        "agent {name}: {}",
+        "agent {name}{}: {}",
+        model
+            .as_ref()
+            .map_or_else(String::new, |model| format!(" model {model}")),
         agents::describe_grants(input.recipe, &config.permissions, name)
     );
     let missing = agents::missing_permissions(input.recipe, &config.permissions);
@@ -377,13 +393,13 @@ fn check_agent(
     }
     if config.policy.require_checked_agent
         && !input.allow_unchecked_agent
-        && !agents::is_checked(input.workdir, name)
+        && !agents::is_checked(input.workdir, name, model.as_deref())
     {
         return Err(Refused(format!(
             "agent {name} has not passed check-agent: run `fleetify check-agent {name}` or pass --allow-unchecked-agent"
         )));
     }
-    Ok(Some(name.to_string()))
+    Ok(Some((name.to_string(), model)))
 }
 
 /// Runs the whole run: validates the recipe, then processes every repo.
@@ -478,6 +494,7 @@ fn execute_loaded_with_view(
         runner: &runner,
         config: &loaded.config,
         agent: loaded.agent.as_deref(),
+        model: loaded.model.as_deref(),
         credentials: &loaded.credentials,
         clients: &loaded.clients,
     };
@@ -554,6 +571,8 @@ pub struct Ctx<'a> {
     pub config: &'a Config,
     /// The agent for the recipe's instructions. `None` when there are none.
     pub agent: Option<&'a str>,
+    /// The model for `agent`, `None` when the agent's own configuration decides.
+    pub model: Option<&'a str>,
     pub credentials: &'a Credentials,
     pub clients: &'a BTreeMap<String, Box<dyn Host>>,
 }
@@ -750,7 +769,7 @@ pub fn probe<'a>(
             Some(pattern.clone()),
         )
     })?;
-    match client.probe_read_access(repo, rule.token()) {
+    match hosts::retry_read(|| client.probe_read_access(repo, rule.token())) {
         Ok(Access::Ok) => Ok((pattern, rule.token())),
         Ok(denied) => Err((denied.describe().to_string(), Some(pattern))),
         Err(err) => Err((err.to_string(), Some(pattern))),

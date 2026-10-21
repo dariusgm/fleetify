@@ -2,6 +2,7 @@
 //! Every failure ends the repo with a result and a failure block. Nothing is
 //! pushed unless the verifier and every guard passed.
 
+use std::cell::Cell;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use crate::agents;
 use crate::events::{Event, Outcome};
 use crate::git::{GitContext, git};
 use crate::guards;
-use crate::hosts::{ChangeRequest, CrState, MergeOutcome};
+use crate::hosts::{self, ChangeRequest, CrState, MergeOutcome};
 use crate::report::{Failure, RepoResult};
 use crate::repos::Repo;
 use crate::run::{Ctx, artifacts, error_result, git_context, git_failure, probe};
@@ -27,6 +28,17 @@ const MAX_AGENT_NOTE_CHARS: usize = 4000;
 
 /// Runs the whole pipeline for one repo.
 pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
+    let agent_ran = Cell::new(false);
+    let mut result = process_repo_steps(ctx, repo, &agent_ran);
+    // Every outcome after the agent step names the model, so a report shows which model
+    // solved which repo, and a failed repo shows which model failed it.
+    if agent_ran.get() {
+        result.model = ctx.model.map(str::to_string);
+    }
+    result
+}
+
+fn process_repo_steps(ctx: &Ctx<'_>, repo: &Repo, agent_ran: &Cell<bool>) -> RepoResult {
     let key = repo.key();
     let phase = |name: &str| {
         ctx.runner.bus().emit(Event::RepoPhase {
@@ -79,7 +91,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     // Step 3: a change request for the branch already exists, so the repo is done.
     // Without a change request there is nothing to look up; the branch check below covers it.
     let found = if ctx.recipe.delivery.open_mr {
-        client.find_change_request(repo, token, &branch)
+        hosts::retry_read(|| client.find_change_request(repo, token, &branch))
     } else {
         Ok(None)
     };
@@ -87,7 +99,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     // merge whose response was lost would open a second change request on the next run.
     let found = match found {
         Ok(None) if ctx.recipe.delivery.open_mr => {
-            match client.latest_change_request(repo, token, &branch) {
+            match hosts::retry_read(|| client.latest_change_request(repo, token, &branch)) {
                 Ok(Some(change)) if change.state == CrState::Merged => {
                     let mut result = RepoResult::new(
                         &key,
@@ -261,27 +273,40 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
     let mut agent_note: Option<String> = None;
     if let Some(name) = ctx.agent {
         phase("agent");
+        agent_ran.set(true);
         match run_agent(ctx, repo, name, &workspace) {
             Err(message) => {
                 return error_result(ctx.layout, repo, message, Some(pattern), Vec::new());
             }
             Ok(result) if !result.is_success() => {
                 let lines: Vec<String> = result.lines.iter().map(|l| l.text.clone()).collect();
+                let api_limit = agents::api_limit_line(&lines);
                 let limit = agents::rate_limit_line(&lines);
                 let mut failed = step_failure(ctx, repo, "agent", &result, pattern, Vec::new());
-                let (result_name, class) = match (&limit, &result.outcome) {
+                // Missing credits come first: no wait ends them, so a limit line in the same
+                // output does not turn the run into a retry candidate.
+                let (result_name, message) = match (&api_limit, &limit, &result.outcome) {
+                    (Some(line), _, _) => (
+                        "api_limit",
+                        Some(format!(
+                            "the agent reported missing API usage credits: {line}"
+                        )),
+                    ),
                     // The message is the cause, also when the agent then sat until the timeout.
-                    (Some(_), _) => ("rate_limited", "rate_limited"),
-                    (None, Outcome::TimedOut) => ("agent_timeout", "agent_timeout"),
-                    (None, Outcome::WaitingForInput) => ("needs_input", "needs_input"),
-                    (None, _) => ("error", "error"),
+                    (None, Some(line), _) => (
+                        "rate_limited",
+                        Some(format!("the agent reported a rate limit: {line}")),
+                    ),
+                    (None, None, Outcome::TimedOut) => ("agent_timeout", None),
+                    (None, None, Outcome::WaitingForInput) => ("needs_input", None),
+                    (None, None, _) => ("error", None),
                 };
                 failed.result = result_name.to_string();
                 failed.successful = crate::report::is_successful(result_name);
                 if let Some(block) = failed.failure.as_mut() {
-                    block.class = class.to_string();
-                    if let Some(line) = &limit {
-                        block.message = format!("the agent reported a rate limit: {line}");
+                    block.class = result_name.to_string();
+                    if let Some(message) = message {
+                        block.message = message;
                     }
                 }
                 return failed;
@@ -530,7 +555,7 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
         }
         if ctx.merge && (!ctx.recipe.ci.wait || result.result == "ci_passed") {
             let client = ctx.clients.get(&repo.host).expect("client checked above");
-            match client.find_change_request(repo, token, &branch) {
+            match hosts::retry_read(|| client.find_change_request(repo, token, &branch)) {
                 Ok(Some(change)) => {
                     result = merge_change(ctx, repo, token, &branch, &change, &pushed_sha, result);
                 }
@@ -677,6 +702,10 @@ fn gate_ci(
             "ci_failed",
             format!("CI failed at {short_sha}: {}", items.join(", ")),
         ),
+        Ok(crate::ci::Verdict::Blocked(items)) => (
+            "ci_blocked",
+            format!("CI waits for a person at {short_sha}: {}", items.join(", ")),
+        ),
         Ok(crate::ci::Verdict::Pending(items)) => (
             "ci_timeout",
             format!(
@@ -769,7 +798,7 @@ fn merge_change(
     }
     // Before the merge: a change request that is already merged (the response of an
     // earlier merge was lost) is done; one that was closed is not merged.
-    match client.latest_change_request(repo, token, branch) {
+    match hosts::retry_read(|| client.latest_change_request(repo, token, branch)) {
         Ok(Some(latest)) if latest.state == CrState::Merged => {
             result.result = "merged".to_string();
             result.successful = crate::report::is_successful("merged");
@@ -1003,7 +1032,13 @@ fn run_agent(
 ) -> Result<CommandResult, String> {
     agents::write_task(workspace, ctx.recipe_dir, ctx.recipe)
         .map_err(|err| format!("cannot write the agent task: {err}"))?;
-    let invocation = agents::invocation(name, ctx.recipe, &ctx.config.permissions, workspace)?;
+    let invocation = agents::invocation(
+        name,
+        ctx.recipe,
+        &ctx.config.permissions,
+        ctx.model,
+        workspace,
+    )?;
     let grants = agents::grants(ctx.recipe, &ctx.config.permissions, name);
     ctx.runner.bus().emit(Event::PermissionsEffective {
         repo: repo.key(),
@@ -1012,6 +1047,7 @@ fn run_agent(
         web: grants.web,
         directories: grants.directories,
         unrestricted: grants.unrestricted,
+        model: ctx.model.map(str::to_string),
     });
     let mut request = RunRequest::new(repo.key(), invocation.argv);
     request.cwd = Some(workspace.to_path_buf());
@@ -1021,6 +1057,8 @@ fn run_agent(
     let idle_min = ctx.recipe.limits.idle_warn_min;
     request.idle_warn = (idle_min > 0).then(|| Duration::from_secs(u64::from(idle_min) * 60));
     request.prompt_check = Some(agents::wants_input);
+    request.limit_check = Some(agents::is_rate_limit);
+    request.limit_wait = Some(ctx.config.rate_limit.max_wait());
     request.env = invocation.env;
     Ok(ctx.runner.run(request))
 }
