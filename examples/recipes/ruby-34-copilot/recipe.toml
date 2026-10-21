@@ -1,0 +1,39 @@
+# Moves a Ruby project to Ruby 3.4 with the Copilot CLI as the agent. The agent edits the two
+# Ruby pins; the verifier checks them; the guards allow nothing else to change. The pull
+# request is opened and not merged.
+schema = 1
+name = "ruby-34-copilot"
+branch = "chore/ruby-3.4-copilot"
+pr_title = "chore: update to Ruby 3.4"
+commit_message = "chore: update to Ruby 3.4"
+agent = "copilot"
+tools = "tools"
+
+[applies_to]
+host_type = ["gitlab"]
+has_file = [".ruby-version", ".gitlab-ci.yml"]
+
+[[instructions]]
+text = "This repository runs on Ruby 2.7.8. Update it to Ruby 3.4: set .ruby-version to 3.4 and the image in .gitlab-ci.yml to ruby:3.4. Change nothing else."
+
+[needs]
+commands = ["sh .agent/tools/verify.sh"]
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 60
+tail_lines = 20
+error_patterns = ['^E ', 'error:']
+baseline = false
+
+[guards]
+allow_paths = [".ruby-version", ".gitlab-ci.yml"]
+max_files_changed = 2
+max_lines_changed = 20
+deny_added_patterns = ["NOSONAR"]
+
+[ci]
+wait = false
+
+[limits]
+agent_timeout_min = 10

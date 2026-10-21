@@ -438,8 +438,18 @@ fn copilot_argv(binary: &str, prompt: &str, workspace: &Path, grants: &Grants) -
     for command in ["git status", "git diff", "git log"] {
         argv.push(format!("--allow-tool=shell({command})"));
     }
-    for command in &grants.commands {
-        argv.push(format!("--allow-tool=shell({command}:*)"));
+    // Copilot matches shell grants on the executable only: `shell(sh:*)` allows
+    // `sh .agent/tools/verify.sh`, while a grant that names the whole command line is denied
+    // (observed 2026-10-21). So a command grants its first word, which is broader than the
+    // recipe's command. Recorded in DECISIONS.md.
+    let mut executables: Vec<&str> = grants
+        .commands
+        .iter()
+        .filter_map(|command| command.split_whitespace().next())
+        .collect();
+    executables.dedup();
+    for executable in executables {
+        argv.push(format!("--allow-tool=shell({executable}:*)"));
     }
     if grants.web {
         argv.push("--allow-all-urls".to_string());
