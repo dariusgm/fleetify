@@ -36,6 +36,16 @@ Rows 1–10 used repos that were deleted (2026-10-21) except csvtojson, blog, gi
 fleetify. Rows 7–10 can no longer be re-run without new repos. Rows 12–13 use
 `dariusgm/fleetify-m10-smoke` (still present, PRs #1 and #2 open).
 
+## Verbatim verifier (rules v2), live test
+
+`tests/opencode_live.rs` runs the real opencode CLI with the generated task file, grants and runner.
+Ignored by default; see its header.
+
+| Rules | Model | Runs | Passed | Note |
+|-------|-------|------|--------|------|
+| v1 (main) | openai/gpt-5-nano | 3 | 0 | wrapper in one run (`bash -lc`), no verifier call in two |
+| v2 (PR #25) | openai/gpt-5-nano | 4 | 4 | verifier ran as `sh .agent/tools/verify.sh .` |
+
 ## Canary checks (`check-agent`)
 
 | Agent | Model | Result |
@@ -78,8 +88,8 @@ fleetify. Rows 7–10 can no longer be re-run without new repos. Rows 12–13 us
 
 ## Findings
 
-- **A. The wrapped verifier call (opencode with OpenAI).** Fix in PR #25 (rules v2: the verifier command
-  must run as its own command). Not yet re-run. The agent ran `bash -lc 'sh .agent/tools/verify.sh .'`
+- **A. The wrapped verifier call (opencode with OpenAI).** Fixed by rules v2 (PR #25): the live test
+  passes 4 of 4 runs, v1 failed 3 of 3. The agent ran `bash -lc 'sh .agent/tools/verify.sh .'`
   and was denied by the grant. A direct test shows the plain form `sh .agent/tools/verify.sh .` passes under
   the generated grant `sh .agent/tools/verify.sh *`. So the grant is correct and the wrapper came from the
   model. The llama.cpp model ran the plain form. Options: state the exact command in the task file (no
