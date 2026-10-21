@@ -447,10 +447,75 @@ fn commit_ci_refuses_items_of_another_commit() {
 }
 
 #[test]
-fn commit_ci_is_not_supported_for_gitlab_yet() {
-    let host = serve(|_| (200, "{}".into()));
+fn gitlab_commit_ci_reads_the_pipelines_of_the_asked_commit() {
+    let host = serve(|req| {
+        assert!(req.target.contains("/projects/group%2Fproject/pipelines?"));
+        assert!(req.target.contains(&format!("sha={SHA}")), "{}", req.target);
+        (
+            200,
+            format!(
+                r#"[
+                    {{"id":11,"sha":"{SHA}","ref":"feature","status":"success"}},
+                    {{"id":12,"sha":"{SHA}","ref":"feature","status":"running"}},
+                    {{"id":13,"sha":"{SHA}","ref":"feature","status":"skipped"}}
+                ]"#
+            ),
+        )
+    });
+    let items = gitlab(&host.base)
+        .commit_ci(
+            &repo("gitlab.example.com", HostType::Gitlab, "group/project"),
+            &token(),
+            SHA,
+        )
+        .unwrap();
+    assert_eq!(
+        items,
+        vec![
+            CiItem {
+                name: "pipeline 11 (feature)".into(),
+                state: CiState::Success
+            },
+            CiItem {
+                name: "pipeline 12 (feature)".into(),
+                state: CiState::Pending
+            },
+        ]
+    );
+}
+
+#[test]
+fn gitlab_commit_ci_refuses_pipelines_of_another_commit() {
+    let host = serve(|_| {
+        (
+            200,
+            format!(r#"[{{"id":11,"sha":"{OTHER_SHA}","ref":"main","status":"failed"}}]"#),
+        )
+    });
     let err = gitlab(&host.base)
-        .commit_ci(&repo("github.com", HostType::Github, "o/r"), &token(), SHA)
+        .commit_ci(
+            &repo("gitlab.example.com", HostType::Gitlab, "group/project"),
+            &token(),
+            SHA,
+        )
         .unwrap_err();
-    assert!(matches!(err, HostError::Unsupported(_)), "{err:?}");
+    assert!(matches!(err, HostError::Parse(_)), "{err:?}");
+}
+
+#[test]
+fn gitlab_commit_ci_with_only_skipped_pipelines_has_no_items() {
+    let host = serve(|_| {
+        (
+            200,
+            format!(r#"[{{"id":11,"sha":"{SHA}","ref":"main","status":"skipped"}}]"#),
+        )
+    });
+    let items = gitlab(&host.base)
+        .commit_ci(
+            &repo("gitlab.example.com", HostType::Gitlab, "group/project"),
+            &token(),
+            SHA,
+        )
+        .unwrap();
+    assert!(items.is_empty());
 }

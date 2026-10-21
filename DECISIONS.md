@@ -556,3 +556,18 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
   "sh not found" as an error result.
 - **Credentials.** `~/.fleetify/credentials.toml` (mode 600) holds the `gh`
   token for the `dariusgm/*` rule, for this and later runs.
+
+## GitLab CI gate (M11, GitLab part)
+
+- **Implemented.** `commit_ci` for GitLab reads `GET /projects/:id/pipelines?sha=`,
+  so branch and merge request pipelines of the pushed commit both count. The gate
+  therefore works for `ci.wait = true` and `--merge` on gitlab.com the same way as on
+  GitHub. Pipelines that name another commit are a parse error, never a verdict.
+- **Skipped pipelines** are left out. If only skipped ones exist, the result is
+  `ci_missing`, as PLAN.md says.
+- **Deviation: `manual` is pending, not `ci_blocked`.** `CiState` has no blocked
+  state yet. A pipeline waiting for a manual job now ends as `ci_timeout` after
+  `timeout_min`. Both results are non-successful, so nothing merges. A `Blocked`
+  state would give the planned `ci_blocked` result; not done yet.
+- **Not covered:** `allow_failure` jobs (the pipeline status is used as is), external
+  commit statuses, and the failure details of `ci_failed` for GitLab.
