@@ -434,8 +434,9 @@ fn quota_used_up(headers: &HeaderMap) -> bool {
 /// Recognises a refusal for rate-limit reasons, per the hosts' docs:
 /// - HTTP 429 is always a rate limit (GitHub, GitLab).
 /// - HTTP 403 with `x-ratelimit-remaining: 0` is GitHub's primary limit.
-/// - HTTP 403 with `retry-after` or a "rate limit" message is GitHub's secondary limit. The
-///   message text is not documented, so the body check is a heuristic.
+/// - HTTP 403 with `retry-after` or a "rate limit" message is GitHub's secondary limit.
+///   The message text is not documented, so the body check is a heuristic.
+///
 /// `Retry-After` in seconds wins over the reset time.
 fn rate_limit(status: u16, headers: &HeaderMap, body: &str, now: u64) -> Option<Attempt> {
     let reason = match status {
