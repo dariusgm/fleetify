@@ -613,13 +613,14 @@ fn a_zero_ceiling_never_waits() {
 
 #[test]
 fn an_exhausted_quota_holds_back_the_next_request_of_the_same_host() {
-    // The first reply stands, but the quota is used up until the reset, which is one second away.
-    let reset = std::time::SystemTime::now()
+    // The first reply stands, but the quota is used up until the reset time. The reset is
+    // given in whole seconds, so the second request must not come back before that instant.
+    let reset_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-        + 1;
-    let reset = reset.to_string();
+        + 2;
+    let reset = reset_at.to_string();
     let host = serve_with_headers(move |_| {
         (
             200,
@@ -633,11 +634,14 @@ fn an_exhausted_quota_holds_back_the_next_request_of_the_same_host() {
     let client = github_with_ceiling(&host.base, Duration::from_secs(60));
     let repo = repo("github.com", HostType::Github, "o/r");
     client.default_branch(&repo, &token()).unwrap();
-    let started = Instant::now();
     client.default_branch(&repo, &token()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     assert!(
-        started.elapsed() >= Duration::from_millis(500),
-        "{:?}",
-        started.elapsed()
+        now >= reset_at,
+        "second request came back at {now}, before the reset at {reset_at}"
     );
+    assert_eq!(host.recorded().len(), 2);
 }
