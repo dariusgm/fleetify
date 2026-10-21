@@ -678,3 +678,19 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
 - **Result.** The level-5 test of M15a passes. Observed: Copilot follows the recipe's
   instruction, the verifier gate and the guards act as the outer check, and a denied grant
   stops the run as `needs_input` instead of pushing.
+
+## Agent rate limits (extension of M11a, agent part)
+
+- **Implemented.** A failed agent run whose output contains a rate-limit phrase ends as
+  `rate_limited`, with the first matching line in the failure block. The phrases are in
+  `RATE_LIMIT_MARKERS` (`rate limit`, `usage limit`, `too many requests`, `http 429`),
+  compared case-insensitively. A timeout with such a line is `rate_limited` too, because the
+  message is the cause.
+- **Only for failed runs.** A successful run is never reclassified, so a phrase in code the
+  agent printed cannot fail a run.
+- **Not verified against the real CLIs.** No real Claude Code, Copilot or opencode rate limit
+  has been observed yet. The phrases are a starting list; they must be checked in a level-5
+  run before relying on them.
+- **Not done:** the agent's own wait is not capped by `[rate_limit] max_wait_min`. An agent
+  that waits on its limit runs until `agent_timeout_min`. Reading the reset time from the
+  agent's message is not implemented.

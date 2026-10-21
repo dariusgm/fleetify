@@ -266,15 +266,23 @@ pub fn process_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
                 return error_result(ctx.layout, repo, message, Some(pattern), Vec::new());
             }
             Ok(result) if !result.is_success() => {
+                let lines: Vec<String> = result.lines.iter().map(|l| l.text.clone()).collect();
+                let limit = agents::rate_limit_line(&lines);
                 let mut failed = step_failure(ctx, repo, "agent", &result, pattern, Vec::new());
-                let (result_name, class) = match result.outcome {
-                    Outcome::TimedOut => ("agent_timeout", "agent_timeout"),
-                    Outcome::WaitingForInput => ("needs_input", "needs_input"),
-                    _ => ("error", "error"),
+                let (result_name, class) = match (&limit, &result.outcome) {
+                    // The message is the cause, also when the agent then sat until the timeout.
+                    (Some(_), _) => ("rate_limited", "rate_limited"),
+                    (None, Outcome::TimedOut) => ("agent_timeout", "agent_timeout"),
+                    (None, Outcome::WaitingForInput) => ("needs_input", "needs_input"),
+                    (None, _) => ("error", "error"),
                 };
                 failed.result = result_name.to_string();
+                failed.successful = crate::report::is_successful(result_name);
                 if let Some(block) = failed.failure.as_mut() {
                     block.class = class.to_string();
+                    if let Some(line) = &limit {
+                        block.message = format!("the agent reported a rate limit: {line}");
+                    }
                 }
                 return failed;
             }

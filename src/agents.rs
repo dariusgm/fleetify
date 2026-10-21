@@ -457,6 +457,24 @@ fn copilot_argv(binary: &str, prompt: &str, workspace: &Path, grants: &Grants) -
     argv
 }
 
+/// Phrases that mark a rate limit in an agent's output, compared case-insensitively. Only
+/// consulted for a run that already failed, so a phrase in code the agent printed cannot
+/// make a successful run fail. Extend as the level-5 runs show the real messages.
+const RATE_LIMIT_MARKERS: &[&str] = &["rate limit", "usage limit", "too many requests", "http 429"];
+
+/// The first output line that reports a rate limit, if any.
+pub fn rate_limit_line(lines: &[String]) -> Option<String> {
+    lines
+        .iter()
+        .find(|line| {
+            let lower = line.to_lowercase();
+            RATE_LIMIT_MARKERS
+                .iter()
+                .any(|marker| lower.contains(marker))
+        })
+        .cloned()
+}
+
 /// True when an agent output line is a question it waits on: a yes/no prompt, or a
 /// choice between numbered options and `n` (for example `Pick option 1, 2 or n` or
 /// `[1/2/n]`). Such an agent gets no answer, so the run stops and the repo ends as
@@ -606,6 +624,21 @@ mod tests {
             !names.iter().any(|name| name.contains("TOKEN")),
             "{names:?}"
         );
+    }
+
+    #[test]
+    fn rate_limit_messages_are_recognised_in_any_case() {
+        let lines = vec![
+            "compiling".to_string(),
+            "Error: Rate Limit reached, try again later".to_string(),
+        ];
+        assert_eq!(
+            rate_limit_line(&lines).as_deref(),
+            Some("Error: Rate Limit reached, try again later")
+        );
+        assert!(rate_limit_line(&["Permission denied".to_string()]).is_none());
+        assert!(rate_limit_line(&["You hit the usage limit".to_string()]).is_some());
+        assert!(rate_limit_line(&["HTTP 429 from the provider".to_string()]).is_some());
     }
 
     #[test]
