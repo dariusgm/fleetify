@@ -103,7 +103,7 @@ pub struct RunArgs {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a recipe over the repositories listed in a repos file
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     /// Check a recipe: schema, referenced files and rendered commands per OS
     Validate {
         recipe_dir: PathBuf,
@@ -185,7 +185,7 @@ pub fn run(cli: Cli) -> ExitCode {
     let debug = cli.debug;
 
     match cli.command {
-        Command::Run(args) => run_command(&workdir, debug, args),
+        Command::Run(args) => run_command(&workdir, debug, *args),
         Command::DebugPanic => {
             if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
                 return code;
