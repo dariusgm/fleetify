@@ -54,6 +54,10 @@ pub struct Recipe {
     /// unless `--agent` is given.
     #[serde(default)]
     pub agent: Option<String>,
+    /// Model for the recipe's agent, passed to the agent CLI unchanged. Overridden by
+    /// `--model`; `[agents.<name>] model` in config.toml is the fallback.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub applies_to: AppliesTo,
     /// Concatenated in order. Empty means no agent: a pure `prepare` run.
@@ -481,6 +485,11 @@ impl Recipe {
         }
 
         self.validate_agent(agent_override, &mut push);
+        if let Some(model) = &self.model
+            && let Err(message) = crate::agents::check_model(model)
+        {
+            push("model", message);
+        }
         self.validate_applies_to(&mut push);
         self.validate_files(dir, &mut push);
         self.validate_commands(dir, &mut push);
@@ -1089,6 +1098,17 @@ mod tests {
                 .iter()
                 .any(|i| i.field == "agent" && i.message.contains("gpt-pilot"))
         );
+    }
+
+    #[test]
+    fn model_is_optional_and_an_option_like_name_is_reported() {
+        let model = VALID.replace(
+            "agent = \"claude-code\"\n",
+            "agent = \"claude-code\"\nmodel = \"--allow-all\"\n",
+        );
+        let issues = issues_for(&model, "model");
+        assert!(issues.iter().any(|i| i.field == "model"));
+        assert!(issues_for(VALID, "model_ok").is_empty());
     }
 
     #[test]

@@ -58,8 +58,12 @@ pub fn plain_line(event: &Event) -> String {
             web,
             directories,
             unrestricted,
+            model,
         } => format!(
-            "{repo} | agent {agent} grants: commands [{}], web {web}, directories [{}]{}",
+            "{repo} | agent {agent}{} grants: commands [{}], web {web}, directories [{}]{}",
+            model
+                .as_ref()
+                .map_or_else(String::new, |model| format!(" model {model}")),
             commands.join(", "),
             directories.join(", "),
             if *unrestricted { ", unrestricted" } else { "" }
@@ -146,6 +150,7 @@ mod tests {
             web: false,
             directories: Vec::new(),
             unrestricted: false,
+            model: None,
         });
         assert_eq!(
             line,

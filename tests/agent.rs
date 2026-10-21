@@ -41,6 +41,8 @@ test -f .agent/tools/verify.sh || exit 7
 if grep -q BLOCK .agent/task.md; then echo "which python?" > .agent/blocked.md; exit 0; fi
 if grep -q FAIL .agent/task.md; then exit 1; fi
 if grep -q LIMIT .agent/task.md; then echo "Error: rate limit reached, try again later" >&2; exit 1; fi
+if grep -q CREDITS .agent/task.md; then echo "Fable 5.1 requires usage credits. Switch to another model, or manage usage credits at https://claude.ai/settings/usage"; exit 1; fi
+if grep -q WAIT .agent/task.md; then echo "Error: rate limit reached, try again later" >&2; sleep 60; exit 0; fi
 if grep -q ASK .agent/task.md; then echo 'Overwrite the lock file? [y/N]'; sleep 30; exit 0; fi
 if grep -q FORBIDDEN .agent/task.md; then sed -i 's/3.11/3.15/' pyproject.toml; echo '# NOSONAR' >> pyproject.toml; exit 0; fi
 sed -i 's/3.11/3.15/' pyproject.toml
@@ -167,6 +169,15 @@ fn host(created: Arc<AtomicBool>) -> support::FakeHost {
 
 /// Runs the pipeline for one repo with an agent and returns its only result.
 fn run_agent_repo(name: &str, instruction: &str) -> (RepoResult, PathBuf, Vec<Recorded>) {
+    run_agent_repo_with(name, instruction, Config::default(), None)
+}
+
+fn run_agent_repo_with(
+    name: &str,
+    instruction: &str,
+    config: Config,
+    model: Option<&str>,
+) -> (RepoResult, PathBuf, Vec<Recorded>) {
     let base = scratch(name);
     let remote = remote(&base);
     let recipe_dir = recipe_dir(&base, instruction);
@@ -192,10 +203,11 @@ fn run_agent_repo(name: &str, instruction: &str) -> (RepoResult, PathBuf, Vec<Re
     let workspace = layout.workspace_dir(&repo);
     let loaded = Loaded {
         credentials,
-        config: Config::default(),
+        config,
         repos: vec![repo],
         clients: BTreeMap::from([("github.com".to_string(), client)]),
         agent: Some("claude-code".to_string()),
+        model: model.map(str::to_string),
         merge: false,
     };
     let report = execute_loaded(
@@ -294,11 +306,43 @@ fn agent_runs_are_judged_like_any_other_step() {
         .message;
     assert!(message.starts_with("agent step"), "{message}");
 
+    // Missing usage credits (the Fable case): the repo ends as api_limit with the CLI's own
+    // sentence, and it is not a rate limit, so a re-run does not wait for it.
+    let (credits, _, _) = run_agent_repo("credits", "CREDITS on purpose.");
+    assert_eq!(credits.result, "api_limit", "{credits:?}");
+    assert!(!credits.successful, "{credits:?}");
+    let block = credits.failure.expect("api_limit carries a failure block");
+    assert_eq!(block.class, "api_limit", "{block:?}");
+    assert!(block.message.contains("usage credits"), "{block:?}");
+
+    // An agent that sits silent after a rate-limit line is stopped at the ceiling
+    // (max_wait_min = 0 here), so the run ends as rate_limited and not after 60 seconds.
+    let mut no_wait = Config::default();
+    no_wait.rate_limit.max_wait_min = Some(0);
+    let started = std::time::Instant::now();
+    let (waited, _, _) = run_agent_repo_with("waited", "WAIT on purpose.", no_wait, None);
+    assert_eq!(waited.result, "rate_limited", "{waited:?}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(40),
+        "{waited:?}"
+    );
+
+    // The model reaches the agent's command line and the report names it for this repo.
+    let (modelled, workspace, _) = run_agent_repo_with(
+        "modelled",
+        "Plain change.",
+        Config::default(),
+        Some("fable"),
+    );
+    assert_eq!(modelled.model.as_deref(), Some("fable"), "{modelled:?}");
+    let args = fs::read_to_string(workspace.join(".agent/args.txt")).unwrap();
+    assert!(args.contains("--model fable"), "{args}");
+
     // The canary passes for a confined agent and leaves its marker behind.
     let checks = scratch("check");
-    assert!(!fleetify::agents::is_checked(&checks, "claude-code"));
-    fleetify::agents::check(&checks, "claude-code").unwrap();
-    assert!(fleetify::agents::is_checked(&checks, "claude-code"));
+    assert!(!fleetify::agents::is_checked(&checks, "claude-code", None));
+    fleetify::agents::check(&checks, "claude-code", None).unwrap();
+    assert!(fleetify::agents::is_checked(&checks, "claude-code", None));
 
     // An agent that writes outside its workspace fails the canary and leaves no marker.
     let leaky = scratch("leaky");
@@ -308,9 +352,9 @@ fn agent_runs_are_judged_like_any_other_step() {
     // SAFETY: as above, this test is the only one in this binary.
     unsafe { std::env::set_var(BINARY_ENV, &leaky_bin) };
     let leaking = scratch("check-leaky");
-    let err = fleetify::agents::check(&leaking, "claude-code").unwrap_err();
+    let err = fleetify::agents::check(&leaking, "claude-code", None).unwrap_err();
     assert!(err.contains("not confined"), "{err}");
-    assert!(!fleetify::agents::is_checked(&leaking, "claude-code"));
+    assert!(!fleetify::agents::is_checked(&leaking, "claude-code", None));
     unsafe { std::env::set_var(BINARY_ENV, &fake) };
 
     let _ = fs::remove_file(&fake);

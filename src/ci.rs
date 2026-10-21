@@ -16,6 +16,8 @@ pub enum Verdict {
     Passed,
     /// At least one item failed. Lists the failed items.
     Failed(Vec<String>),
+    /// Nothing failed, but an item waits for a person. Lists them. Not waited for.
+    Blocked(Vec<String>),
     /// Nothing failed, but some items are still running. Lists them.
     Pending(Vec<String>),
     /// The commit has no CI items at all.
@@ -30,6 +32,10 @@ pub fn evaluate(items: &[CiItem]) -> Verdict {
     let failed: Vec<String> = names(items, CiState::Failure);
     if !failed.is_empty() {
         return Verdict::Failed(failed);
+    }
+    let blocked = names(items, CiState::Blocked);
+    if !blocked.is_empty() {
+        return Verdict::Blocked(blocked);
     }
     let pending = names(items, CiState::Pending);
     if !pending.is_empty() {
@@ -107,6 +113,23 @@ mod tests {
             name: name.to_string(),
             state,
         }
+    }
+
+    #[test]
+    fn a_manual_item_blocks_the_verdict_without_waiting() {
+        let items = [
+            item("deploy", CiState::Blocked),
+            item("test", CiState::Pending),
+        ];
+        assert_eq!(
+            evaluate(&items),
+            Verdict::Blocked(vec!["deploy".to_string()])
+        );
+        let failed = [
+            item("deploy", CiState::Blocked),
+            item("lint", CiState::Failure),
+        ];
+        assert_eq!(evaluate(&failed), Verdict::Failed(vec!["lint".to_string()]));
     }
 
     #[test]

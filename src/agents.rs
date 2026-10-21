@@ -15,7 +15,7 @@ use std::time::Duration;
 use crate::clock::rfc3339_now;
 use serde_json::json;
 
-use crate::config::Permissions;
+use crate::config::{Config, Permissions};
 use crate::events::EventBus;
 use crate::events::Redactor;
 use crate::recipe::Recipe;
@@ -193,6 +193,35 @@ fn claude_tools(grants: &Grants, workspace: &Path) -> Vec<String> {
     tools
 }
 
+/// Refuses a model name that is empty, contains whitespace or could be read as an option.
+/// The name itself is passed on unchanged: fleetify keeps no list of models.
+pub fn check_model(model: &str) -> Result<(), String> {
+    if model.is_empty() || model.starts_with('-') || model.chars().any(char::is_whitespace) {
+        return Err(format!("model {model:?} is not a model name"));
+    }
+    Ok(())
+}
+
+/// The model for one agent run, by precedence: `--model`, then the recipe's `model` (only
+/// when `name` is the recipe's own agent), then `[agents.<name>] model` in config.toml.
+/// `None` passes nothing, so the agent's own configuration decides.
+pub fn resolve_model(
+    cli: Option<&str>,
+    recipe: &Recipe,
+    config: &Config,
+    name: &str,
+) -> Option<String> {
+    let from_recipe = (recipe.agent.as_deref() == Some(name))
+        .then_some(recipe.model.as_deref())
+        .flatten();
+    cli.or(from_recipe)
+        .or(config
+            .agents
+            .get(name)
+            .and_then(|agent| agent.model.as_deref()))
+        .map(str::to_string)
+}
+
 /// What fleetify grants one agent run, after the recipe's needs were checked against
 /// `config.toml`. Each adapter turns these into its own CLI options.
 #[derive(Debug, Default)]
@@ -259,32 +288,44 @@ pub fn invocation(
     name: &str,
     recipe: &Recipe,
     permissions: &Permissions,
+    model: Option<&str>,
     workspace: &Path,
 ) -> Result<Invocation, String> {
-    build(name, PROMPT, &grants(recipe, permissions, name), workspace)
+    build(
+        name,
+        PROMPT,
+        &grants(recipe, permissions, name),
+        model,
+        workspace,
+    )
 }
 
 /// The canary's invocation: the baseline grants only, so it tests what every run gets.
-fn canary_invocation(name: &str, workspace: &Path, prompt: &str) -> Result<Invocation, String> {
-    build(name, prompt, &Grants::default(), workspace)
+fn canary_invocation(
+    name: &str,
+    workspace: &Path,
+    prompt: &str,
+    model: Option<&str>,
+) -> Result<Invocation, String> {
+    build(name, prompt, &Grants::default(), model, workspace)
 }
 
 fn build(
     name: &str,
     prompt: &str,
     grants: &Grants,
+    model: Option<&str>,
     workspace: &Path,
 ) -> Result<Invocation, String> {
     check_supported(name)?;
     match name {
         OPENCODE => {
             let config = opencode_config(grants).to_string();
+            let mut argv = vec![binary(OPENCODE_BINARY_ENV, "opencode"), "run".to_string()];
+            argv.extend(model_flag(model));
+            argv.push(prompt.to_string());
             Ok(Invocation {
-                argv: vec![
-                    binary(OPENCODE_BINARY_ENV, "opencode"),
-                    "run".to_string(),
-                    prompt.to_string(),
-                ],
+                argv,
                 env: env_policy(
                     AGENT_ENV,
                     vec![
@@ -304,6 +345,7 @@ fn build(
                 prompt,
                 workspace,
                 grants,
+                model,
             ),
             // Copilot keeps its own login in its own configuration. No host token and no
             // Claude or opencode variables are passed on.
@@ -316,6 +358,7 @@ fn build(
                 &claude_tools(grants, workspace),
                 &grants.directories,
                 grants.unrestricted,
+                model,
             ),
             env: env_policy(AGENT_ENV, Vec::new()),
         }),
@@ -380,7 +423,14 @@ fn binary(variable: &str, default: &str) -> String {
     std::env::var(variable).unwrap_or_else(|_| default.to_string())
 }
 
-/// `claude -p <prompt> [--dangerously-skip-permissions] [--add-dir <dir>]... --allowedTools <tool>...`
+/// The option that picks a model, when one is set. The name is passed on unchanged.
+fn model_flag(model: Option<&str>) -> Vec<String> {
+    model.map_or_else(Vec::new, |model| {
+        vec!["--model".to_string(), model.to_string()]
+    })
+}
+
+/// `claude -p <prompt> [--model <model>] [--dangerously-skip-permissions] [--add-dir <dir>]... --allowedTools <tool>...`
 /// `--allowedTools` comes last because it takes any number of values.
 fn claude_code_argv(
     binary: &str,
@@ -388,8 +438,10 @@ fn claude_code_argv(
     allowed: &[String],
     directories: &[String],
     unrestricted: bool,
+    model: Option<&str>,
 ) -> Vec<String> {
     let mut argv = vec![binary.to_string(), "-p".to_string(), prompt.to_string()];
+    argv.extend(model_flag(model));
     if unrestricted {
         argv.push("--dangerously-skip-permissions".to_string());
     }
@@ -401,7 +453,7 @@ fn claude_code_argv(
     argv
 }
 
-/// `copilot -p <prompt> -s --no-ask-user [--allow-all] [--add-dir <dir>]... --allow-tool=<grant>...`
+/// `copilot -p <prompt> -s --no-ask-user [--model <model>] [--allow-all] [--add-dir <dir>]... --allow-tool=<grant>...`
 ///
 /// Docs: <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference>
 /// (checked 2026-10-21, Copilot CLI 1.0.101).
@@ -411,7 +463,13 @@ fn claude_code_argv(
 /// see DECISIONS.md). Commands are granted as `shell(<command>:*)`, read-only git as exact
 /// `shell(git status)` entries. `--allow-all-urls` is the web grant: Copilot has no per-URL
 /// grant that fleetify could fill from the recipe.
-fn copilot_argv(binary: &str, prompt: &str, workspace: &Path, grants: &Grants) -> Vec<String> {
+fn copilot_argv(
+    binary: &str,
+    prompt: &str,
+    workspace: &Path,
+    grants: &Grants,
+    model: Option<&str>,
+) -> Vec<String> {
     let mut argv = vec![
         binary.to_string(),
         "-p".to_string(),
@@ -419,6 +477,7 @@ fn copilot_argv(binary: &str, prompt: &str, workspace: &Path, grants: &Grants) -
         "-s".to_string(),
         "--no-ask-user".to_string(),
     ];
+    argv.extend(model_flag(model));
     if grants.unrestricted {
         argv.push("--allow-all".to_string());
     }
@@ -460,19 +519,43 @@ fn copilot_argv(binary: &str, prompt: &str, workspace: &Path, grants: &Grants) -
 /// Phrases that mark a rate limit in an agent's output, compared case-insensitively. Only
 /// consulted for a run that already failed, so a phrase in code the agent printed cannot
 /// make a successful run fail. Extend as the level-5 runs show the real messages.
-const RATE_LIMIT_MARKERS: &[&str] = &["rate limit", "usage limit", "too many requests", "http 429"];
+const RATE_LIMIT_MARKERS: &[&str] = &[
+    "rate limit",
+    "usage limit",
+    "fable limit reached",
+    "too many requests",
+    "http 429",
+];
+/// Phrases that mark a missing API credit balance, as the Claude CLI prints them when a
+/// model needs usage credits the account does not have (observed 2026-10-21 with
+/// `--model fable`: "Fable 5.1 requires usage credits. ..."). Waiting does not help here.
+const API_LIMIT_MARKERS: &[&str] = &["usage credits", "credit balance"];
 
-/// The first output line that reports a rate limit, if any.
-pub fn rate_limit_line(lines: &[String]) -> Option<String> {
+/// The first line containing one of `markers`, compared case-insensitively.
+fn first_marked_line(lines: &[String], markers: &[&str]) -> Option<String> {
     lines
         .iter()
         .find(|line| {
             let lower = line.to_lowercase();
-            RATE_LIMIT_MARKERS
-                .iter()
-                .any(|marker| lower.contains(marker))
+            markers.iter().any(|marker| lower.contains(marker))
         })
         .cloned()
+}
+
+/// The first output line that reports a rate limit, if any.
+pub fn rate_limit_line(lines: &[String]) -> Option<String> {
+    first_marked_line(lines, RATE_LIMIT_MARKERS)
+}
+
+/// The first output line that reports missing API usage credits, if any.
+pub fn api_limit_line(lines: &[String]) -> Option<String> {
+    first_marked_line(lines, API_LIMIT_MARKERS)
+}
+
+/// True for one output line that reports a rate limit. The runner uses it to start the wait
+/// ceiling; see `RunRequest::limit_check`.
+pub fn is_rate_limit(line: &str) -> bool {
+    first_marked_line(&[line.to_string()], RATE_LIMIT_MARKERS).is_some()
 }
 
 /// True when an agent output line is a question it waits on: a yes/no prompt, or a
@@ -495,18 +578,42 @@ pub fn wants_input(line: &str) -> bool {
     choice_marker || choice_list
 }
 
-fn checked_marker(workdir: &Path, name: &str) -> std::path::PathBuf {
-    workdir.join(CHECK_DIR).join(format!("{name}.checked"))
+/// The pass marker of one agent and model. Without a model the name stays as it was, so
+/// markers written before models existed still count. A model's characters that are not
+/// safe in a file name become `_`.
+fn checked_marker(workdir: &Path, name: &str, model: Option<&str>) -> std::path::PathBuf {
+    let file = match model {
+        None => format!("{name}.checked"),
+        Some(model) => {
+            let safe: String = model
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            format!("{name}.{safe}.checked")
+        }
+    };
+    workdir.join(CHECK_DIR).join(file)
 }
 
-/// True when `check-agent` passed for this agent and the marker is still there.
-pub fn is_checked(workdir: &Path, name: &str) -> bool {
-    checked_marker(workdir, name).is_file()
+/// True when `check-agent` passed for this agent and model and the marker is still there.
+pub fn is_checked(workdir: &Path, name: &str, model: Option<&str>) -> bool {
+    checked_marker(workdir, name, model).is_file()
 }
 
 /// One canary run in `workspace`. Only the files it leaves behind are judged, by `check`.
-fn canary_run(name: &str, workspace: &Path, prompt: &str) -> Result<(), String> {
-    let canary = canary_invocation(name, workspace, prompt)?;
+fn canary_run(
+    name: &str,
+    workspace: &Path,
+    prompt: &str,
+    model: Option<&str>,
+) -> Result<(), String> {
+    let canary = canary_invocation(name, workspace, prompt, model)?;
     let runner = Runner::new(EventBus::new(), Redactor::default());
     let mut request = RunRequest::new(name, canary.argv);
     request.cwd = Some(workspace.to_path_buf());
@@ -519,22 +626,25 @@ fn canary_run(name: &str, workspace: &Path, prompt: &str) -> Result<(), String> 
 /// The canary. It passes when the agent wrote `inside.txt` in its workspace and
 /// `escape.txt` did not appear one level above. A pass writes the marker that
 /// `require_checked_agent` looks for.
-pub fn check(workdir: &Path, name: &str) -> Result<(), String> {
+pub fn check(workdir: &Path, name: &str, model: Option<&str>) -> Result<(), String> {
+    if let Some(model) = model {
+        check_model(model)?;
+    }
     let root = workdir.join(CHECK_DIR).join("canary").join(name);
     let _ = fs::remove_dir_all(&root);
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace).map_err(|err| format!("cannot create canary folder: {err}"))?;
-    let _ = fs::remove_file(checked_marker(workdir, name));
+    let _ = fs::remove_file(checked_marker(workdir, name, model));
 
-    canary_run(name, &workspace, INSIDE_PROMPT)?;
+    canary_run(name, &workspace, INSIDE_PROMPT, model)?;
     if !workspace.join("inside.txt").exists() {
         return Err("the agent did not write inside its workspace".to_string());
     }
-    canary_run(name, &workspace, ESCAPE_PROMPT)?;
+    canary_run(name, &workspace, ESCAPE_PROMPT, model)?;
     if root.join("escape.txt").exists() {
         return Err("the agent wrote outside its workspace: it is not confined".to_string());
     }
-    let marker = checked_marker(workdir, name);
+    let marker = checked_marker(workdir, name, model);
     if let Some(parent) = marker.parent() {
         fs::create_dir_all(parent).map_err(|err| format!("cannot record the check: {err}"))?;
     }
@@ -553,7 +663,7 @@ mod tests {
             directories: vec!["/data/out".into()],
             unrestricted: false,
         };
-        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &grants);
+        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &grants, None);
         assert!(
             argv.contains(&"--allow-tool=write(/ws/**)".to_string()),
             "{argv:?}"
@@ -576,7 +686,7 @@ mod tests {
 
     #[test]
     fn copilot_baseline_is_read_git_and_writes_in_the_workspace() {
-        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &Grants::default());
+        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &Grants::default(), None);
         for expected in [
             "--allow-tool=read",
             "--allow-tool=write(/ws/**)",
@@ -604,7 +714,7 @@ mod tests {
             unrestricted: true,
             ..Grants::default()
         };
-        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &grants);
+        let argv = copilot_argv("copilot", "p", Path::new("/ws"), &grants, None);
         assert!(argv.contains(&"--allow-all-urls".to_string()), "{argv:?}");
         assert!(argv.contains(&"--allow-all".to_string()), "{argv:?}");
     }
@@ -612,7 +722,7 @@ mod tests {
     #[test]
     fn copilot_is_supported_and_gets_no_claude_or_host_variables() {
         assert!(check_supported("copilot").is_ok());
-        let invocation = build(COPILOT, "p", &Grants::default(), Path::new("/ws")).unwrap();
+        let invocation = build(COPILOT, "p", &Grants::default(), None, Path::new("/ws")).unwrap();
         let EnvPolicy::Allowlist { names, .. } = invocation.env else {
             panic!("expected an allowlist");
         };
@@ -772,6 +882,7 @@ text = "Do the thing."
             &["Read".to_string(), "Bash(cargo:*)".to_string()],
             &["/data".to_string()],
             false,
+            None,
         );
         assert_eq!(
             argv,
@@ -794,7 +905,7 @@ text = "Do the thing."
         let mut perms = permissions(&[], false);
         let flag = "--dangerously-skip-permissions";
         assert!(
-            !invocation("claude-code", &recipe, &perms, Path::new("/ws"))
+            !invocation("claude-code", &recipe, &perms, None, Path::new("/ws"))
                 .unwrap()
                 .argv
                 .contains(&flag.to_string())
@@ -804,7 +915,7 @@ text = "Do the thing."
             AgentPermissions { unrestricted: true },
         );
         assert!(
-            invocation("claude-code", &recipe, &perms, Path::new("/ws"))
+            invocation("claude-code", &recipe, &perms, None, Path::new("/ws"))
                 .unwrap()
                 .argv
                 .contains(&flag.to_string())
@@ -838,7 +949,7 @@ text = "Do the thing."
                 unrestricted: false,
             },
         );
-        let invocation = invocation("opencode", &recipe, &perms, Path::new("/ws")).unwrap();
+        let invocation = invocation("opencode", &recipe, &perms, None, Path::new("/ws")).unwrap();
         assert_eq!(invocation.argv[1], "run");
         let EnvPolicy::Allowlist { set, .. } = invocation.env else {
             panic!("opencode needs an allowlist environment");
@@ -875,5 +986,112 @@ text = "inline"
         .unwrap();
         assert_eq!(task_text(&dir, &recipe).unwrap(), "from file\n\ninline");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_credits_are_recognised_apart_from_rate_limits() {
+        let fable = [
+            "Fable 5.1 requires usage credits. Switch to another model, or manage usage credits at https://claude.ai/settings/usage".to_string(),
+        ];
+        assert!(api_limit_line(&fable).is_some());
+        assert!(rate_limit_line(&fable).is_none());
+        assert!(api_limit_line(&["You don't have usage credits yet.".to_string()]).is_some());
+        assert!(api_limit_line(&["Credit balance is too low".to_string()]).is_some());
+        assert!(api_limit_line(&["Usage limit reached".to_string()]).is_none());
+        // Strings found in the Claude CLI binary (2026-10-21): the model-specific limit is
+        // not a usage limit by its words, so it has its own marker.
+        assert!(rate_limit_line(&["Fable limit reached · resets soon".to_string()]).is_some());
+        assert!(rate_limit_line(&["Usage limit reached".to_string()]).is_some());
+        assert!(is_rate_limit("Error: rate limit reached"));
+        assert!(!is_rate_limit("Permission denied"));
+    }
+
+    #[test]
+    fn model_precedence_is_cli_then_recipe_then_config() {
+        let mut config = Config::default();
+        config.agents.insert(
+            "claude-code".to_string(),
+            crate::config::AgentConfig {
+                model: Some("from-config".to_string()),
+            },
+        );
+        let plain = recipe("");
+        let mut with_model = recipe("");
+        with_model.model = Some("from-recipe".to_string());
+        assert_eq!(
+            resolve_model(Some("from-cli"), &with_model, &config, "claude-code").as_deref(),
+            Some("from-cli")
+        );
+        assert_eq!(
+            resolve_model(None, &with_model, &config, "claude-code").as_deref(),
+            Some("from-recipe")
+        );
+        assert_eq!(
+            resolve_model(None, &plain, &config, "claude-code").as_deref(),
+            Some("from-config")
+        );
+        assert_eq!(
+            resolve_model(None, &plain, &Config::default(), "claude-code"),
+            None
+        );
+    }
+
+    #[test]
+    fn recipe_model_applies_only_to_the_recipes_own_agent() {
+        let mut with_model = recipe("");
+        with_model.model = Some("from-recipe".to_string());
+        assert_eq!(
+            resolve_model(None, &with_model, &Config::default(), "opencode"),
+            None
+        );
+    }
+
+    #[test]
+    fn model_names_that_look_like_options_are_refused() {
+        assert!(check_model("claude-fable-5-1").is_ok());
+        assert!(check_model("llama.cpp/qwen3-coder").is_ok());
+        assert!(check_model("").is_err());
+        assert!(check_model("--allow-all").is_err());
+        assert!(check_model("a b").is_err());
+    }
+
+    #[test]
+    fn each_adapter_passes_the_model_only_when_set() {
+        let claude = |model| claude_code_argv("claude", "do it", &[], &[], false, model);
+        assert!(!claude(None).contains(&"--model".to_string()));
+        assert_eq!(
+            claude(Some("fable")),
+            [
+                "claude",
+                "-p",
+                "do it",
+                "--model",
+                "fable",
+                "--allowedTools"
+            ]
+        );
+        let grants = Grants::default();
+        let copilot = copilot_argv("copilot", "p", Path::new("/ws"), &grants, Some("gpt-5"));
+        let at = copilot.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(copilot[at + 1], "gpt-5");
+        assert!(
+            !copilot_argv("copilot", "p", Path::new("/ws"), &grants, None)
+                .contains(&"--model".to_string())
+        );
+        let opencode = build(OPENCODE, "p", &grants, Some("llama/qwen"), Path::new("/ws")).unwrap();
+        assert_eq!(opencode.argv[1..], ["run", "--model", "llama/qwen", "p"]);
+    }
+
+    #[test]
+    fn checked_marker_is_keyed_by_model_and_keeps_the_old_name_without_one() {
+        let dir = Path::new("/w");
+        assert_eq!(
+            checked_marker(dir, "copilot", None),
+            Path::new("/w/agents/copilot.checked")
+        );
+        assert_eq!(
+            checked_marker(dir, "copilot", Some("a/b c")),
+            Path::new("/w/agents/copilot.a_b_c.checked")
+        );
     }
 }

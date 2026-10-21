@@ -52,6 +52,18 @@ pub struct Config {
     pub permissions: Permissions,
     #[serde(default)]
     pub rate_limit: RateLimit,
+    /// Defaults per agent, keyed by agent name. `--model` and the recipe take precedence.
+    #[serde(default)]
+    pub agents: BTreeMap<String, AgentConfig>,
+}
+
+/// `[agents.<name>]`: defaults for one agent.
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfig {
+    /// Model passed to the agent CLI unchanged. Unset leaves the choice to the agent.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// `[rate_limit]`: how long fleetify waits when a host asks it to hold back.

@@ -251,3 +251,34 @@ fn a_matching_prompt_line_terminates_the_process_tree() {
     assert!(started.elapsed() < Duration::from_secs(20));
     assert!(result.lines.iter().any(|l| l.text.contains("[y/N]")));
 }
+
+#[test]
+fn a_limit_line_only_counts_as_a_wait_when_it_is_the_last_output() {
+    let (runner, _bus) = runner();
+    // Output follows the limit line, then a pause longer than the ceiling: not a wait.
+    let mut working = RunRequest::new(
+        "r",
+        argv(&[
+            "sh",
+            "-c",
+            "echo 'rate limit reached'; echo working; sleep 1",
+        ]),
+    );
+    working.limit_check = Some(|line| line.contains("rate limit"));
+    working.limit_wait = Some(Duration::from_millis(300));
+    assert_eq!(
+        runner.run(working).outcome,
+        Outcome::Exited { code: Some(0) }
+    );
+
+    // The limit line is the last output and the process stays silent: it is stopped at the ceiling.
+    let mut waiting = RunRequest::new(
+        "r",
+        argv(&["sh", "-c", "echo 'rate limit reached'; sleep 30"]),
+    );
+    waiting.limit_check = Some(|line| line.contains("rate limit"));
+    waiting.limit_wait = Some(Duration::from_millis(300));
+    let started = Instant::now();
+    assert_eq!(runner.run(waiting).outcome, Outcome::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(20));
+}

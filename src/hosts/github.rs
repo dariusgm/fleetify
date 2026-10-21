@@ -13,6 +13,9 @@ use crate::credentials::Secret;
 use crate::events::EventBus;
 use crate::repos::Repo;
 
+/// Pages of 100 items, at most this many per list.
+const MAX_PAGES: u32 = 50;
+
 pub struct GitHub {
     http: Http,
 }
@@ -20,6 +23,36 @@ pub struct GitHub {
 impl GitHub {
     pub fn new(http: Http) -> Self {
         GitHub { http }
+    }
+
+    /// Every item of a paged GitHub list: `key` names the array in the reply, `total_count`
+    /// says how many exist. Pages stop at `MAX_PAGES`, so a host that keeps reporting more
+    /// cannot make the poll loop forever.
+    fn all_pages(&self, path: &str, token: &Secret, key: &str) -> Result<Vec<Value>, HostError> {
+        let mut items = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let page_text = page.to_string();
+            let reply = self.http.send(
+                Method::GET,
+                path,
+                &headers(token),
+                &[("per_page", "100"), ("page", &page_text)],
+                None,
+            )?;
+            if reply.status != 200 {
+                return Err(unexpected(&reply));
+            }
+            let body = parse_json(&reply)?;
+            let list = body[key]
+                .as_array()
+                .ok_or_else(|| HostError::Parse(format!("{key} is not an array")))?;
+            items.extend(list.iter().cloned());
+            let total = body["total_count"].as_u64().unwrap_or(0);
+            if list.is_empty() || items.len() as u64 >= total {
+                break;
+            }
+        }
+        Ok(items)
     }
 }
 
@@ -46,6 +79,7 @@ fn check_run_state(run: &Value) -> CiState {
     }
     match run["conclusion"].as_str() {
         Some("success" | "neutral" | "skipped") => CiState::Success,
+        Some("action_required") => CiState::Blocked,
         _ => CiState::Failure,
     }
 }
@@ -213,21 +247,12 @@ impl Host for GitHub {
         let mut items = Vec::new();
 
         // Check runs (GitHub Actions and apps). Every item must name this exact commit.
-        let reply = self.http.send(
-            Method::GET,
+        let runs = self.all_pages(
             &format!("/repos/{owner}/{name}/commits/{sha}/check-runs"),
-            &headers(token),
-            &[("per_page", "100")],
-            None,
+            token,
+            "check_runs",
         )?;
-        if reply.status != 200 {
-            return Err(unexpected(&reply));
-        }
-        let runs = parse_json(&reply)?;
-        for run in runs["check_runs"]
-            .as_array()
-            .ok_or_else(|| HostError::Parse("check_runs is not an array".into()))?
-        {
+        for run in &runs {
             check_commit(run["head_sha"].as_str(), sha)?;
             items.push(CiItem {
                 name: run["name"].as_str().unwrap_or_default().to_string(),
@@ -248,10 +273,12 @@ impl Host for GitHub {
         }
         let combined = parse_json(&reply)?;
         check_commit(combined["sha"].as_str(), sha)?;
-        for status in combined["statuses"]
-            .as_array()
-            .ok_or_else(|| HostError::Parse("statuses is not an array".into()))?
-        {
+        let statuses = self.all_pages(
+            &format!("/repos/{owner}/{name}/commits/{sha}/status"),
+            token,
+            "statuses",
+        )?;
+        for status in &statuses {
             items.push(CiItem {
                 name: status["context"].as_str().unwrap_or_default().to_string(),
                 state: match status["state"].as_str() {

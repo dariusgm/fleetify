@@ -108,6 +108,8 @@ pub enum Event {
         web: bool,
         directories: Vec<String>,
         unrestricted: bool,
+        /// The model the agent runs with, when one is set.
+        model: Option<String>,
     },
 }
 
