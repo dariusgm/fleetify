@@ -663,3 +663,20 @@ If most repos go through without intervention, extending is worth it. If the res
 1. Anthropic models through opencode (or any other Anthropic route) cost API credit outside Claude Code. The user would create that API token and decide whether it is used at all. Until then, no test uses it.
 2. Which default models to use in the recipes and in the examples: left to the user, fleetify ships none.
 
+### Idea: tasks from issues (fan-out, not decided)
+
+**Status: idea only, not scheduled.** The owner wants to think it over before any work.
+
+**Idea.** A GitHub issue or a GitLab work item describes one change and lists the repositories it applies to. fleetify reads the issue, turns its target list into a `repos.txt`, and runs the existing recipe over those repos. The pull requests link back to the issue and the result per repo is posted as a comment.
+
+**Why it could fit.** Fleetify already runs an agent with verifier, guards and merge gates. An issue is an instruction for a set of repos, and the host APIs can list issues across repositories (GitHub search; GitLab group issue lists, not yet tested on a real group).
+
+**Open points before any work:**
+
+- **The target list is untrusted input.** It decides which repos get write attempts. Targets must pass the same rules as `repos.txt`: only configured hosts, no invented URLs.
+- **Dry run first.** The fan-out shows which repos it would touch (`--dry-run`) and needs an explicit go before the real run.
+- **Hard limit.** A maximum number of repos per issue, so a typo or a hostile issue cannot touch hundreds.
+- **Author or label filter.** Only issues from allowed authors or with a fixed label are processed.
+- **Report back.** One comment per issue with the result per repo and the link to each pull request or failure.
+- **Jira** would be a second source adapter, only if the company works with Jira.
+
