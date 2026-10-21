@@ -42,10 +42,11 @@ pub const RESULT_FILE: &str = ".agent/result.md";
 const AGENT_TOOLS_DIR: &str = ".agent/tools";
 /// Fixed, versioned rules that every agent run gets, whatever the recipe says.
 const RULES: &str = "\
-Rules (fleetify rules v1):
+Rules (fleetify rules v2):
 - Do not commit or push. The orchestrator does that.
 - Do not ask questions. Choose the most conservative option and note your assumptions.
-- Run the verifier named below after each change, and keep going until it passes.
+- Run the verifier named below after each change, and keep going until it passes. Run that
+  exact command as written, as its own command: do not wrap it in bash, sh -c or any other shell.
 - If you cannot proceed, write .agent/blocked.md explaining why, then stop.
 - When you are done, write .agent/result.md: what changed, your assumptions, and anything a reviewer should know.";
 const TASK_FILE: &str = "task.md";
@@ -1093,5 +1094,11 @@ text = "inline"
             checked_marker(dir, "copilot", Some("a/b c")),
             Path::new("/w/agents/copilot.a_b_c.checked")
         );
+    }
+
+    #[test]
+    fn the_rules_forbid_wrapping_the_verifier_command() {
+        assert!(RULES.contains("rules v2"));
+        assert!(RULES.contains("do not wrap it in bash, sh -c"));
     }
 }
