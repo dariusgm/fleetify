@@ -232,12 +232,13 @@ def write_recipe(base: Path, name: str, host: str, case: Case) -> Path:
 # --- hosts ---------------------------------------------------------------------------------------
 
 
-def create_remote_repo(host: str, owner: str, name: str, local: Path, visibility: str) -> None:
+def create_remote_repo(host: str, owner: str, name: str, local: Path) -> None:
+    """Public on both hosts: the test repos are small, hold no secrets, and public repos get free CI minutes."""
     if host == "github":
-        run(["gh", "repo", "create", f"{owner}/{name}", f"--{visibility}", "--source", str(local), "--push",
+        run(["gh", "repo", "create", f"{owner}/{name}", "--public", "--source", str(local), "--push",
              "--description", "fleetify e2e throwaway (safe to delete)"])
     else:
-        run(["glab", "repo", "create", "--name", name, f"--{visibility}", "--defaultBranch", "main",
+        run(["glab", "repo", "create", "--name", name, "--public", "--defaultBranch", "main",
              "--description", "fleetify e2e throwaway (safe to delete)"], cwd=local)
         url = f"https://gitlab.com/{owner}/{name}.git"
         run(["git", "remote", "add", "origin", url], cwd=local, check=False)
@@ -402,7 +403,7 @@ def execute(args: argparse.Namespace) -> int:
     if len(cases) > MAX_REPOS:
         raise SystemExit(f"{len(cases)} repositories planned; the limit is {MAX_REPOS}. Select fewer.")
     run_id = args.run or dt.datetime.now().strftime("%m%d%H%M")
-    print(f"run {run_id}: {len(cases)} repositories, {args.visibility}, prefix {PREFIX}-{run_id}-")
+    print(f"run {run_id}: {len(cases)} repositories, public, prefix {PREFIX}-{run_id}-")
     for case in cases:
         print(f"  {case.host:7} {case.key:32} expect {case.expected}")
     if args.plan:
@@ -427,7 +428,7 @@ def execute(args: argparse.Namespace) -> int:
         local = scratch / name
         started = time.monotonic()
         make_repo_dir(case.host, local)
-        create_remote_repo(case.host, owner, name, local, args.visibility)
+        create_remote_repo(case.host, owner, name, local)
         case.setup_s = time.monotonic() - started
         recipe = write_recipe(workdir, name, case.host, case)
         repos_file = workdir / f"{name}.repos"
@@ -547,8 +548,6 @@ def main() -> int:
     parser.add_argument("--yes", action="store_true", help="do not ask before creating repositories")
     parser.add_argument("--check-tokens", action="store_true",
                         help="only check that the tokens have the scopes the test needs")
-    parser.add_argument("--visibility", choices=["private", "public"], default="private",
-                        help="repository visibility on both hosts (public may get free CI minutes)")
     parser.add_argument("--keep", action="store_true", help="keep the repositories even when all cases match")
     parser.add_argument("--cleanup", metavar="RUN", help="list (or with --delete remove) one run's repos")
     parser.add_argument("--delete", action="store_true", help="with --cleanup: really delete")

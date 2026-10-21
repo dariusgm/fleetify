@@ -51,7 +51,6 @@ repositories through `gh`; fleetify's own credential does not need `delete_repo`
     python3 scripts/e2e/run_e2e.py --plan                          # print the plan, create nothing
     python3 scripts/e2e/run_e2e.py                                 # opencode-llamacpp on both hosts
     python3 scripts/e2e/run_e2e.py --agents opencode-llamacpp,copilot --hosts github
-    python3 scripts/e2e/run_e2e.py --visibility public             # repos public on both hosts (CI minutes)
     python3 scripts/e2e/run_e2e.py --cleanup <run-id>              # list a run's repositories
     python3 scripts/e2e/run_e2e.py --cleanup <run-id> --delete    # delete them
 
