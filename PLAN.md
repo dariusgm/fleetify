@@ -373,6 +373,29 @@ Hosts and CI servers can be unreachable for minutes or hours: the company GitLab
 
 **Why this is stage 1, not stage 2:** the company GitLab is only reachable inside the company network, and scheduled runs will hit outages. Without rules 1–5 a single network blip gives a wrong result and a retry gives a duplicate or a missed merge.
 
+### Rate limits (extension of M11a)
+
+Rate limits come from two sides, and each needs its own handling. Neither is implemented yet.
+
+**Hosts and CI (fleetify's own requests).**
+
+1. **Use the server's answer.** `Retry-After` (seconds or HTTP date) sets the wait when present. The rate-limit headers of the host set it otherwise: when the remaining quota is used up, wait until the reset time instead of guessing with back-off. Header names are taken from the current API docs of each host and noted in the host module (GitHub: `x-ratelimit-remaining`, `x-ratelimit-reset`; GitLab: `RateLimit-*`; to be verified).
+2. **Secondary limits count too.** GitHub reports some limits as HTTP 403 with its own message. Those are rate limits, not access errors, and must not end as `Forbidden`.
+3. **Shared per host.** Parallel repos on one host share one limiter. When one repo has to wait, the others on that host wait too instead of hitting the same limit again.
+4. **Configured ceiling.** `config.toml`: `[rate_limit] max_wait_min = 15` is an absolute maximum for one wait. A wait longer than that is not taken; the repo ends as `rate_limited`. Without the key a default ceiling applies, so the run never waits without bound. An optional proactive limit (`max_requests_per_min` per host, off by default) can be added later.
+5. **Own result.** `rate_limited` is a new result, not successful. It is distinct from `host_unreachable` (the server did not answer) because the server did answer and told us when to come back. Its failure block names the host and the reset time. A re-run after the reset continues, as for outages.
+6. **Visible.** Each wait is a `rate_limited` event with host, wait time and reason, so a live view or a log shows it without treating it as a failure.
+
+**Agents (the coding agent's own rate limits).** The agent's connection to its model provider is not fleetify's connection. Claude Code waits and blocks on its own; opencode and Copilot CLI behave differently and are not known yet. Today the only protection is the idle warning and `agent_timeout`, which ends the repo as a generic timeout and hides the cause. Planned:
+
+7. **Classify by adapter.** `Agent::classify` recognises the adapter's rate-limit message in the output and returns a rate-limit outcome. The repo ends as `rate_limited` with the message in the failure block, not as `agent_timeout`.
+8. **Ceiling for agents too.** The same `max_wait_min` applies if the agent is known to wait for its limit. An agent that waits longer than the ceiling is stopped and the repo ends as `rate_limited`; a re-run continues.
+9. **What can be tested.** Classification and the result mapping are tested with fake agents that print a rate-limit message and exit (no real limit needed). The real behaviour of each CLI is observed only in the level-5 runs (M14 for Claude Code) and documented there.
+
+**Tests** (fake host and fake agent): a `Retry-After` value is honoured; a reset header is used instead of back-off; a wait above `max_wait_min` ends as `rate_limited` with the reset time; a 403 with the secondary-limit message is a rate limit; two repos on one host wait on the same limiter; a fake agent printing a rate-limit message ends as `rate_limited`, not `agent_timeout`; a re-run after the reset continues.
+
+**Acceptance** is added to M11a: every test above passes on both OS, and the M14 level-5 run documents Claude Code's observed behaviour when it hits its own limit.
+
 ## Guards (diff guards)
 
 Guards decide whether the agent's diff may leave the machine. They are layered so that the cheap, reliable layer always runs and the expensive, fuzzy layer is optional.
@@ -543,7 +566,7 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 
 **M11 — CI layer, CI gate and merge.** Depends on M6, M7 (can run in parallel with M9–M10). `CiProvider`, `ci/gitlab_ci.rs`, the gate as a separate `tokio` task, failure details into events and report, results `ci_passed`, `ci_failed`, `ci_missing`, `ci_blocked`, `ci_timeout`, resume at the CI gate, two-key merge with the expected-head guard, `merged` and `merge_blocked`, validation error for `wait = true` on GitHub. *Acceptance:* every scenario under "Tests for the CI layer" produces the specified result against the fake GitLab API and the matching `failure` block; failed, missing or blocked CI never leads to a merge; a merge happens only with both keys and a matching head; `[ASK]` one real run against the private gitlab.com project with a trivial pipeline ends as `ci_passed`, and one with `--merge` on a throwaway branch ends as `merged`.
 
-**M11a — Outage handling.** Depends on M11. Retry with back-off for host and CI reads (rule 1), no verdict from partial reads (rule 2), `host_unreachable` with its failure block (rule 3), `host_retry` events, merge check before merging and retry-safe push check (rules 5 and 7), and the resume behaviour of rule 4. *Acceptance:* every test listed under "Availability: outages of hosts and CI" passes against the fake host and fake CI server on both OS; a `host_unreachable` result carries a non-empty `failure` block; no test sends a second push or a second change request. Must be done before the first real run against the company GitLab (M15).
+**M11a — Outage handling.** Depends on M11. Retry with back-off for host and CI reads (rule 1), no verdict from partial reads (rule 2), `host_unreachable` with its failure block (rule 3), `host_retry` events, merge check before merging and retry-safe push check (rules 5 and 7), and the resume behaviour of rule 4. *Acceptance:* every test listed under "Availability: outages of hosts and CI" and under "Rate limits (extension of M11a)" passes against the fake host and fake CI server on both OS; a `host_unreachable` result carries a non-empty `failure` block; a `rate_limited` result carries the reset time; no test sends a second push or a second change request. Must be done before the first real run against the company GitLab (M15).
 
 **M12 — Python authoring package (optional).** Depends on M3. Separate `uv` project `fleetify-recipes`: dataclasses mirroring the TOML schema, `write()`, validation against `fleetify schema` output, one example that reproduces the `enable-gitlab-ci` recipe byte-for-byte. *Acceptance:* the generated `recipe.toml` passes `fleetify validate` and equals the hand-written one; a schema-version mismatch is an error.
 
