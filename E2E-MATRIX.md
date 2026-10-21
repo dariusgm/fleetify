@@ -16,17 +16,17 @@ opencode models are kept as rows.
 
 | # | Host | Recipe | Agent | Model | CI wait | Merge | Mode | Result | Evidence |
 |---|------|--------|-------|-------|---------|-------|------|--------|----------|
-| 1 | GitHub | cargo-deps-update | none | — | off | off | real | pr_open | fleetify PR #1 |
-| 2 | GitHub | csvtojson | none | — | off | off | real | pr_open | CsvToJson PR #3 |
+| 1 | GitHub | cargo-deps-update | none | — | off | off | real | pr_open | fleetify PR #1 (run `cargo-deps-update-remote`) |
+| 2 | GitHub | cargo-deps-update-csvtojson | none | — | off | off | real | pr_open | CsvToJson PR #3 (run `csvtojson-1`) |
 | 3 | GitHub | poetry-to-uv | none | — | off | off | real | pr_open, then merged | blog PR #14, #15; `poetry-to-uv-merge` |
-| 4 | GitHub | poetry-to-uv | none | — | off | off | real, re-run | already_done | blog `smoke-2` (no second PR) |
+| 4 | GitHub | smoke-test | none | — | off | off | real, re-run | already_done | blog PR #13; run `smoke-2` (no second PR) |
 | 5 | GitHub | cargo-deps-update | none | — | off | off | real | verify_failed | git2duck (baseline) |
 | 6 | GitLab | ruby-34-update | none | — | off | off | real | pr_open | ruby-hello MR !1 |
 | 7 | GitLab | ruby-34-update | none | — | off | when_green, no policy | real | merge_blocked | `ruby34-merge` |
 | 8 | GitLab | ruby-34-update | none | — | off | when_green + policy | real | merged | `ruby34-merge2` |
 | 9 | GitLab | ruby-34-copilot | copilot | default | off | off | real | needs_input | `copilot-ruby` (grant denied) |
 | 10 | GitLab | ruby-34-copilot | copilot | default | off | off | real | pr_open | `copilot-ruby2`, MR !1 |
-| 11 | GitHub | enable-gitlab-ci-like skill check | none | — | off | off | dry run | dry_run | `skill-check-dry` |
+| 11 | GitHub | cargo-deps-update | none | — | off | off | dry run | dry_run | `skill-check-dry` (four repos) |
 | 12 | GitHub | ruby-34-opencode | opencode | OpenAI gpt-5-nano | off | off | real | pr_open | throwaway PR #1; agent ran the verifier through `bash -lc` and was denied (see finding A) |
 | 13 | GitHub | ruby-34-opencode | opencode | llama.cpp qwen3.8-flash-next | off | off | real | pr_open | throwaway PR #2; agent ran the verifier directly, passed |
 | 14 | GitHub | ruby-34-opencode | opencode | OpenAI gpt-5-nano | off | off | dry run | dry_run | `m10-smoke-dry` |
