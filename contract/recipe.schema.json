@@ -1,0 +1,485 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Recipe",
+  "type": "object",
+  "properties": {
+    "agent": {
+      "description": "Agent: claude-code, opencode or copilot. Required when `instructions` is non-empty,\nunless `--agent` is given.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "applies_to": {
+      "$ref": "#/$defs/AppliesTo"
+    },
+    "attachments": {
+      "description": "Files copied to `.agent/attachments/`. Paths relative to the recipe directory.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "branch": {
+      "description": "Branch created in each repo.",
+      "type": "string"
+    },
+    "ci": {
+      "$ref": "#/$defs/Ci"
+    },
+    "commit_message": {
+      "description": "Commit message. Defaults to `pr_title`.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "delivery": {
+      "$ref": "#/$defs/Delivery"
+    },
+    "guards": {
+      "$ref": "#/$defs/Guards"
+    },
+    "instructions": {
+      "description": "Concatenated in order. Empty means no agent: a pure `prepare` run.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Instruction"
+      }
+    },
+    "judge": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Judge"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "limits": {
+      "$ref": "#/$defs/Limits"
+    },
+    "model": {
+      "description": "Model for the recipe's agent, passed to the agent CLI unchanged. Overridden by\n`--model`; `[agents.<name>] model` in config.toml is the fallback.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "name": {
+      "description": "Lowercase name, used in the run id.",
+      "type": "string"
+    },
+    "needs": {
+      "$ref": "#/$defs/Needs"
+    },
+    "pr_title": {
+      "description": "Title of the pull or merge request.",
+      "type": "string"
+    },
+    "prepare": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommandTable"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema": {
+      "description": "Must be 1.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "tools": {
+      "description": "Directory with verifier and prepare scripts, relative to the recipe directory.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "verify": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VerifyTable"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "branch",
+    "pr_title"
+  ],
+  "$defs": {
+    "AppliesTo": {
+      "type": "object",
+      "properties": {
+        "has_file": {
+          "description": "All of these files must exist in the cache clone.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "has_file_any": {
+          "description": "At least one of these files must exist.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "host_type": {
+          "description": "Any of: github, gitlab.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_has_file": {
+          "description": "None of these files may exist.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "path_glob": {
+          "description": "Any of these globs must match the repo path (`group/sub/name`); `*` matches `/` too.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Ci": {
+      "type": "object",
+      "properties": {
+        "merge": {
+          "description": "off or when_green.",
+          "type": "string",
+          "default": "off"
+        },
+        "provider": {
+          "description": "auto or gitlab-ci.",
+          "type": "string",
+          "default": "auto"
+        },
+        "timeout_min": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 30,
+          "minimum": 0
+        },
+        "validate": {
+          "description": "Check GitLab CI and GitHub Actions files before the build: on the base and\nafter prepare. Only structure is checked. Default true.",
+          "type": "boolean",
+          "default": true
+        },
+        "wait": {
+          "description": "Wait for CI on the pushed commit before reporting success.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "CommandTable": {
+      "description": "A command table: one argument list for both OSes, or one per OS.",
+      "type": "object",
+      "properties": {
+        "argv": {
+          "description": "Argument list for both OSes.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "posix": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout_s": {
+          "description": "Default 120.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "windows": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Delivery": {
+      "description": "What happens after the push. Each step is opt-in beyond the one before it, so a\nprivate repository can stop at the branch, at the merge request, or go further.",
+      "type": "object",
+      "properties": {
+        "delete_branch": {
+          "description": "Delete the source branch after its change request was merged. Needs `ci.merge = \"when_green\"`.",
+          "type": "boolean",
+          "default": false
+        },
+        "open_mr": {
+          "description": "Open a pull or merge request for the pushed branch. `false` ends the repo as `pushed`.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "Guards": {
+      "type": "object",
+      "properties": {
+        "allow_paths": {
+          "description": "If set, every changed path must match one of these globs.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_added_patterns": {
+          "description": "Regexes that must not appear in added lines.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_paths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "forbid_binary_files": {
+          "type": "boolean",
+          "default": true
+        },
+        "forbid_test_deletion": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_files_changed": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 50,
+          "minimum": 0
+        },
+        "max_lines_changed": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 2000,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Instruction": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Prompt file, relative to the recipe directory. Exactly one of `file` and `text`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "text": {
+          "description": "Inline prompt text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Judge": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "description": "Agent that acts as judge. Default: the recipe's agent.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "max_diff_lines": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Limits": {
+      "type": "object",
+      "properties": {
+        "agent_timeout_min": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 60,
+          "minimum": 0
+        },
+        "idle_warn_min": {
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Needs": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "description": "Extra commands the agent needs. Checked against config.toml; never grants anything.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "extra_directories": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "web": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "VerifyTable": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "baseline": {
+          "description": "Run the verifier on the untouched base before prepare or any agent. A failing\nbase stops the repo with `base_broken`, so a later failure is known to come\nfrom the change. Default true.",
+          "type": "boolean",
+          "default": true
+        },
+        "error_patterns": {
+          "description": "Regexes that select the relevant lines on failure.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "posix": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "tail_lines": {
+          "description": "Lines of failing output shown to the agent. Default 40.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "timeout_s": {
+          "description": "Default 300.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "windows": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -28,3 +28,14 @@ jobs:
         with:
           name: fleetify-${{ matrix.os }}
           path: target/release/fleetify*
+
+  authoring:
+    # No Rust toolchain here: the Python package is checked against the committed contract
+    # (contract/recipe.schema.json and the golden recipe), not against a built binary.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Python tests
+        working-directory: authoring
+        run: uv run --locked --group dev pytest -m "not binary"

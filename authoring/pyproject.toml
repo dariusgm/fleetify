@@ -20,3 +20,6 @@ packages = ["src/fleetify_recipes"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "binary: needs a built fleetify binary (target/debug or $FLEETIFY_BIN); the CI authoring job skips these",
+]

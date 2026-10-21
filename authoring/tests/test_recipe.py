@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples" / "recipes" / "enable-gitlab-ci"
+CONTRACT_SCHEMA = ROOT / "contract" / "recipe.schema.json"
 sys.path.insert(0, str(ROOT / "authoring" / "examples"))
 
 from enable_gitlab_ci import enable_gitlab_ci  # noqa: E402
@@ -33,13 +35,30 @@ def fleetify_binary() -> str | None:
     return shutil.which("fleetify")
 
 
-needs_binary = pytest.mark.skipif(fleetify_binary() is None, reason="no fleetify binary built")
+def contract_schema() -> dict:
+    """The schema snapshot committed in contract/ (no binary needed)."""
+    return json.loads(CONTRACT_SCHEMA.read_text())
+
+
+needs_binary = pytest.mark.binary
+skip_without_binary = pytest.mark.skipif(fleetify_binary() is None, reason="no fleetify binary built")
 
 
 def test_the_example_reproduces_the_hand_written_recipe_byte_for_byte(tmp_path):
     out = tmp_path / "recipe.toml"
     write(out, enable_gitlab_ci())
     assert out.read_bytes() == (EXAMPLE / "recipe.toml").read_bytes()
+
+
+def test_the_generated_recipe_passes_the_contract_schema():
+    assert check(enable_gitlab_ci(), contract_schema()) == []
+
+
+def test_a_wrong_value_is_reported_by_the_contract_schema():
+    recipe = enable_gitlab_ci()
+    recipe.limits = Limits(agent_timeout_min="soon", idle_warn_min=10)
+    found = check(recipe, contract_schema())
+    assert any(message.startswith("limits.agent_timeout_min") for message in found), found
 
 
 def test_a_schema_version_other_than_one_is_refused(tmp_path):
@@ -63,21 +82,13 @@ def test_unset_fields_are_left_out():
 
 
 @needs_binary
-def test_the_generated_recipe_matches_the_binary_schema():
-    schema = fleetify_schema(fleetify_binary())
-    assert check(enable_gitlab_ci(), schema) == []
+@skip_without_binary
+def test_the_snapshot_still_equals_the_binary_schema():
+    assert fleetify_schema(fleetify_binary()) == contract_schema()
 
 
 @needs_binary
-def test_a_wrong_value_is_reported_against_the_binary_schema():
-    schema = fleetify_schema(fleetify_binary())
-    recipe = enable_gitlab_ci()
-    recipe.limits = Limits(agent_timeout_min="soon", idle_warn_min=10)
-    found = check(recipe, schema)
-    assert any(message.startswith("limits.agent_timeout_min") for message in found), found
-
-
-@needs_binary
+@skip_without_binary
 def test_fleetify_validate_accepts_the_generated_recipe(tmp_path):
     recipe_dir = tmp_path / "enable-gitlab-ci"
     shutil.copytree(EXAMPLE, recipe_dir)
