@@ -238,6 +238,14 @@ pub struct Ci {
     /// as `ci_blocked`.
     #[serde(default)]
     pub dispatch_workflow: Option<String>,
+    /// How many times the agent gets the CI failure and tries to fix it, on the same branch.
+    /// `0` disables the loop. Default 1.
+    #[serde(default = "default_fix_rounds")]
+    pub fix_rounds: u32,
+}
+
+fn default_fix_rounds() -> u32 {
+    1
 }
 
 impl Default for Ci {
@@ -249,6 +257,7 @@ impl Default for Ci {
             merge: off(),
             validate: true,
             dispatch_workflow: None,
+            fix_rounds: default_fix_rounds(),
         }
     }
 }

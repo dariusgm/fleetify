@@ -70,6 +70,9 @@ pub struct AgentConfig {
 
 /// Unset `ci.dispatch_after_s`: three minutes.
 const DEFAULT_DISPATCH_AFTER_S: u64 = 3 * 60;
+/// Unset `ci.log_lines` and `ci.log_chars`.
+const DEFAULT_LOG_LINES: usize = 100;
+const DEFAULT_LOG_CHARS: usize = 1000;
 
 /// `[ci]`: when fleetify starts CI itself because the host started none for the pushed commit.
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
@@ -80,12 +83,27 @@ pub struct CiConfig {
     /// starts it at once, without asking the host first. Unset means 180.
     #[serde(default)]
     pub dispatch_after_s: Option<u64>,
+    /// Lines of each failed CI job's log that reach the agent (the last ones). Unset means 100.
+    #[serde(default)]
+    pub log_lines: Option<usize>,
+    /// Characters of each failed CI job's log that reach the agent. Unset means 1000. The
+    /// smaller of `log_lines` and `log_chars` applies.
+    #[serde(default)]
+    pub log_chars: Option<usize>,
 }
 
 impl CiConfig {
     /// The wait before fleetify starts CI itself.
     pub fn dispatch_after(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.dispatch_after_s.unwrap_or(DEFAULT_DISPATCH_AFTER_S))
+    }
+
+    /// How much of each failed job's log reaches the agent.
+    pub fn log_budget(&self) -> crate::hosts::LogBudget {
+        crate::hosts::LogBudget {
+            lines: self.log_lines.unwrap_or(DEFAULT_LOG_LINES),
+            chars: self.log_chars.unwrap_or(DEFAULT_LOG_CHARS),
+        }
     }
 }
 

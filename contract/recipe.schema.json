@@ -172,6 +172,13 @@
           ],
           "default": null
         },
+        "fix_rounds": {
+          "description": "How many times the agent gets the CI failure and tries to fix it, on the same branch.\n`0` disables the loop. Default 1.",
+          "type": "integer",
+          "format": "uint32",
+          "default": 1,
+          "minimum": 0
+        },
         "merge": {
           "description": "off or when_green.",
           "type": "string",

@@ -133,6 +133,47 @@ pub struct CiItem {
     pub state: CiState,
 }
 
+/// At most this many failed jobs are handed to the agent; the first failures come first.
+pub const MAX_CI_FAILURES: usize = 5;
+
+/// How much of one failed job's log reaches the agent: the last `lines` lines, and at most
+/// `chars` characters, whichever is smaller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogBudget {
+    pub lines: usize,
+    pub chars: usize,
+}
+
+/// One failed job of a commit's CI and the part of its log that fits the budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiFailure {
+    /// `workflow / job` on GitHub, the job name on GitLab (with its pipeline when nested).
+    pub name: String,
+    pub log_tail: Vec<String>,
+}
+
+/// The end of `text` within `budget`: the last lines that fit, the newest kept.
+pub fn log_tail(text: &str, budget: LogBudget) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut chars = 0;
+    for line in text.lines().rev().take(budget.lines) {
+        // The line and its separator count against the budget.
+        let cost = line.chars().count() + 1;
+        if chars + cost > budget.chars {
+            // Keep the end of a long last line rather than nothing at all.
+            if kept.is_empty() {
+                let tail: String = line.chars().rev().take(budget.chars).collect();
+                kept.push(tail.chars().rev().collect());
+            }
+            break;
+        }
+        chars += cost;
+        kept.push(line.to_string());
+    }
+    kept.reverse();
+    kept
+}
+
 /// What a CI item says about its commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CiState {
@@ -181,6 +222,16 @@ pub trait Host: Send + Sync {
     /// a pull request: a later push to the same branch has its own items. Implementations
     /// must reject items that belong to another commit.
     fn commit_ci(&self, repo: &Repo, token: &Secret, sha: &str) -> Result<Vec<CiItem>, HostError>;
+    /// The failed jobs of this commit's CI, first failure first, with the tail of their logs.
+    /// Nested pipelines (GitLab child pipelines, GitHub reusable workflows) are included.
+    /// Skipped jobs and jobs that were allowed to fail are left out.
+    fn ci_failures(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        sha: &str,
+        budget: LogBudget,
+    ) -> Result<Vec<CiFailure>, HostError>;
     /// Starts CI on `branch` because the host started none for the pushed commit. GitHub
     /// needs the workflow file to dispatch; GitLab starts a pipeline for the ref.
     fn dispatch_ci(
@@ -606,6 +657,59 @@ pub fn classify_tls_error(text: &str) -> TlsCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_tail_keeps_the_end_within_both_limits() {
+        let text = (1..=10)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let by_lines = log_tail(
+            &text,
+            LogBudget {
+                lines: 3,
+                chars: 1000,
+            },
+        );
+        assert_eq!(by_lines, vec!["line 8", "line 9", "line 10"]);
+        let by_chars = log_tail(
+            &text,
+            LogBudget {
+                lines: 100,
+                chars: 15,
+            },
+        );
+        assert_eq!(by_chars, vec!["line 9", "line 10"]);
+    }
+
+    #[test]
+    fn log_tail_keeps_the_end_of_one_very_long_line() {
+        let long = format!("{}ERROR at the end", "x".repeat(500));
+        let tail = log_tail(
+            &long,
+            LogBudget {
+                lines: 100,
+                chars: 20,
+            },
+        );
+        assert_eq!(tail.len(), 1);
+        assert!(tail[0].ends_with("ERROR at the end"), "{tail:?}");
+        assert!(tail[0].chars().count() <= 20);
+    }
+
+    #[test]
+    fn log_tail_of_an_empty_log_is_empty() {
+        assert!(
+            log_tail(
+                "",
+                LogBudget {
+                    lines: 100,
+                    chars: 1000
+                }
+            )
+            .is_empty()
+        );
+    }
 
     #[test]
     fn default_api_bases() {

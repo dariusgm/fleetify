@@ -16,6 +16,20 @@ pub fn plain_line(event: &Event) -> String {
         },
         Event::OutputLine { label, line, .. } => format!("{label} | {line}"),
         Event::RepoPhase { repo, phase } => format!("{repo} | phase {phase}"),
+        Event::CiFixRound {
+            repo,
+            round,
+            sha,
+            jobs,
+        } => format!(
+            "{repo} | CI failed at {}: fix round {round}, the agent gets {}",
+            &sha[..sha.len().min(12)],
+            if jobs.is_empty() {
+                "no failed job logs".to_string()
+            } else {
+                jobs.join(", ")
+            }
+        ),
         Event::CiDispatched {
             repo,
             host,

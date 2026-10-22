@@ -66,6 +66,13 @@ pub enum Event {
     },
     /// A repo moved to a new phase (`cloning`, `verifying`, ...).
     RepoPhase { repo: String, phase: String },
+    /// CI failed on `sha`; the agent gets the failing jobs `jobs` and tries again (round `round`).
+    CiFixRound {
+        repo: String,
+        round: u32,
+        sha: String,
+        jobs: Vec<String>,
+    },
     /// fleetify started CI itself for the pushed branch, because the host had started none
     /// for the commit within the wait. `workflow` is set for GitHub only.
     CiDispatched {
