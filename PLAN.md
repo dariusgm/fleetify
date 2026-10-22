@@ -560,7 +560,7 @@ Company repos probably must only be processed with the agent approved there (Cop
 
 Each milestone is one branch and ends with its acceptance criteria green on the Windows + Linux CI matrix. "Depends on" lists hard prerequisites; milestones without a dependency between them may be done in any order or in parallel. `[ASK]` marks a milestone where Claude Code asks before running anything against real repos, real agents or a merge.
 
-**Status (2026-10-21, merged into `main` up to PR #22; details in DECISIONS.md).**
+**Status (2026-10-22, merged into `main` up to PR #27; details in DECISIONS.md).**
 
 | Milestone | Status | Open |
 |---|---|---|
@@ -574,7 +574,17 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 | M15a Copilot CLI adapter (private) | done; live canary and level-5 run on a throwaway GitLab project (MR !1, pipeline green) | — |
 | M15b Self-hosted GitLab (work) | done (closed) | tests on self-hosted GitLab run on the company laptop from now on, see Windows Support |
 | M16 LLM judge | postponed | `[judge]` removed from the recipe format; comes back only if the trial needs it |
-| M17 real trial | not started | `[ASK]`, three to five private repos |
+| M17 real trial | not started; reference run on the public fork `dariusgm/VoiceStudio` ran to the CI step and ended in `error` (HTTP 404 on the CI dispatch, cause open) | `[ASK]`, three to five repos from the user; the reference run is the first step |
+
+**Stage 1 — what is still open (2026-10-22).** Nothing in this list blocks stage 2 except the bugs marked *bug*.
+
+- **M14:** the full level-5 lint test with the complete gate chain, and documentation of Claude Code's observed rate-limit behaviour.
+- **M11a:** reset time from agent messages is carried as printed, not parsed; rate-limit phrases are not checked against the real CLIs; the push-divergence test needs a race; the agent silence ceiling can end a slow local model.
+- **M17:** the real trial, after the reference run passes CI.
+- **Bug (CI status):** the CI status request fails with "cannot reach the host" during the wait, and the retry counter stays at `attempt: 1`. The transport error chain is not printed.
+- **Bug (host errors):** an error such as `HTTP 404: Not Found` does not name the endpoint. Host errors should name it.
+- **Open (GitHub forks):** push and pull request events do not start workflows on the fork; `workflow_dispatch` works. Cause not known. Fleetify starts CI itself after the wait (`[ci] dispatch_after_s`).
+- **Open questions from the plan, work-related:** tokens and roles on the company GitLab, Copilot login at work, Jenkins as the company CI, `pwsh` on the work machines, name checks on PyPI and npm, binary signing on the work machine.
 
 **Windows Support (new, runs on the company laptop or a Windows VM).** Everything that needs Windows is collected here, because it cannot run on the Linux machine:
 
@@ -621,9 +631,19 @@ If most repos go through without intervention, extending is worth it. If the res
 
 ## Stage 2: only when needed
 
+**First item: the CI-fix loop.** Stage 1 ends a repo at `ci_failed` and the user acts on the report. Stage 2 gives the agent the failure and lets it try again, within fixed limits.
+
+- **Input.** After a `ci_failed` on the pushed commit, fleetify reads the failed checks from the host: GitHub check-run output and annotations, GitLab job traces. It keeps the last N lines per failed job, redacted like every other output.
+- **Context.** The lines are written to `.agent/ci-failure.md` in the workspace and named in the next agent prompt. They are data for the agent, not instructions: the prompt says so, and the guards and the verifier still decide what counts.
+- **Loop.** The agent runs once more on the same branch, the local verifier runs, then the guards, then a push to the same branch. The CI gate waits again. A new `ci_failed` ends the loop.
+- **Limits.** A recipe key `ci.fix_rounds` (default 1, `0` disables the loop). The total time stays under `limits.agent_timeout_min` per round. The loop never merges and never opens a second change request.
+- **Report.** Each round is an event (`ci_fix_round`) with its number and the outcome. The final result stays one result per repo; `next_step` still applies when the loop ends unsuccessfully.
+- **Acceptance.** A fake CI that fails once and passes on the second commit ends as `ci_passed` after one fix round. A fake CI that always fails ends as `ci_failed` after `fix_rounds` rounds, with the failure block of the last round. The ci-failure file contains no secret (test with a token in the job log). A live run on a fork with a deliberately failing check (for example a failing test added by the reference recipe) shows one fix round in the report.
+
+Other stage-2 items:
+
 - SQLite instead of files, per-repo attempts, `retry` / `skip` with reasons, `takeover`, reusing an interrupted agent attempt.
 - Rollback (close PR/MR and delete branch, revert PR/MR after a merge) driven by a registry of created artifacts.
-- CI-fix loop (feed CI failures back to the agent).
 - More CI providers (GitHub Actions, Jenkins via commit statuses), job-level policies, retries of flaky jobs.
 - Campaign time limits, circuit breaker, rate-limit governor, event-stream agent adapters.
 - Agents inside containers without credentials (required for company repos).
