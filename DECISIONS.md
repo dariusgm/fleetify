@@ -784,3 +784,22 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
   run files.
 - **Still open for M10.** The test ran against OpenAI, not against llama.cpp (the local server was not
   running). The throwaway repo can be deleted after the PR is reviewed.
+
+## M10 re-test: opencode with OpenAI `gpt-5-nano` after the prompt change (2026-10-22)
+
+- **Change since the first test.** The task prompt was adjusted so the agent runs the verifier
+  directly, not through a wrapper. The `bash -lc` finding above is no longer reproduced: the output log
+  shows `sh .agent/tools/verify.sh .` as the agent's own call.
+- **Setup.** Same throwaway repo and guards as above. Recipe copy with branch
+  `chore/ruby-3.4-opencode-openai` (so PR #1 stays untouched). `check-agent opencode --model
+  openai/gpt-5-nano` passed.
+- **Runs.** Four runs with `--agent opencode --model openai/gpt-5-nano`:
+  1. `m10-openai-smoke`: `needs_input`, no push. The agent's patch tool resolved `.ruby-version` to a
+     doubled path (`workspace/workspace/.ruby-version`), and its fallback `printf` write was denied by
+     the grant. Only `.github/workflows/ci.yml` changed. The agent wrote `.agent/blocked.md`.
+  2. `m10-openai-smoke-2`: `pr_open`, PR #3. Changes exactly `.ruby-version` (3.2 to 3.4) and
+     `.github/workflows/ci.yml`. Verifier and guards passed.
+  3. `m10-openai-smoke-3` and 4. `already_done`, pointing at PR #3. No second push or PR.
+- **Result.** The combination works end to end: PR #3 was opened and passed the gates. The first
+  run ended blocked on the agent's file edit (the doubled path above); the gate and the invariants
+  held in every run.
