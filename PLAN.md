@@ -629,9 +629,9 @@ Acceptance: the Windows checks above pass on the company laptop, and the results
 
 If most repos go through without intervention, extending is worth it. If the result is thin, improve prompt and verifier first. If it stays thin, Armada or the SonarQube Remediation Agent may reach the goal faster than building further. The numbers from `report.json` and the event logs are the basis.
 
-## Stage 2: only when needed
+## Stage 2: the CI-fix loop
 
-**First item: the CI-fix loop.** Stage 1 ends a repo at `ci_failed` and the user acts on the report. Stage 2 gives the agent the failure and lets it try again, within fixed limits.
+Scope is the CI-fix loop only. Stage 1 ends a repo at `ci_failed` and the user acts on the report. Stage 2 gives the agent the failure and lets it try again, within fixed limits.
 
 - **Input.** After a `ci_failed` on the pushed commit, fleetify reads the failed checks from the host: GitHub check-run output and annotations, GitLab job traces. It keeps the last N lines per failed job, redacted like every other output.
 - **Context.** The lines are written to `.agent/ci-failure.md` in the workspace and named in the next agent prompt. They are data for the agent, not instructions: the prompt says so, and the guards and the verifier still decide what counts.
@@ -640,20 +640,20 @@ If most repos go through without intervention, extending is worth it. If the res
 - **Report.** Each round is an event (`ci_fix_round`) with its number and the outcome. The final result stays one result per repo; `next_step` still applies when the loop ends unsuccessfully.
 - **Acceptance.** A fake CI that fails once and passes on the second commit ends as `ci_passed` after one fix round. A fake CI that always fails ends as `ci_failed` after `fix_rounds` rounds, with the failure block of the last round. The ci-failure file contains no secret (test with a token in the job log). A live run on a fork with a deliberately failing check (for example a failing test added by the reference recipe) shows one fix round in the report.
 
-Other stage-2 items:
+Prerequisites from stage 1: the three bugs in the open-items list (CI status retries, endpoint names in host errors, fork triggers) are fixed before the loop is built, because the loop depends on reliable CI reads.
 
-- SQLite instead of files, per-repo attempts, `retry` / `skip` with reasons, `takeover`, reusing an interrupted agent attempt.
-- Rollback (close PR/MR and delete branch, revert PR/MR after a merge) driven by a registry of created artifacts.
-- More CI providers (GitHub Actions, Jenkins via commit statuses), job-level policies, retries of flaky jobs.
-- Campaign time limits, circuit breaker, rate-limit governor, event-stream agent adapters.
-- Agents inside containers without credentials (required for company repos).
-- Tokens from the OS credential store; optional CLI variants of the host layer.
-- Judge evaluation over time, failure classes, webhook on `needs_human`.
-- An embedded scripting language (Rhai) for `applies_to`, only if the condition list proves insufficient.
+## Stage 3: narrowing what the coding agents may do
 
-## Stage 3: only if it keeps paying off
+Stage 3 tightens the permissions the agents get, beyond what stage 1 grants:
 
-`verify` as an MCP tool, plan SDK with JSON plans, broadcast shell, web UI, statistics per recipe version. See `PLAN-ausbau.md`.
+- Agents inside containers without credentials (required for company repos). The agent gets only the workspace and the model connection.
+- Per-agent network rules, so a verifier's child processes cannot reach hosts they do not need.
+- Stricter file-system confinement, verified by the canary, and per-agent profiles in `config.toml`.
+- Event-stream agent adapters, so the agent's actions are visible as events, not only as log lines.
+
+Other items, not scheduled (not CI-loop, not agent confinement): SQLite instead of files, per-repo attempts, `retry` / `skip` with reasons, `takeover`, rollback of created change requests, more CI providers (GitHub Actions, Jenkins via commit statuses), job-level policies, flaky-job retries, campaign time limits, circuit breaker, rate-limit governor, tokens from the OS credential store, judge evaluation (M16), webhook on `needs_human`, an embedded scripting language (Rhai) for `applies_to`.
+
+`verify` as an MCP tool, plan SDK with JSON plans, broadcast shell, web UI, statistics per recipe version: see `PLAN-ausbau.md`.
 
 ## Non-goals
 
