@@ -5,13 +5,15 @@ is a manual step after a larger change. It is not part of CI.
 
 ## What it covers
 
-| Case | Host | Agent | Expected result |
-|------|------|-------|-----------------|
-| plain (no agent, prepare + verify) | GitHub, GitLab | none | `pr_open` |
-| verify fails | GitHub, GitLab | none | `verify_failed` |
-| agent changes the Ruby pin | GitHub, GitLab | selected agents | `pr_open` |
-| agent + wait for CI | GitHub (Actions), GitLab (CI) | selected agents | `ci_passed` |
-| agent + wait for CI + merge when green | GitHub, GitLab | selected agents | `merged` |
+| Case | Host | Agent | Expected result | Last run (10220552, 2026-10-22) |
+|------|------|-------|-----------------|---------------------------------|
+| plain (no agent, prepare + verify) | GitHub, GitLab | none | `pr_open` | GitHub `pr_open`, GitLab `pr_open` ✅ |
+| verify fails | GitHub, GitLab | none | `verify_failed` | GitHub `verify_failed`, GitLab `verify_failed` ✅ |
+| agent changes the Ruby pin | GitHub, GitLab | selected agents | `pr_open` | GitHub `pr_open`, GitLab `pr_open` ✅ |
+| agent + wait for CI | GitHub (Actions), GitLab (CI) | selected agents | `ci_passed` | GitHub `ci_passed`, GitLab `ci_passed` ✅ |
+| agent + wait for CI + merge when green | GitHub, GitLab | selected agents | `merged` | GitHub `merged`, GitLab `merged` ✅ |
+
+Last run: all 10 cases matched (`opencode-llamacpp` on both hosts). Timings are in `REFERENCE.md`.
 
 Agents: `opencode-llamacpp` (default, local llama.cpp server), `copilot`, `claude-code`. Copilot and
 Claude Code use their own quota and are only run when named.
