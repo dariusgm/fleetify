@@ -532,7 +532,7 @@ by milestone, so that gaps are visible in the repo and not only in chat.
 - **M16 LLM judge: not started.** `judge` is accepted by the parser and not used.
 - **M17 real trial: not started.**
 
-Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
+Declared but unused: none after the MVP cleanup of 2026-10-22 (see below).
 
 ## Example run — Python 3.15 on dariusgm/blog (private)
 
@@ -803,3 +803,53 @@ Declared but unused: `ci.wait`, `judge`, `limits.idle_warn_min`, `canary_repos`.
 - **Result.** The combination works end to end: PR #3 was opened and passed the gates. The first
   run ended blocked on the agent's file edit (the doubled path above); the gate and the invariants
   held in every run.
+
+## M14 trial: Claude Code with Haiku updates dependencies on a public icalendar fork (2026-10-22)
+
+- **Setup.** Public fork `dariusgm/icalendar` of `collective/icalendar`. The CI was cut to the fast
+  Linux jobs first: documentation, fuzzing, zizmor, agent-scan, PR-quality and the test matrix were
+  removed; `tests` runs `uv run --group test pytest -q` on Ubuntu with Python 3.14, `ruff` stays.
+- **Fast local loop.** `prepare.sh` (PyPI lookup) about 2 s; `verify.sh` (ruff format, ruff check,
+  pytest) about 40 s on this machine. Full suite: 21297 passed, 40 skipped, 584 xfailed.
+- **Recipe.** `icalendar-update-deps` (not in the repo, under `~/.fleetify/recipes/`). Agent
+  `claude-code`, model `claude-haiku-5-5`, canary passed before the run. Guards allow only
+  `pyproject.toml` and `.pre-commit-config.yaml`; `ruff` and `zizmor` stay pinned; no source or test
+  edits.
+- **Run `icalendar-deps-1`: `ci_passed`, PR #1.** Diff: five version lines in `pyproject.toml`
+  (`tzdata`, `typing-extensions`, `towncrier`, `mypy`, `pytz`), 5 insertions and 5 deletions. The
+  agent reported that `mypy` and `towncrier` jump a major version and that it did not run `mypy`
+  on its own, so its type-check result is unconfirmed.
+- **GitHub Actions on the fork, observed on a real repo.**
+  - Push to `main` and push to the PR branch did not start any workflow run. The `pull_request`
+    trigger did not start a run either.
+  - `workflow_dispatch` started runs without problems, on `main` and on the agent branch.
+  - The dispatched run attaches its check-run to the commit SHA. The gate found it there and
+    returned `ci_passed`. The PR page itself still shows "no checks reported".
+  - The cause of the missing push and PR triggers is not known yet.
+- **Fleetify observation.** During the CI wait the status request failed repeatedly with
+  "cannot reach the host", and the retry counter stayed at `attempt: 1` for about 19 minutes. The
+  same URL worked with `curl` and `gh`. The gate only passed once the manual run appeared. Open:
+  the transport error chain is not printed, and the attempt counter does not advance.
+
+## MVP cleanup: CI dispatch, `[judge]` removed (2026-10-22)
+
+- **Breaking change: `[judge]` is removed from `recipe.toml`.** It was parsed and validated but never
+  used, and M16 (LLM judge) is not started. The Python package never mirrored it, so the two sides now
+  agree. A recipe with `[judge]` fails validation with an unknown-key error. The section comes back
+  with M16, if the trial shows the deterministic guards are not enough.
+- **CI dispatch.** When the host has started no CI for the pushed commit after the wait, fleetify starts
+  it: `workflow_dispatch` on GitHub (`ci.dispatch_workflow` in the recipe, for example `tests.yml`), a
+  pipeline on GitLab. The wait is `[ci] dispatch_after_s` in `config.toml`, in seconds; unset means 180,
+  `0` starts CI at once without asking the host first. The start is an event (`ci_dispatched`) and
+  appears in the log and the output. With `0`, a CI that already runs for the commit is started again.
+- **Python authoring.** `Ci.dispatch_workflow` is mirrored; every table of the recipe schema now has a
+  matching dataclass. The contract snapshot is regenerated.
+- **Probe run.** A recipe that changes one file and runs no agent exercises the dispatch path on the
+  fork. The first attempt failed on its own baseline (the probe file is absent on `main`), so the recipe
+  sets `baseline = false`. Result of `ci-probe-2`: the push created no CI run; the gate waited the
+  default 180 s, then fleetify dispatched `tests.yml` on `fleetify/chore/ci-probe`. GitHub created the run at
+  18:46:57 UTC, about three minutes after the wait started. The gate found its check-run on the commit and
+  returned `ci_passed` for PR #2 (`dariusgm/icalendar`). The status requests failed with the same
+  "cannot reach the host" error during the wait; the open issue from the icalendar entry still applies.
+  Not yet tested: `dispatch_after_s = 0` in a live run, and GitLab.
+

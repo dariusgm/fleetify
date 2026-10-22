@@ -48,3 +48,17 @@ seconds to about a minute; agent cases take 4–6 minutes on this llama.cpp serv
 annotation says: "The job was not started because recent account payments have failed or your spending
 limit needs to be increased." The result is reported as `ci_failed` with the message "CI failed:
 test", which hides the cause. Improving that message is a follow-up for fleetify.
+
+## GitHub Actions on a public fork (observed 2026-10-22)
+
+Observed on `dariusgm/icalendar`, a public fork of `collective/icalendar` with CI cut to one Linux
+job and `ruff`. This is a real project's workflows, not a hello-world example.
+
+- A push to the fork's `main` starts no workflow, although the workflow has `on: push`.
+- A pull request inside the fork (branch to `main`) starts no workflow either.
+- `gh workflow run tests.yml --ref <branch>` (`workflow_dispatch`) starts the run at once, on
+  `main` and on the agent branch.
+- A dispatched run creates its check-run on the commit SHA. A gate that reads check-runs by SHA
+  sees it. `gh pr checks` on the PR still reports nothing.
+- Cause not known. For the E2E cases on forks, dispatch the CI explicitly after the push, or check
+  the Actions settings before relying on automatic triggers.
