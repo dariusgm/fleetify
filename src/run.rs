@@ -317,7 +317,10 @@ fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
     let credentials_path = credentials_path(input.config);
     for (old, new) in [
         (input.workdir.join("config.toml"), input.config),
-        (input.workdir.join("credentials.toml"), credentials_path.as_path()),
+        (
+            input.workdir.join("credentials.toml"),
+            credentials_path.as_path(),
+        ),
     ] {
         if !new.exists() && old.exists() {
             return Err(Refused(format!(

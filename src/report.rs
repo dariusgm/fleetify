@@ -74,7 +74,9 @@ pub fn next_step(class: &str) -> Option<&'static str> {
             "CI waits for a person (a manual job or an action that needs approval). Approve it on \
              the host, then run again."
         }
-        "ci_invalid" => "The CI configuration fails the structure check. Fix the file in the repository.",
+        "ci_invalid" => {
+            "The CI configuration fails the structure check. Fix the file in the repository."
+        }
         "guard_violation" => {
             "The change touches what the guards forbid. Read the rule named in the failure. \
              Tighten the instructions; widen allow_paths only if the change is wanted."
@@ -106,7 +108,9 @@ pub fn next_step(class: &str) -> Option<&'static str> {
              host, then run again."
         }
         "interrupted" => "The run was interrupted. Run again with the same --run to resume.",
-        "error" => "fleetify hit an error. Read the message, then the repo log: fleetify logs <repo>.",
+        "error" => {
+            "fleetify hit an error. Read the message, then the repo log: fleetify logs <repo>."
+        }
         _ => "Read the message, then the repo log: fleetify logs <repo>.",
     })
 }
@@ -502,13 +506,22 @@ mod tests {
             "rec",
             "t0",
             "t1",
-            vec![RepoResult::new("github.com/a/b", "ci_missing", "no CI items")],
+            vec![RepoResult::new(
+                "github.com/a/b",
+                "ci_missing",
+                "no CI items",
+            )],
             &redactor(),
         );
         let failure = report.repos[0].failure.as_ref().expect("failure block");
-        assert!(failure.next_step.as_deref().unwrap().contains("dispatch_workflow"));
+        assert!(
+            failure
+                .next_step
+                .as_deref()
+                .unwrap()
+                .contains("dispatch_workflow")
+        );
         let table = render_table(&report, false);
         assert!(table.contains("next: No CI ran"), "{table}");
     }
 }
-

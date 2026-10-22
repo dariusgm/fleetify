@@ -683,4 +683,3 @@ mod tests {
         assert_eq!(default_config_path(None, None), None);
     }
 }
-
