@@ -910,3 +910,23 @@ Declared but unused: none after the MVP cleanup of 2026-10-22 (see below).
 - **M15b closed** for now. Tests on the self-hosted GitLab run on the company laptop. The Windows checks
   are collected under "Windows Support" in PLAN.md.
 - **M12 and M16 postponed** (see the previous entry).
+
+## CI fix rounds (stage 2, 2026-10-22)
+
+- **Scope.** The agent gets the end of each failed job's log, nothing else. Default 100 lines or
+  1000 characters per job, whichever is smaller (`[ci] log_lines`, `log_chars` in `config.toml`).
+  Failed jobs are capped at five; the earliest failure comes first, by start time.
+- **Nested pipelines.** GitLab: the pipelines of the commit, then the child pipelines their trigger
+  jobs started (bridges), recursively up to five levels. Trigger jobs and jobs allowed to fail are
+  left out. GitHub: every workflow run of the commit; reusable workflows appear as jobs of their caller.
+- **Redaction.** The failure file goes through the same redactor as every other output.
+- **Rounds.** `[ci] fix_rounds` in the recipe, default 1, `0` disables the loop. A fix round is an
+  agent run, the verifier, the guards on the whole change against the base commit, one commit on top
+  of the branch and a normal push (never forced). A round that changes nothing ends the repo as
+  `ci_failed` with that reason.
+- **Tests.** `tests/ci_fix.rs`: a failure that a fix round repairs ends `ci_passed`; a failure that
+  stays ends `ci_failed` after one round; `fix_rounds = 0` runs no agent. `tests/gitlab_ci_failures.rs`:
+  nested pipelines, trigger skipping, allowed failures, the log tail.
+- **Not yet covered.** A live run on GitHub or GitLab with a real failing check. The fake hosts do not
+  check the workflow runs' permissions or their log retention.
+

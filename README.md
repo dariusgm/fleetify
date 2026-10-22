@@ -86,8 +86,33 @@ through the failures like this:
    made to work. Make the instructions more specific.
 
 Change the recipe, run it again on the same repositories, and compare the new
-report with the old one. fleetify does not feed CI failures back to the agent
-automatically yet; that loop is planned for a later stage.
+report with the old one.
+
+### CI fix rounds
+
+When CI fails on the pushed commit, fleetify can hand the failure to the agent once
+more. The agent gets the failing jobs, first failure first, each with the end of its
+log in `.agent/ci-failure.md`. Its change goes on top of the branch, through the same
+verifier and guards, and CI is waited for again. The loop never merges and never opens
+a second change request.
+
+```toml
+# recipe.toml: how many fix rounds the agent gets (0 turns the loop off; default 1)
+[ci]
+wait = true
+fix_rounds = 1
+```
+
+```toml
+# config.toml: how much of each failed job's log the agent sees (default 100 lines
+# or 1000 characters, whichever is smaller)
+[ci]
+log_lines = 100
+log_chars = 1000
+```
+
+Each round is shown as `fix round N`, with the failing jobs by name, followed by the
+phases of the agent, verifier, guards and push.
 
 ## Usage
 

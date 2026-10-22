@@ -631,6 +631,8 @@ If most repos go through without intervention, extending is worth it. If the res
 
 ## Stage 2: the CI-fix loop
 
+**Status (2026-10-22): implemented on `feat/ci-feedback-loop`.** Host layer for GitHub and GitLab, nested pipelines, the fix round, `[ci] fix_rounds`, `[ci] log_lines` and `log_chars`, the `ci_fix_round` output. Open: a live run on a real failing check.
+
 Scope is the CI-fix loop only. Stage 1 ends a repo at `ci_failed` and the user acts on the report. Stage 2 gives the agent the failure and lets it try again, within fixed limits.
 
 - **Input.** After a `ci_failed` on the pushed commit, fleetify reads the failed checks from the host: GitHub check-run output and annotations, GitLab job traces. It keeps the last N lines per failed job, redacted like every other output.
