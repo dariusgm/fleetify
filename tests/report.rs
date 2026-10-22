@@ -18,6 +18,7 @@ fn report_validates_against_its_own_schema() {
         rule: None,
         output_tail: vec!["E  missing file".into()],
         artifacts: BTreeMap::from([("events".to_string(), "/w/events.jsonl".to_string())]),
+        next_step: None,
     });
     let report = build(
         "run-1",

@@ -1,6 +1,7 @@
 //! Command line interface. Every stage-1 subcommand exists. Some are still stubs
 //! until their milestone lands, and say so on stderr.
 
+use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,9 +28,13 @@ const TOOL_LOG: &str = "fleetify.log";
     about = "Run one task across many Git repositories."
 )]
 pub struct Cli {
-    /// Working directory for clones, runs and logs [default: ~/.fleetify]
+    /// Working directory for clones, runs, logs and credentials.toml [default: ~/.fleetify]
     #[arg(long, global = true, value_name = "DIR")]
     pub workdir: Option<PathBuf>,
+
+    /// The config file [default: ~/.config/fleetify/config.toml, or $XDG_CONFIG_HOME]
+    #[arg(long, global = true, value_name = "FILE")]
+    pub config: Option<PathBuf>,
 
     /// Log at debug level (RUST_LOG takes precedence)
     #[arg(long, global = true)]
@@ -166,6 +171,25 @@ pub fn resolve_workdir(explicit: Option<PathBuf>) -> Option<PathBuf> {
     })
 }
 
+/// The default config file: `$XDG_CONFIG_HOME/fleetify/config.toml`, else
+/// `~/.config/fleetify/config.toml`. Like opencode, configuration lives under `.config`;
+/// secrets stay in the working directory.
+pub fn default_config_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    let base = match xdg.filter(|value| !value.is_empty()) {
+        Some(xdg) => PathBuf::from(xdg),
+        None => PathBuf::from(home?).join(".config"),
+    };
+    Some(base.join("fleetify").join("config.toml"))
+}
+
+/// Resolves the config file: `--config`, else the default above.
+pub fn resolve_config(explicit: Option<PathBuf>) -> Option<PathBuf> {
+    explicit.or_else(|| {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        default_config_path(std::env::var_os("XDG_CONFIG_HOME"), home)
+    })
+}
+
 /// Starts logging to `path` and installs the crash hook for it.
 fn start_logging(path: &Path, debug: bool) -> Result<(), ExitCode> {
     if let Err(err) = logging::init(path, debug) {
@@ -178,6 +202,10 @@ fn start_logging(path: &Path, debug: bool) -> Result<(), ExitCode> {
 
 /// Entry point after argument parsing.
 pub fn run(cli: Cli) -> ExitCode {
+    let Some(config) = resolve_config(cli.config.clone()) else {
+        eprintln!("fleetify: cannot determine the config file; pass --config");
+        return ExitCode::from(2);
+    };
     let Some(workdir) = resolve_workdir(cli.workdir.clone()) else {
         eprintln!("fleetify: cannot determine the working directory; pass --workdir");
         return ExitCode::from(1);
@@ -185,7 +213,7 @@ pub fn run(cli: Cli) -> ExitCode {
     let debug = cli.debug;
 
     match cli.command {
-        Command::Run(args) => run_command(&workdir, debug, *args),
+        Command::Run(args) => run_command(&workdir, &config, debug, *args),
         Command::DebugPanic => {
             if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
                 return code;
@@ -217,7 +245,7 @@ pub fn run(cli: Cli) -> ExitCode {
 }
 
 /// `fleetify run`. A dry run plans; a real run executes the no-agent pipeline.
-fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
+fn run_command(workdir: &Path, config: &Path, debug: bool, args: RunArgs) -> ExitCode {
     let recipe = match Recipe::load(&args.recipe_dir) {
         Ok(recipe) => recipe,
         Err(err) => {
@@ -272,6 +300,7 @@ fn run_command(workdir: &Path, debug: bool, args: RunArgs) -> ExitCode {
 
     let input = RunInput {
         workdir,
+        config,
         recipe_dir: &args.recipe_dir,
         recipe: &recipe,
         repos_file: &args.repos_file,
@@ -631,3 +660,27 @@ fn display_argv(argv: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_lives_under_dot_config_and_honours_xdg() {
+        let home = Some(OsString::from("/home/u"));
+        assert_eq!(
+            default_config_path(None, home.clone()),
+            Some(PathBuf::from("/home/u/.config/fleetify/config.toml"))
+        );
+        assert_eq!(
+            default_config_path(Some(OsString::from("/xdg")), home.clone()),
+            Some(PathBuf::from("/xdg/fleetify/config.toml"))
+        );
+        assert_eq!(
+            default_config_path(Some(OsString::new()), home),
+            Some(PathBuf::from("/home/u/.config/fleetify/config.toml"))
+        );
+        assert_eq!(default_config_path(None, None), None);
+    }
+}
+

@@ -46,6 +46,69 @@ pub struct Failure {
     pub output_tail: Vec<String>,
     /// Paths to the logs and artifacts of this repo.
     pub artifacts: BTreeMap<String, String>,
+    /// What the user should do next, set for every unsuccessful class by `next_step`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<String>,
+}
+
+/// The action the user takes next for an unsuccessful result class. `None` for successful
+/// classes. Unknown classes get the general pointer to the message and the repo log.
+pub fn next_step(class: &str) -> Option<&'static str> {
+    if is_successful(class) {
+        return None;
+    }
+    Some(match class {
+        "ci_failed" => {
+            "Open the CI logs of the pushed commit, fix the cause in the verifier or the agent \
+             instructions, then run again. fleetify does not retry CI failures by itself."
+        }
+        "ci_missing" => {
+            "No CI ran for the pushed commit. Check the workflow trigger. On GitHub, set \
+             ci.dispatch_workflow in the recipe. Then run again."
+        }
+        "ci_timeout" => {
+            "CI was still running at the timeout. Check whether the pipeline is stuck, or raise \
+             ci.timeout_min. Then run again to wait for the same commit."
+        }
+        "ci_blocked" => {
+            "CI waits for a person (a manual job or an action that needs approval). Approve it on \
+             the host, then run again."
+        }
+        "ci_invalid" => "The CI configuration fails the structure check. Fix the file in the repository.",
+        "guard_violation" => {
+            "The change touches what the guards forbid. Read the rule named in the failure. \
+             Tighten the instructions; widen allow_paths only if the change is wanted."
+        }
+        "verify_failed" => {
+            "The local verifier rejected the change, so nothing was pushed. Read the output tail, \
+             then fix the instructions or the verifier."
+        }
+        "base_broken" => {
+            "The untouched base already fails the verifier. Fix the verifier, or set baseline = \
+             false if the base is expected to fail."
+        }
+        "needs_input" | "blocked" => {
+            "The agent asked for input or wrote blocked.md. Make the instructions specific, then \
+             run again. The workspace is kept in the run folder."
+        }
+        "agent_timeout" => {
+            "The agent did not finish in time. Raise limits.agent_timeout_min or make the task smaller."
+        }
+        "host_unreachable" => {
+            "The host did not answer within the retry budget. Check the network and the host, then \
+             run again. No second push happens."
+        }
+        "rate_limited" | "api_limit" => {
+            "A rate limit stopped the run. Run again after the reset, or raise rate_limit.max_wait_min."
+        }
+        "merge_blocked" => {
+            "The change request could not be merged. Resolve checks, reviews or conflicts on the \
+             host, then run again."
+        }
+        "interrupted" => "The run was interrupted. Run again with the same --run to resume.",
+        "error" => "fleetify hit an error. Read the message, then the repo log: fleetify logs <repo>.",
+        _ => "Read the message, then the repo log: fleetify logs <repo>.",
+    })
 }
 
 /// One repo's result. Also the line format of `results.jsonl`.
@@ -128,7 +191,9 @@ pub fn build(
             result.failure = if result.successful {
                 None
             } else {
-                Some(clean_failure(redactor, result.failure.take(), &result))
+                let mut failure = clean_failure(redactor, result.failure.take(), &result);
+                failure.next_step = next_step(&failure.class).map(str::to_string);
+                Some(failure)
             };
             result
         })
@@ -165,6 +230,7 @@ fn clean_failure(redactor: &Redactor, failure: Option<Failure>, result: &RepoRes
         rule: None,
         output_tail: Vec::new(),
         artifacts: BTreeMap::new(),
+        next_step: None,
     });
     if failure.message.trim().is_empty() {
         failure.message = if result.detail.trim().is_empty() {
@@ -268,6 +334,9 @@ pub fn render_table(report: &Report, failed_only: bool) -> String {
             "{:<repo_width$}  {:<result_width$}  {}\n",
             row.repo, row.result, detail
         ));
+        if let Some(step) = row.failure.as_ref().and_then(|f| f.next_step.as_deref()) {
+            out.push_str(&format!("{:<repo_width$}  next: {step}\n", ""));
+        }
     }
     let by_result: Vec<String> = report
         .summary
@@ -354,6 +423,7 @@ mod tests {
             rule: None,
             output_tail: vec!["line secret-token-123".into()],
             artifacts: BTreeMap::new(),
+            next_step: None,
         });
         let report = build("r", "x", "t0", "", vec![result], &redactor());
         let text = serde_json::to_string(&report).unwrap();
@@ -397,4 +467,48 @@ mod tests {
         let failed = render_table(&report, true);
         assert!(!failed.contains("github.com/a/b"));
     }
+
+    #[test]
+    fn every_unsuccessful_class_names_a_next_step_and_successful_ones_do_not() {
+        for class in [
+            "ci_failed",
+            "ci_missing",
+            "ci_timeout",
+            "ci_blocked",
+            "ci_invalid",
+            "guard_violation",
+            "verify_failed",
+            "base_broken",
+            "needs_input",
+            "agent_timeout",
+            "host_unreachable",
+            "rate_limited",
+            "merge_blocked",
+            "interrupted",
+            "error",
+            "something_new",
+        ] {
+            assert!(next_step(class).is_some(), "{class} has no next step");
+        }
+        for class in ["pr_open", "ci_passed", "merged", "skipped", "dry_run"] {
+            assert_eq!(next_step(class), None, "{class} needs no next step");
+        }
+    }
+
+    #[test]
+    fn failed_repos_carry_their_next_step_in_the_report_and_the_table() {
+        let report = build(
+            "run-2",
+            "rec",
+            "t0",
+            "t1",
+            vec![RepoResult::new("github.com/a/b", "ci_missing", "no CI items")],
+            &redactor(),
+        );
+        let failure = report.repos[0].failure.as_ref().expect("failure block");
+        assert!(failure.next_step.as_deref().unwrap().contains("dispatch_workflow"));
+        let table = render_table(&report, false);
+        assert!(table.contains("next: No CI ran"), "{table}");
+    }
 }
+
