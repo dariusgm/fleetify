@@ -83,6 +83,7 @@ class Ci:
     timeout_min: int | None = None
     merge: str | None = None
     validate: bool | None = None
+    dispatch_workflow: str | None = None
 
 
 @dataclass

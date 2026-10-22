@@ -66,6 +66,14 @@ pub enum Event {
     },
     /// A repo moved to a new phase (`cloning`, `verifying`, ...).
     RepoPhase { repo: String, phase: String },
+    /// fleetify started CI itself for the pushed branch, because the host had started none
+    /// for the commit within the wait. `workflow` is set for GitHub only.
+    CiDispatched {
+        repo: String,
+        host: String,
+        branch: String,
+        workflow: Option<String>,
+    },
     /// The result of one repo in a run (dry run for now, full results from M7).
     RepoFinished {
         repo: String,

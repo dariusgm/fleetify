@@ -62,6 +62,14 @@ pub fn backoff(interval: Duration, attempt: u32) -> Duration {
     interval.saturating_mul(factor).min(MAX_RETRY_DELAY)
 }
 
+/// When fleetify starts CI itself: the commit has no items after `after`.
+pub struct Dispatch<'a> {
+    /// The wait for the host's own CI. Zero starts CI before the first read.
+    pub after: Duration,
+    /// Starts CI for the pushed branch. Called at most once per poll.
+    pub start: &'a mut dyn FnMut() -> Result<(), HostError>,
+}
+
 /// Asks for the items of one commit until the verdict is final or `timeout` is over.
 /// `fetch` must answer for that commit only.
 ///
@@ -70,19 +78,38 @@ pub fn backoff(interval: Duration, attempt: u32) -> Duration {
 /// and the caller maps it to `host_unreachable`. Any other error is returned at once. A
 /// timeout while items are still pending returns `Pending`; the caller maps that to
 /// `ci_timeout`. A poll never returns a verdict built from a failed read.
+///
+/// With `dispatch`, CI is started once the commit still has no items after `dispatch.after`
+/// (at once when that is zero). A start error is returned as is.
 pub fn poll(
     mut fetch: impl FnMut() -> Result<Vec<CiItem>, HostError>,
     mut on_retry: impl FnMut(&HostError, u32, Duration),
     timeout: Duration,
     interval: Duration,
+    mut dispatch: Option<Dispatch<'_>>,
 ) -> Result<Verdict, HostError> {
     let started = Instant::now();
     let mut attempt = 0;
+    let mut dispatched = false;
+    if let Some(d) = dispatch.as_mut()
+        && d.after.is_zero()
+    {
+        (d.start)()?;
+        dispatched = true;
+    }
     loop {
         match fetch() {
             Ok(items) => {
                 attempt = 0;
                 let verdict = evaluate(&items);
+                if matches!(verdict, Verdict::Missing)
+                    && !dispatched
+                    && let Some(d) = dispatch.as_mut()
+                    && started.elapsed() >= d.after
+                {
+                    (d.start)()?;
+                    dispatched = true;
+                }
                 let done = !matches!(verdict, Verdict::Pending(_) | Verdict::Missing);
                 if done || started.elapsed() >= timeout {
                     return Ok(verdict);
@@ -179,6 +206,7 @@ mod tests {
             |_, _, _| {},
             Duration::from_secs(5),
             Duration::from_millis(1),
+            None,
         )
         .unwrap();
         assert_eq!(verdict, Verdict::Passed);
@@ -192,6 +220,7 @@ mod tests {
             |_, _, _| {},
             Duration::from_millis(20),
             Duration::from_millis(1),
+            None,
         )
         .unwrap();
         assert_eq!(verdict, Verdict::Pending(vec!["test".to_string()]));
@@ -226,6 +255,7 @@ mod tests {
             |_, attempt, _| retries.set(attempt),
             Duration::from_secs(5),
             Duration::from_millis(1),
+            None,
         )
         .unwrap();
         assert_eq!(verdict, Verdict::Passed);
@@ -240,6 +270,7 @@ mod tests {
             |_, _, _| {},
             Duration::from_millis(20),
             Duration::from_millis(1),
+            None,
         )
         .unwrap_err();
         assert!(err.is_transient(), "{err:?}");
@@ -259,9 +290,104 @@ mod tests {
             |_, _, _| panic!("no retry for a permanent error"),
             Duration::from_secs(5),
             Duration::from_millis(1),
+            None,
         )
         .unwrap_err();
         assert!(!err.is_transient());
         assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn no_items_after_the_wait_starts_ci_once() {
+        let started = Cell::new(0);
+        let mut start = || {
+            started.set(started.get() + 1);
+            Ok(())
+        };
+        let verdict = poll(
+            || Ok(Vec::new()),
+            |_, _, _| {},
+            Duration::from_millis(60),
+            Duration::from_millis(1),
+            Some(Dispatch {
+                after: Duration::from_millis(10),
+                start: &mut start,
+            }),
+        )
+        .unwrap();
+        assert_eq!(verdict, Verdict::Missing);
+        assert_eq!(started.get(), 1);
+    }
+
+    #[test]
+    fn a_zero_wait_starts_ci_before_the_first_read() {
+        let order = std::cell::RefCell::new(Vec::new());
+        let mut start = || {
+            order.borrow_mut().push("start");
+            Ok(())
+        };
+        let verdict = poll(
+            || {
+                order.borrow_mut().push("read");
+                Ok(vec![item("test", CiState::Success)])
+            },
+            |_, _, _| {},
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            Some(Dispatch {
+                after: Duration::ZERO,
+                start: &mut start,
+            }),
+        )
+        .unwrap();
+        assert_eq!(verdict, Verdict::Passed);
+        assert_eq!(*order.borrow(), vec!["start", "read"]);
+    }
+
+    #[test]
+    fn items_within_the_wait_mean_no_start() {
+        let reads = Cell::new(0);
+        let started = Cell::new(0);
+        let mut start = || {
+            started.set(started.get() + 1);
+            Ok(())
+        };
+        let verdict = poll(
+            || {
+                reads.set(reads.get() + 1);
+                Ok(if reads.get() == 1 {
+                    Vec::new()
+                } else {
+                    vec![item("test", CiState::Success)]
+                })
+            },
+            |_, _, _| {},
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            Some(Dispatch {
+                after: Duration::from_secs(60),
+                start: &mut start,
+            }),
+        )
+        .unwrap();
+        assert_eq!(verdict, Verdict::Passed);
+        assert_eq!(started.get(), 0);
+    }
+
+    #[test]
+    fn a_start_error_is_returned_as_is() {
+        let mut start = || Err(HostError::Unsupported("no workflow".into()));
+        let err = poll(
+            || Ok(Vec::new()),
+            |_, _, _| {},
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            Some(Dispatch {
+                after: Duration::ZERO,
+                start: &mut start,
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(err, HostError::Unsupported(_)));
     }
 }

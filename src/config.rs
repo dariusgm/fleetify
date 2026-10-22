@@ -52,6 +52,8 @@ pub struct Config {
     pub permissions: Permissions,
     #[serde(default)]
     pub rate_limit: RateLimit,
+    #[serde(default)]
+    pub ci: CiConfig,
     /// Defaults per agent, keyed by agent name. `--model` and the recipe take precedence.
     #[serde(default)]
     pub agents: BTreeMap<String, AgentConfig>,
@@ -64,6 +66,27 @@ pub struct AgentConfig {
     /// Model passed to the agent CLI unchanged. Unset leaves the choice to the agent.
     #[serde(default)]
     pub model: Option<String>,
+}
+
+/// Unset `ci.dispatch_after_s`: three minutes.
+const DEFAULT_DISPATCH_AFTER_S: u64 = 3 * 60;
+
+/// `[ci]`: when fleetify starts CI itself because the host started none for the pushed commit.
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CiConfig {
+    /// Seconds to wait for the host's own CI on the pushed commit. If none has started by
+    /// then, fleetify starts it: `workflow_dispatch` on GitHub, a pipeline on GitLab. `0`
+    /// starts it at once, without asking the host first. Unset means 180.
+    #[serde(default)]
+    pub dispatch_after_s: Option<u64>,
+}
+
+impl CiConfig {
+    /// The wait before fleetify starts CI itself.
+    pub fn dispatch_after(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.dispatch_after_s.unwrap_or(DEFAULT_DISPATCH_AFTER_S))
+    }
 }
 
 /// `[rate_limit]`: how long fleetify waits when a host asks it to hold back.
@@ -452,6 +475,17 @@ mod tests {
         let other = config.merge_rule("github.com/owner/service").unwrap();
         assert!(!other.merge_without_ci);
         assert!(config.merge_rule("gitlab.com/owner/service").is_none());
+    }
+
+    #[test]
+    fn ci_dispatch_wait_defaults_to_three_minutes_and_zero_starts_at_once() {
+        let unset: Config = toml::from_str("").unwrap();
+        assert_eq!(unset.ci.dispatch_after(), std::time::Duration::from_secs(180));
+        let zero: Config = toml::from_str("[ci]\ndispatch_after_s = 0\n").unwrap();
+        assert_eq!(zero.ci.dispatch_after(), std::time::Duration::ZERO);
+        let short: Config = toml::from_str("[ci]\ndispatch_after_s = 45\n").unwrap();
+        assert_eq!(short.ci.dispatch_after(), std::time::Duration::from_secs(45));
+        assert!(toml::from_str::<Config>("[ci]\ndispatch_after_min = 3\n").is_err());
     }
 
     #[test]

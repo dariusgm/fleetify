@@ -16,6 +16,17 @@ pub fn plain_line(event: &Event) -> String {
         },
         Event::OutputLine { label, line, .. } => format!("{label} | {line}"),
         Event::RepoPhase { repo, phase } => format!("{repo} | phase {phase}"),
+        Event::CiDispatched {
+            repo,
+            host,
+            branch,
+            workflow,
+        } => match workflow {
+            Some(workflow) => {
+                format!("{repo} | {host} started CI on {branch} ({workflow}): no CI had started")
+            }
+            None => format!("{repo} | {host} started CI on {branch}: no CI had started"),
+        },
         Event::RepoFinished {
             repo,
             result,

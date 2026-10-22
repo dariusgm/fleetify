@@ -242,6 +242,32 @@ impl Host for GitHub {
         change_request(&parse_json(&reply)?)
     }
 
+    fn dispatch_ci(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        branch: &str,
+        workflow: Option<&str>,
+    ) -> Result<(), HostError> {
+        let (owner, name) = owner_and_name(repo)?;
+        let Some(workflow) = workflow else {
+            return Err(HostError::Unsupported(
+                "fleetify cannot start GitHub CI: set ci.dispatch_workflow in the recipe".into(),
+            ));
+        };
+        let reply = self.http.send(
+            Method::POST,
+            &format!("/repos/{owner}/{name}/actions/workflows/{workflow}/dispatches"),
+            &headers(token),
+            &[],
+            Some(&json!({ "ref": branch })),
+        )?;
+        match reply.status {
+            204 => Ok(()),
+            _ => Err(unexpected(&reply)),
+        }
+    }
+
     fn commit_ci(&self, repo: &Repo, token: &Secret, sha: &str) -> Result<Vec<CiItem>, HostError> {
         let (owner, name) = owner_and_name(repo)?;
         let mut items = Vec::new();

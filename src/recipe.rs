@@ -78,8 +78,6 @@ pub struct Recipe {
     #[serde(default)]
     pub guards: Guards,
     #[serde(default)]
-    pub judge: Option<Judge>,
-    #[serde(default)]
     pub ci: Ci,
     #[serde(default)]
     pub delivery: Delivery,
@@ -216,18 +214,6 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Judge {
-    /// Agent that acts as judge. Default: the recipe's agent.
-    #[serde(default)]
-    pub agent: Option<String>,
-    #[serde(default)]
-    pub profile: Option<String>,
-    #[serde(default)]
-    pub max_diff_lines: Option<u32>,
-}
-
 #[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Ci {
@@ -246,6 +232,12 @@ pub struct Ci {
     /// after prepare. Only structure is checked. Default true.
     #[serde(default = "default_true")]
     pub validate: bool,
+    /// GitHub only: the workflow file fleetify starts with `workflow_dispatch` when the
+    /// host starts no CI for the pushed commit, for example `tests.yml`. The file needs a
+    /// `workflow_dispatch` trigger. Unset, fleetify cannot start GitHub CI and the repo ends
+    /// as `ci_blocked`.
+    #[serde(default)]
+    pub dispatch_workflow: Option<String>,
 }
 
 impl Default for Ci {
@@ -256,6 +248,7 @@ impl Default for Ci {
             timeout_min: default_ci_timeout(),
             merge: off(),
             validate: true,
+            dispatch_workflow: None,
         }
     }
 }
@@ -534,16 +527,6 @@ impl Recipe {
                 "instructions are set but no agent is: set agent in recipe.toml or pass --agent"
                     .into(),
             );
-        }
-        if let Some(judge) = &self.judge {
-            if let Some(agent) = &judge.agent
-                && !KNOWN_AGENTS.contains(&agent.as_str())
-            {
-                push("judge.agent", format!("unknown agent {agent:?}"));
-            }
-            if judge.max_diff_lines == Some(0) {
-                push("judge.max_diff_lines", "must be greater than 0".into());
-            }
         }
     }
 

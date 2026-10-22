@@ -181,6 +181,15 @@ pub trait Host: Send + Sync {
     /// a pull request: a later push to the same branch has its own items. Implementations
     /// must reject items that belong to another commit.
     fn commit_ci(&self, repo: &Repo, token: &Secret, sha: &str) -> Result<Vec<CiItem>, HostError>;
+    /// Starts CI on `branch` because the host started none for the pushed commit. GitHub
+    /// needs the workflow file to dispatch; GitLab starts a pipeline for the ref.
+    fn dispatch_ci(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        branch: &str,
+        workflow: Option<&str>,
+    ) -> Result<(), HostError>;
     /// Merges only if the head is still `expected_sha`; the host enforces that.
     fn merge(
         &self,

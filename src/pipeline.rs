@@ -680,6 +680,22 @@ fn gate_ci(
         phase: "ci_wait".to_string(),
     });
     let timeout = Duration::from_secs(u64::from(ctx.recipe.ci.timeout_min) * 60);
+    let branch = ctx.config.branch_name(&ctx.recipe.branch);
+    let workflow = ctx.recipe.ci.dispatch_workflow.as_deref();
+    let mut start = || -> Result<(), crate::hosts::HostError> {
+        client.dispatch_ci(repo, token, &branch, workflow)?;
+        ctx.runner.bus().emit(Event::CiDispatched {
+            repo: repo.key(),
+            host: repo.host.clone(),
+            branch: branch.clone(),
+            workflow: workflow.map(str::to_string),
+        });
+        Ok(())
+    };
+    let dispatch = crate::ci::Dispatch {
+        after: ctx.config.ci.dispatch_after(),
+        start: &mut start,
+    };
     let verdict = crate::ci::poll(
         || client.commit_ci(repo, token, sha),
         |err, attempt, delay| {
@@ -694,6 +710,7 @@ fn gate_ci(
         },
         timeout,
         CI_POLL_INTERVAL,
+        Some(dispatch),
     );
     let short_sha = short(sha);
     let (name, message) = match verdict {

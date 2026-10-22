@@ -138,6 +138,7 @@ impl Recorder {
             // The event log keeps retries; the state file only shows the phase and output.
             Event::HostRetry { .. } => {}
             Event::RateLimited { .. } => {}
+            Event::CiDispatched { .. } => {}
         }
     }
 

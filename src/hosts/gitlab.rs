@@ -189,6 +189,26 @@ impl Host for GitLab {
         change_request(&parse_json(&reply)?)
     }
 
+    fn dispatch_ci(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        branch: &str,
+        _workflow: Option<&str>,
+    ) -> Result<(), HostError> {
+        let reply = self.http.send(
+            Method::POST,
+            &format!("/projects/{}/pipeline", project_id(&repo.path)),
+            &headers(token),
+            &[],
+            Some(&json!({ "ref": branch })),
+        )?;
+        match reply.status {
+            201 => Ok(()),
+            _ => Err(unexpected(&reply)),
+        }
+    }
+
     fn commit_ci(&self, repo: &Repo, token: &Secret, sha: &str) -> Result<Vec<CiItem>, HostError> {
         // Every pipeline of this commit: branch pipelines and merge request pipelines alike.
         let reply = self.http.send(

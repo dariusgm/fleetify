@@ -50,16 +50,6 @@
         "$ref": "#/$defs/Instruction"
       }
     },
-    "judge": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Judge"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
     "limits": {
       "$ref": "#/$defs/Limits"
     },
@@ -174,6 +164,14 @@
     "Ci": {
       "type": "object",
       "properties": {
+        "dispatch_workflow": {
+          "description": "GitHub only: the workflow file fleetify starts with `workflow_dispatch` when the\nhost starts no CI for the pushed commit, for example `tests.yml`. The file needs a\n`workflow_dispatch` trigger. Unset, fleetify cannot start GitHub CI and the repo ends\nas `ci_blocked`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "merge": {
           "description": "off or when_green.",
           "type": "string",
@@ -330,36 +328,6 @@
         },
         "text": {
           "description": "Inline prompt text.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        }
-      },
-      "additionalProperties": false
-    },
-    "Judge": {
-      "type": "object",
-      "properties": {
-        "agent": {
-          "description": "Agent that acts as judge. Default: the recipe's agent.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
-        "max_diff_lines": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint32",
-          "default": null,
-          "minimum": 0
-        },
-        "profile": {
           "type": [
             "string",
             "null"
