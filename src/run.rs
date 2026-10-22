@@ -267,6 +267,8 @@ pub enum Mode {
 /// Inputs as given on the command line.
 pub struct RunInput<'a> {
     pub workdir: &'a Path,
+    /// The config file (`--config`, default `~/.config/fleetify/config.toml`).
+    pub config: &'a Path,
     pub recipe_dir: &'a Path,
     pub recipe: &'a Recipe,
     pub repos_file: &'a Path,
@@ -301,12 +303,37 @@ pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
     load_for(input, false)
 }
 
+/// `credentials.toml` sits next to the config file, so both live under `~/.config/fleetify/`.
+pub fn credentials_path(config: &Path) -> PathBuf {
+    config
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("credentials.toml")
+}
+
 /// Loads what a run needs. A dry run reports missing grants and keeps going; a real
 /// run refuses to start.
 fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
-    let config = Config::load(&input.workdir.join("config.toml"))?;
+    let credentials_path = credentials_path(input.config);
+    for (old, new) in [
+        (input.workdir.join("config.toml"), input.config),
+        (
+            input.workdir.join("credentials.toml"),
+            credentials_path.as_path(),
+        ),
+    ] {
+        if !new.exists() && old.exists() {
+            return Err(Refused(format!(
+                "{} is no longer read from the working directory: found {}, but fleetify reads {}. Move the file there.",
+                old.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
+                old.display(),
+                new.display()
+            )));
+        }
+    }
+    let config = Config::load(input.config)?;
     let hosts = config.host_table()?;
-    let (credentials, warnings) = Credentials::load(&input.workdir.join("credentials.toml"))?;
+    let (credentials, warnings) = Credentials::load(&credentials_path)?;
     for warning in &warnings {
         tracing::warn!(%warning, "credentials");
         eprintln!("warning: {warning}");
@@ -714,6 +741,7 @@ pub fn error_result(
         rule,
         output_tail,
         artifacts: artifacts(layout, repo),
+        next_step: None,
     });
     result
 }
@@ -733,6 +761,7 @@ pub fn git_failure(
             rule,
             output_tail: error.output_tail,
             artifacts: artifacts(layout, repo),
+            next_step: None,
         });
         return result;
     }
@@ -748,6 +777,7 @@ fn interrupted_before_start(repo: &Repo) -> RepoResult {
         rule: None,
         output_tail: Vec::new(),
         artifacts: BTreeMap::new(),
+        next_step: None,
     });
     result
 }
@@ -874,6 +904,14 @@ mod merge_gate_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_sit_next_to_the_config_file() {
+        assert_eq!(
+            credentials_path(Path::new("/home/u/.config/fleetify/config.toml")),
+            PathBuf::from("/home/u/.config/fleetify/credentials.toml")
+        );
+    }
 
     #[test]
     fn run_id_defaults_to_recipe_and_date() {

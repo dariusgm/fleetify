@@ -853,3 +853,60 @@ Declared but unused: none after the MVP cleanup of 2026-10-22 (see below).
   "cannot reach the host" error during the wait; the open issue from the icalendar entry still applies.
   Not yet tested: `dispatch_after_s = 0` in a live run, and GitLab.
 
+
+## VoiceStudio reference run: lock refresh with Claude Code Haiku (M17 reference, 2026-10-22)
+
+- **Setup.** Public fork `dariusgm/VoiceStudio` of `debpalash/VoiceStudio` (AGPL-3.0, 81k stars,
+  Python backend plus Electron, frontend and mobile). Recipe `voicestudio-lock-refresh` (under
+  `~/.fleetify/recipes/`, not in the repo): agent `claude-code`, model `claude-haiku-5-5`, guards allow
+  only `uv.lock`, verifier `tools/verify.sh` (`uv lock --check`, `uv sync --frozen --all-extras`,
+  `pytest tests/test_app_version.py`), CI `dispatch_workflow = "ci.yml"`, `wait = true`.
+- **Local timing.** `uv sync --frozen --all-extras` took about 47 s (278 packages). The full pytest
+  collection has 10 511 tests and takes about 22 s just to collect, so the full suite stays with CI.
+- **Run `voicestudio-lock-1`: `error`, `HTTP 404: Not Found`, exit 1.**
+  - The agent ran `uv lock --upgrade`. About 300 packages moved to the newest versions their declared
+    ranges allow. The guards and the local verifier passed.
+  - The push succeeded. PR #1 (`dariusgm/VoiceStudio`, branch `fleetify/chore/lock-refresh`) is open,
+    with 3466 additions and 3435 deletions in `uv.lock` only.
+  - The CI wait started. The status requests failed three times with "cannot reach the host", the same
+    error as in the icalendar runs. Then the run ended with `HTTP 404`.
+  - No `ci_dispatched` event, and `gh run list` shows no workflow run on the fork. The dispatch was
+    not logged. Two causes fit the log and are not separated yet: the dispatch to `ci.yml` returned 404,
+    or the check-runs lookup for the commit returned 404. The workflow listing of the fork also returns
+    404 while Actions are enabled, so the fork's workflow registration is the first thing to check.
+- **Finding for fleetify.** An error from a host call should name the endpoint that failed. "HTTP 404:
+  Not Found" does not tell the user where to look. Open.
+- **Not yet tested here:** whether `ci.yml` dispatches on this fork at all, and whether the agent's
+  lock refresh passes the full CI.
+
+## Directories and the remaining Stage 1 work (2026-10-22)
+
+- **Config location changed (breaking, MVP).** `config.toml` is read from `~/.config/fleetify/` (or
+  `$XDG_CONFIG_HOME/fleetify/`), with `--config FILE` as override. `credentials.toml` and the working
+  directory stay in `~/.fleetify/`. A config left in the old place makes the run refuse with the path to
+  move it to, instead of silently using defaults. opencode keeps its configuration in
+  `~/.config/opencode/` but its auth and data in `~/.local/share/opencode/`, so the credential location
+  follows the decision above, not the opencode layout.
+- **Self-hosted GitLab (M15b).** No host name is hardcoded in the code. `api_base` builds
+  `https://<host>/api/v4` for any configured GitLab host, and the tests use `gitlab.example.com` only
+  for parsing. The HTTP client uses rustls with the platform verifier (the lockfile contains
+  `rustls-platform-verifier`), so the internal CA should be trusted from the OS store. Not verified
+  against a real self-hosted instance. Open: the internal CA on a Windows machine, and whether
+  `HTTPS_PROXY` is honoured (reqwest reads the environment by default; not tested).
+- **Postponed:** M12 (authoring package publication, until the core is stable), M16 (LLM judge).
+- **Moved to a Windows test package:** the Windows checks of the stage-1 milestones and the manual
+  check of the live view in Windows Terminal. They need a Windows machine or a VM.
+
+## Credentials move next to the config (breaking, 2026-10-22)
+
+- **Decision.** `credentials.toml` sits next to `config.toml`, in `~/.config/fleetify/` (or the directory
+  of `--config`). It is no longer read from the working directory. The file was moved on this system.
+  This follows opencode, which keeps its configuration and its API keys in `~/.config/opencode/`.
+- **Refusal.** A run with a config or credentials file left in the old working directory stops and
+  names the new path. It does not fall back to defaults.
+- **Test isolation.** The CLI integration tests now pass `--config` to a file inside their own
+  directory. Before, they read whatever config the developer had, which granted commands and broke the
+  expected refusal.
+- **M15b closed** for now. Tests on the self-hosted GitLab run on the company laptop. The Windows checks
+  are collected under "Windows Support" in PLAN.md.
+- **M12 and M16 postponed** (see the previous entry).

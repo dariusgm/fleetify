@@ -568,13 +568,23 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 | M10 opencode and check-agent | done; level-3 smoke test passed with opencode and OpenAI `gpt-5-nano` (PR #1, and PR #3 after the prompt change); llama.cpp variant covered by the e2e matrix (run 10220552) | the wrapper finding is fixed by the prompt change |
 | M11 CI gate and merge | done for GitHub and GitLab; paging and `ci_blocked` done | — |
 | M11a outage handling | done for hosts, CI, merge, push, rate limits, reads, cache fetch/clone, `Retry-After` dates, agent wait ceiling and `api_limit` | reset time from agent messages is carried as printed, not parsed; rate-limit phrases not checked against real CLIs (only the credits sentence was observed); push-divergence test needs a race; agent silence ceiling can end a slow local model that is silent after a limit line as its last output |
-| M12 Python authoring package | done in `authoring/` (writer, dataclasses, schema check, byte-for-byte example) | not published to an index; no second recipe yet |
-| M13 live view | done | manual check in Windows Terminal and a Linux terminal |
+| M12 Python authoring package | done in `authoring/` (writer, dataclasses, schema check, byte-for-byte example) | postponed until the core is stable; not published to an index |
+| M13 live view | done on Linux | the Windows Terminal check moves to Windows Support |
 | M14 Claude Code adapter | done for the smoke test on GitHub (PR #1) | full lint test with the complete gate chain; observed rate-limit behaviour |
 | M15a Copilot CLI adapter (private) | done; live canary and level-5 run on a throwaway GitLab project (MR !1, pipeline green) | — |
-| M15b Copilot and self-hosted GitLab (work) | not started | needs the work machine and the internal CA |
-| M16 LLM judge | not started | only if the trial needs it |
+| M15b Self-hosted GitLab (work) | done (closed) | tests on self-hosted GitLab run on the company laptop from now on, see Windows Support |
+| M16 LLM judge | postponed | `[judge]` removed from the recipe format; comes back only if the trial needs it |
 | M17 real trial | not started | `[ASK]`, three to five private repos |
+
+**Windows Support (new, runs on the company laptop or a Windows VM).** Everything that needs Windows is collected here, because it cannot run on the Linux machine:
+
+- The manual check of the live view in Windows Terminal (M13).
+- The Windows checks of each stage-1 milestone: acceptance on Windows as well as Linux (the acceptance rule in the working agreement), `git clone --local` with hard links on NTFS (open question 9), long paths and the 260-character limit, `pwsh` verifier scripts, process-tree termination on Windows.
+- The Windows CI matrix again, once the Windows tests are green.
+- Windows system locations for config and data (see Todo).
+- The self-hosted GitLab test (M15b) on the company laptop, including the internal CA through the Windows certificate store and `HTTPS_PROXY`.
+
+Acceptance: the Windows checks above pass on the company laptop, and the results go into DECISIONS.md.
 
 **Stories:** model selection per agent run is implemented (PR #22; open points in DECISIONS.md). Tasks from issues stays an idea.
 
@@ -660,7 +670,7 @@ If most repos go through without intervention, extending is worth it. If the res
 
 ## Todo
 
-- **Config and data directories.** Decide whether configuration (`config.toml`, `credentials.toml`) moves to `~/.config/fleetify/` (XDG) and run data stays under `~/.fleetify/` or moves to `~/.local/share/fleetify/`. Windows and macOS need their own system locations (e.g. via the `directories` crate). Not implemented yet; the defaults above stay until this is decided and recorded in `DECISIONS.md`.
+- **Config and credentials (decided 2026-10-22, breaking).** Both live in `~/.config/fleetify/` (or `$XDG_CONFIG_HOME`), as opencode keeps its configuration and its keys in `~/.config/opencode/`. `--config FILE` moves both. The working directory `~/.fleetify/` keeps the clones, runs and logs. Windows and macOS system locations are part of Windows Support.
 
 ## Stories
 

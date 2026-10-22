@@ -12,6 +12,8 @@ use fleetify::state::{Recorder, write_atomic};
 fn fleetify(workdir: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fleetify"));
     command.arg("--workdir").arg(workdir);
+    // Never read the developer's own config: each test gets its own, empty one.
+    command.arg("--config").arg(workdir.join("config.toml"));
     command
 }
 
@@ -43,6 +45,7 @@ fn fixture(name: &str) -> PathBuf {
         rule: None,
         output_tail: vec!["fatal: repository not found".into()],
         artifacts: Default::default(),
+        next_step: None,
     });
     report::append_result(&layout.results_path(), &ok).unwrap();
     report::append_result(&layout.results_path(), &bad).unwrap();

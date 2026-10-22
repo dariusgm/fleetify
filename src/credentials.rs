@@ -1,4 +1,5 @@
-//! `credentials.toml`: host tokens, kept apart from `config.toml`.
+//! `credentials.toml`: host tokens, kept apart from `config.toml`. It sits next to the config
+//! file (`~/.config/fleetify/`), with owner-only permissions.
 //!
 //! Rules are checked in file order and the first match wins, so specific
 //! patterns go first. A pattern is a glob on `<host>/<path>`, where `*` matches

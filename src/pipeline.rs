@@ -441,6 +441,7 @@ fn process_repo_steps(ctx: &Ctx<'_>, repo: &Repo, agent_ran: &Cell<bool>) -> Rep
             rule: Some(violations[0].rule.to_string()),
             output_tail: tail,
             artifacts,
+            next_step: None,
         });
         phase("finished");
         return result;
@@ -634,6 +635,7 @@ fn rate_limited_result(
         rule: result.rule.clone(),
         output_tail: Vec::new(),
         artifacts: crate::run::artifacts(layout, repo),
+        next_step: None,
     });
     result
 }
@@ -655,6 +657,7 @@ fn unreachable_result(
         rule: result.rule.clone(),
         output_tail: Vec::new(),
         artifacts: crate::run::artifacts(layout, repo),
+        next_step: None,
     });
     result
 }
@@ -769,6 +772,7 @@ fn gate_ci(
             rule: result.rule.clone(),
             output_tail: Vec::new(),
             artifacts: crate::run::artifacts(ctx.layout, repo),
+            next_step: None,
         });
     }
     result

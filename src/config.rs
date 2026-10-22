@@ -480,11 +480,17 @@ mod tests {
     #[test]
     fn ci_dispatch_wait_defaults_to_three_minutes_and_zero_starts_at_once() {
         let unset: Config = toml::from_str("").unwrap();
-        assert_eq!(unset.ci.dispatch_after(), std::time::Duration::from_secs(180));
+        assert_eq!(
+            unset.ci.dispatch_after(),
+            std::time::Duration::from_secs(180)
+        );
         let zero: Config = toml::from_str("[ci]\ndispatch_after_s = 0\n").unwrap();
         assert_eq!(zero.ci.dispatch_after(), std::time::Duration::ZERO);
         let short: Config = toml::from_str("[ci]\ndispatch_after_s = 45\n").unwrap();
-        assert_eq!(short.ci.dispatch_after(), std::time::Duration::from_secs(45));
+        assert_eq!(
+            short.ci.dispatch_after(),
+            std::time::Duration::from_secs(45)
+        );
         assert!(toml::from_str::<Config>("[ci]\ndispatch_after_min = 3\n").is_err());
     }
 
