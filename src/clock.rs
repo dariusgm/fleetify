@@ -64,3 +64,5 @@ mod tests {
         assert_eq!(rfc3339(951_782_400 + 3661), "2000-02-29T01:01:01Z");
     }
 }
+
+fn   ci_loop_probe( )->u8{ 1 }
