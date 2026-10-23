@@ -4,7 +4,6 @@ Open work of fleetify, one file per item. Each file says what is known, what is 
 
 ## Bugs
 
-- [Bug: CI status requests fail during the wait, retry counter stuck](bug-ci-status-retry.md)
 - [Bug: host errors do not name the endpoint](bug-host-error-endpoint.md)
 - [Open question: no workflow runs on a fork for push or pull request](fork-ci-triggers.md)
 

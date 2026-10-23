@@ -20,9 +20,9 @@ Known limits: Windows is not verified yet, self-hosted GitLab has not run agains
 
 ## What is next
 
-The open work is one file per item in [`tasks/`](tasks/README.md). The first three:
+The open work is one file per item in [`tasks/`](tasks/README.md). The first two:
 
-1. [Bug: CI status requests during the wait](tasks/bug-ci-status-retry.md) and [host errors without an endpoint](tasks/bug-host-error-endpoint.md).
+1. [Bug: host errors without an endpoint](tasks/bug-host-error-endpoint.md).
 2. [Real trial](tasks/m17-real-trial.md) on three to five private repositories, once the repositories and the task are given.
 
 ## What can go
