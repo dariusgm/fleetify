@@ -47,10 +47,6 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (year, month, day)
 }
 
-fn ci_loop_probe() -> u8 {
-    1
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
