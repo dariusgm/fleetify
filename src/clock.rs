@@ -65,4 +65,6 @@ mod tests {
     }
 }
 
-fn   ci_loop_probe( )->u8{ 1 }
+fn ci_loop_probe() -> u8 {
+    1
+}
