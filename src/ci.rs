@@ -256,6 +256,7 @@ mod tests {
                 calls.set(calls.get() + 1);
                 if calls.get() <= 2 {
                     return Err(HostError::Status {
+                        endpoint: "GET /repos/o/r".into(),
                         status: 503,
                         message: "busy".into(),
                     });
@@ -321,6 +322,7 @@ mod tests {
             || {
                 calls.set(calls.get() + 1);
                 Err(HostError::Status {
+                    endpoint: "GET /repos/o/r".into(),
                     status: 401,
                     message: "bad token".into(),
                 })

@@ -229,10 +229,93 @@ fn unexpected_status_is_an_error_not_a_guess() {
     assert_eq!(
         err,
         HostError::Status {
+            endpoint: "GET /repos/o/r".into(),
             status: 500,
             message: "boom".into()
         }
     );
+    assert_eq!(err.to_string(), "GET /repos/o/r: HTTP 500: boom");
+}
+
+#[test]
+fn github_error_names_the_failing_endpoint() {
+    let host = serve(|_| (404, r#"{"message":"Not Found"}"#.into()));
+    let err = github(&host.base)
+        .dispatch_ci(
+            &repo("github.com", HostType::Github, "o/r"),
+            &token(),
+            "main",
+            Some("ci.yml"),
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "POST /repos/o/r/actions/workflows/ci.yml/dispatches: HTTP 404: Not Found"
+    );
+}
+
+#[test]
+fn gitlab_error_names_the_failing_endpoint() {
+    let host = serve(|_| (404, r#"{"message":"404 Project Not Found"}"#.into()));
+    let err = gitlab(&host.base)
+        .dispatch_ci(
+            &repo("gitlab.example.com", HostType::Gitlab, "g/sub/r"),
+            &token(),
+            "main",
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "POST /projects/g%2Fsub%2Fr/pipeline: HTTP 404: 404 Project Not Found"
+    );
+}
+
+#[test]
+fn a_token_in_the_query_never_reaches_an_error() {
+    let host = serve(|_| (500, r#"{"message":"boom"}"#.into()));
+    let http = fleetify::hosts::Http::new(host.base.clone()).unwrap();
+    let reply = http
+        .send(
+            reqwest::Method::GET,
+            "/x",
+            &[],
+            &[("access_token", TOKEN)],
+            None,
+        )
+        .unwrap();
+    let err = fleetify::hosts::unexpected(&reply);
+    assert_eq!(err.to_string(), "GET /x: HTTP 500: boom");
+    assert!(!err.to_string().contains(TOKEN));
+}
+
+#[test]
+fn a_transport_error_names_the_endpoint_and_not_the_token() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let http = fleetify::hosts::Http::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let Err(err) = http.send(
+        reqwest::Method::GET,
+        "/x",
+        &[],
+        &[("access_token", TOKEN)],
+        None,
+    ) else {
+        panic!("a closed port answers");
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains("GET /x: "),
+        "the endpoint is missing: {message}"
+    );
+    assert!(
+        message.contains("refused"),
+        "the cause is missing: {message}"
+    );
+    assert!(!message.contains(TOKEN), "the token leaked: {message}");
 }
 
 #[test]
