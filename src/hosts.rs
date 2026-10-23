@@ -147,11 +147,15 @@ pub enum MergeOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostError {
-    /// The API answered with an unexpected status.
-    Status { status: u16, message: String },
-    /// No answer at all: DNS, connection, TLS or timeout.
+    /// The API answered with an unexpected status. `endpoint` is `METHOD /path` of the request.
+    Status {
+        endpoint: String,
+        status: u16,
+        message: String,
+    },
+    /// No answer at all: DNS, connection, TLS or timeout. The message names the endpoint.
     Transport(String),
-    /// The answer did not have the expected shape.
+    /// The answer did not have the expected shape. The message names the endpoint.
     Parse(String),
     /// The host cannot do this yet.
     Unsupported(String),
@@ -163,7 +167,11 @@ pub enum HostError {
 impl fmt::Display for HostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HostError::Status { status, message } => write!(f, "HTTP {status}: {message}"),
+            HostError::Status {
+                endpoint,
+                status,
+                message,
+            } => write!(f, "{endpoint}: HTTP {status}: {message}"),
             HostError::Transport(message) => write!(f, "cannot reach the host: {message}"),
             HostError::Parse(message) => write!(f, "unexpected answer from the host: {message}"),
             HostError::Unsupported(message) => write!(f, "not supported yet: {message}"),
@@ -415,10 +423,12 @@ pub fn retry_read<T>(mut read: impl FnMut() -> Result<T, HostError>) -> Result<T
 }
 
 /// The text of a request error with its causes. reqwest's own text only says that the request
-/// failed; the refused connect, DNS or TLS failure sits below it.
-fn transport_message(err: &reqwest::Error) -> String {
+/// failed; the refused connect, DNS or TLS failure sits below it. The URL is left out, since
+/// its query may carry a secret; the caller names the endpoint instead.
+fn transport_message(err: reqwest::Error) -> String {
+    let err = err.without_url();
     let mut message = err.to_string();
-    let mut cause = std::error::Error::source(err);
+    let mut cause = std::error::Error::source(&err);
     while let Some(source) = cause {
         message.push_str(": ");
         message.push_str(&source.to_string());
@@ -440,9 +450,16 @@ pub struct Http {
 }
 
 /// A status and body. Bodies are read as text; JSON is parsed by the caller.
+/// `endpoint` is `METHOD /path` of the request. The query is left out: it may carry secrets.
 pub struct Reply {
     pub status: u16,
     pub body: String,
+    pub endpoint: String,
+}
+
+/// `METHOD /path` of a request, for error messages. Never includes the query or headers.
+fn endpoint(method: &Method, path: &str) -> String {
+    format!("{method} {path}")
 }
 
 /// The answer to one request, before any rate-limit handling.
@@ -466,7 +483,7 @@ impl Http {
             .user_agent(concat!("fleetify/", env!("CARGO_PKG_VERSION")))
             .timeout(API_TIMEOUT)
             .build()
-            .map_err(|err| HostError::Transport(transport_message(&err)))?;
+            .map_err(|err| HostError::Transport(transport_message(err)))?;
         Ok(Http {
             client,
             base,
@@ -496,14 +513,18 @@ impl Http {
         query: &[(&str, &str)],
         body: Option<&Value>,
     ) -> Result<Reply, HostError> {
+        let endpoint = endpoint(&method, path);
         let mut waits = 0;
         loop {
-            self.respect_block()?;
+            self.respect_block(&endpoint)?;
             match self.attempt(method.clone(), path, headers, query, body)? {
                 Attempt::Done(reply) => return Ok(reply),
                 Attempt::Limited { wait, reason } => {
                     if wait > self.max_wait || waits == MAX_RATE_WAITS {
-                        return Err(HostError::RateLimited { wait, reason });
+                        return Err(HostError::RateLimited {
+                            wait,
+                            reason: format!("{endpoint}: {reason}"),
+                        });
                     }
                     waits += 1;
                     self.hold_back(wait, &reason);
@@ -520,6 +541,7 @@ impl Http {
         query: &[(&str, &str)],
         body: Option<&Value>,
     ) -> Result<Attempt, HostError> {
+        let endpoint = endpoint(&method, path);
         let mut request = self
             .client
             .request(method, format!("{}{path}", self.base))
@@ -530,14 +552,14 @@ impl Http {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request
-            .send()
-            .map_err(|err| HostError::Transport(transport_message(&err)))?;
+        let response = request.send().map_err(|err| {
+            HostError::Transport(format!("{endpoint}: {}", transport_message(err)))
+        })?;
         let status = response.status().as_u16();
         let response_headers = response.headers().clone();
-        let body = response
-            .text()
-            .map_err(|err| HostError::Transport(transport_message(&err)))?;
+        let body = response.text().map_err(|err| {
+            HostError::Transport(format!("{endpoint}: {}", transport_message(err)))
+        })?;
         let now = unix_now();
         if let Some(limit) = rate_limit(status, &response_headers, &body, now) {
             return Ok(limit);
@@ -547,12 +569,16 @@ impl Http {
             let wait = reset_wait(&response_headers, now).unwrap_or(FALLBACK_RATE_WAIT);
             self.hold_back(wait, "the host's rate-limit quota is used up");
         }
-        Ok(Attempt::Done(Reply { status, body }))
+        Ok(Attempt::Done(Reply {
+            status,
+            body,
+            endpoint,
+        }))
     }
 
     /// Waits while the host has asked us to hold back. A wait longer than the ceiling is
-    /// not taken: the request fails with `RateLimited`.
-    fn respect_block(&self) -> Result<(), HostError> {
+    /// not taken: the request fails with `RateLimited`, which names `endpoint`.
+    fn respect_block(&self, endpoint: &str) -> Result<(), HostError> {
         let until = *self
             .blocked_until
             .lock()
@@ -566,7 +592,7 @@ impl Http {
         if wait > self.max_wait {
             return Err(HostError::RateLimited {
                 wait,
-                reason: "the host asked us to hold back".to_string(),
+                reason: format!("{endpoint}: the host asked us to hold back"),
             });
         }
         thread::sleep(wait);
@@ -712,6 +738,7 @@ pub fn unexpected(reply: &Reply) -> HostError {
         .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_string))
         .unwrap_or_else(|| reply.body.chars().take(MAX_BODY_CHARS).collect());
     HostError::Status {
+        endpoint: reply.endpoint.clone(),
         status: reply.status,
         message,
     }
@@ -719,15 +746,13 @@ pub fn unexpected(reply: &Reply) -> HostError {
 
 /// Parses a JSON reply body.
 pub fn parse_json(reply: &Reply) -> Result<Value, HostError> {
-    serde_json::from_str(&reply.body).map_err(|err| HostError::Parse(err.to_string()))
+    serde_json::from_str(&reply.body)
+        .map_err(|err| HostError::Parse(format!("{}: {err}", reply.endpoint)))
 }
 
 /// The message of a refusal (a 405, 406 or 409 from a merge), used as the block reason.
 pub fn refusal_reason(reply: &Reply) -> String {
-    match unexpected(reply) {
-        HostError::Status { status, message } => format!("HTTP {status}: {message}"),
-        other => other.to_string(),
-    }
+    unexpected(reply).to_string()
 }
 
 /// Classification of a TLS-level failure, for the startup self-test.
@@ -846,6 +871,7 @@ mod tests {
     #[test]
     fn only_no_answer_429_and_5xx_are_transient() {
         let status = |status| HostError::Status {
+            endpoint: "GET /x".into(),
             status,
             message: String::new(),
         };
@@ -897,6 +923,7 @@ mod tests {
         let refused: Result<(), HostError> = retry_read(|| {
             calls += 1;
             Err(HostError::Status {
+                endpoint: "GET /x".into(),
                 status: 404,
                 message: "gone".into(),
             })
@@ -974,13 +1001,19 @@ mod tests {
         let reply = Reply {
             status: 422,
             body: r#"{"message":"Validation Failed"}"#.into(),
+            endpoint: "POST /x".into(),
         };
         assert_eq!(
             unexpected(&reply),
             HostError::Status {
+                endpoint: "POST /x".into(),
                 status: 422,
                 message: "Validation Failed".into()
             }
+        );
+        assert_eq!(
+            unexpected(&reply).to_string(),
+            "POST /x: HTTP 422: Validation Failed"
         );
     }
 
