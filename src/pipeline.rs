@@ -12,6 +12,7 @@ use crate::events::{Event, Outcome};
 use crate::git::{GitContext, git};
 use crate::guards;
 use crate::hosts::{self, ChangeRequest, CiFailure, CrState, MergeOutcome};
+use crate::recipe::Recipe;
 use crate::report::{Failure, RepoResult};
 use crate::repos::Repo;
 use crate::run::{Ctx, artifacts, error_result, git_context, git_failure, probe};
@@ -62,6 +63,10 @@ fn process_repo_steps(ctx: &Ctx<'_>, repo: &Repo, agent_ran: &Cell<bool>) -> Rep
     let state = match ensure_cache(&git_ctx, &repo.clone_url, &cache) {
         Ok(state) => state,
         Err(err) => return remote_failure(ctx.layout, &git_ctx, repo, err, Some(pattern)),
+    };
+    let state = match resolve_base(ctx.recipe, &local, &cache, state) {
+        Ok(state) => state,
+        Err(message) => return error_result(ctx.layout, repo, message, Some(pattern), Vec::new()),
     };
 
     phase("checking");
@@ -979,6 +984,31 @@ fn failure_lines(result: &CommandResult, patterns: &[String], n: usize) -> Vec<S
         .collect();
     let chosen = if matching.is_empty() { lines } else { matching };
     chosen[chosen.len().saturating_sub(n)..].to_vec()
+}
+
+/// The base of the change: the recipe's `base` branch when it is set, else the default branch
+/// the cache found. The branch must exist in the cache, which fetches every branch.
+pub(crate) fn resolve_base(
+    recipe: &Recipe,
+    git_ctx: &GitContext<'_>,
+    cache: &Path,
+    state: crate::workspace::CacheState,
+) -> Result<crate::workspace::CacheState, String> {
+    let Some(base) = recipe.base.as_deref() else {
+        return Ok(state);
+    };
+    let refname = format!("refs/remotes/origin/{base}^{{commit}}");
+    match git(
+        git_ctx,
+        Some(cache),
+        &["rev-parse", "--verify", "--quiet", &refname],
+    ) {
+        Ok(sha) if !sha.trim().is_empty() => Ok(crate::workspace::CacheState {
+            default_branch: base.to_string(),
+            base_sha: sha.trim().to_string(),
+        }),
+        _ => Err(format!("base branch {base} does not exist on the remote")),
+    }
 }
 
 fn set_phase(ctx: &Ctx<'_>, repo: &Repo, phase: &str) {

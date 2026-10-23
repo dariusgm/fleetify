@@ -22,6 +22,14 @@
         "type": "string"
       }
     },
+    "base": {
+      "description": "The branch the change starts from and the pull request targets. Unset means the\nrepository's default branch.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
     "branch": {
       "description": "Branch created in each repo.",
       "type": "string"
@@ -173,10 +181,10 @@
           "default": null
         },
         "fix_rounds": {
-          "description": "How many times the agent gets the CI failure and tries to fix it, on the same branch.\n`0` disables the loop. Default 1.",
+          "description": "How many times the agent gets the CI failure and tries to fix it, on the same branch.\n`0` disables the loop. Default 5.",
           "type": "integer",
           "format": "uint32",
-          "default": 1,
+          "default": 5,
           "minimum": 0
         },
         "merge": {

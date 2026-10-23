@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 
 use super::{
     Access, ChangeRequest, CiFailure, CiItem, CiState, CrState, Host, HostError, Http, LogBudget,
-    MAX_CI_FAILURES, MergeOutcome, Reply, access_from_status, log_tail, parse_json, refusal_reason,
-    unexpected,
+    MAX_CI_FAILURES, MergeOutcome, Reply, access_from_status, failed_step_log, parse_json,
+    refusal_reason, unexpected,
 };
 use crate::credentials::Secret;
 use crate::events::EventBus;
@@ -312,6 +312,14 @@ impl Host for GitHub {
             for job in jobs.iter().filter(|job| is_failed(job)) {
                 let job_id = job["id"].as_u64().unwrap_or_default();
                 let job_name = job["name"].as_str().unwrap_or("job");
+                // The step that failed is the unit of the failure; post steps are not.
+                let step_name = job["steps"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|step| step["conclusion"].as_str() == Some("failure"))
+                    .and_then(|step| step["name"].as_str())
+                    .unwrap_or("job");
                 let log = self.http.send(
                     Method::GET,
                     &format!("/repos/{owner}/{name}/actions/jobs/{job_id}/logs"),
@@ -320,12 +328,12 @@ impl Host for GitHub {
                     None,
                 )?;
                 let log_tail = if log.status == 200 {
-                    log_tail(&log.body, budget)
+                    failed_step_log(&log.body, budget)
                 } else {
                     vec![format!("log not available: HTTP {}", log.status)]
                 };
                 failures.push(CiFailure {
-                    name: format!("{workflow} / {job_name}"),
+                    name: format!("{workflow} / {job_name} / {step_name}"),
                     log_tail,
                 });
                 if failures.len() >= MAX_CI_FAILURES {
