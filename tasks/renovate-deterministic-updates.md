@@ -1,6 +1,6 @@
 # Idea: deterministic dependency updates with Renovate
 
-**Status:** idea, not decided. The section in PLAN.md has the design; this file lists what must be settled first.
+**Status:** idea, not decided. This file lists what must be settled before any work; the design goes into docs/design/ once decided.
 
 **Idea.** Simple dependency updates are done by a deterministic bot (Renovate). The LLM comes in only when CI fails, through the CI-fix loop, which is bounded by `fix_rounds`.
 

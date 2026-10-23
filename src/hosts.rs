@@ -1,4 +1,4 @@
-//! Host layer: GitHub and GitLab over their REST APIs (PLAN.md, "Host layer").
+//! Host layer: GitHub and GitLab over their REST APIs (docs/design/host-layer.md, "Host layer").
 //! Everything host-specific sits behind [`Host`]. Tokens are passed per call and
 //! sent only in request headers, never in URLs. CI is not part of this trait.
 

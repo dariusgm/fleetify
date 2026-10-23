@@ -1,6 +1,6 @@
 # Open questions for the company environment
 
-These questions come from PLAN.md and decide the work rollout. Answer them before the company trial.
+These questions decide the work rollout. Answer them before the company trial.
 
 1. **Tokens and roles.** Which tokens exist on the company GitLab (fine-grained per repository, per group, per user), who manages them, and which role may push branches and create merge requests.
 2. **Protected branches.** Are `chore/*` branches protected?

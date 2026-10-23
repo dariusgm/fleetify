@@ -1,12 +1,36 @@
 # fleetify
 
-Run one change across many Git repositories. For each repository, an optional
-coding agent works in its own local clone. A fast verifier checks the result
-before anything leaves the machine. Then fleetify pushes a branch, opens a pull
-or merge request, waits for CI, and merges only if you enabled that explicitly.
+Run one change across many Git repositories. For each repository, an optional coding agent works in its own local clone. A fast verifier checks the result before anything leaves the machine. Then fleetify pushes a branch, opens a pull or merge request, waits for CI, and merges only if you enabled that explicitly.
 
-**Status:** early development. `PLAN.md` holds the design and milestones,
-`DECISIONS.md` the decisions taken along the way.
+**Status:** early development. This README is the entry point; the detail lives in `docs/`, `tasks/` and `DECISIONS.md`.
+
+## Where things stand
+
+Built and merged:
+
+- One recipe over many repositories on GitHub and GitLab, with Claude Code, opencode and Copilot CLI as agents.
+- Verifier and guards before the push; one commit per repository; pull or merge request; an explicit merge rule.
+- CI gate on the pushed commit. If the host started no CI, fleetify starts it (`workflow_dispatch` on GitHub, a pipeline on GitLab).
+- CI fix rounds: the agent gets the failed step's log and fixes the branch, bounded by `fix_rounds`.
+- Recipe base branch, a next-step hint for every unsuccessful repository, and `report.json`.
+
+Tested: unit and integration tests in `tests/`; real runs on GitHub and GitLab, listed in `E2E-MATRIX.md`; a trial on a public fork, see `DECISIONS.md`.
+
+Known limits: Windows is not verified yet, self-hosted GitLab has not run against a real instance, the real trial on company repositories has not started.
+
+## What is next
+
+The open work is one file per item in [`tasks/`](tasks/README.md). The first three:
+
+1. [Remove the config.toml layer](tasks/remove-config-layer.md): every setting moves into the recipe.
+2. [Bug: CI status requests during the wait](tasks/bug-ci-status-retry.md) and [host errors without an endpoint](tasks/bug-host-error-endpoint.md).
+3. [Real trial](tasks/m17-real-trial.md) on three to five private repositories, once the repositories and the task are given.
+
+## What can go
+
+- `PLAN.md`: dissolved. Its design is in `docs/design/`, its open items in `tasks/`.
+- Trial recipes in `~/.fleetify/recipes/` on the development machine. They are not part of the repository and reference repositories that no longer exist. Delete them when no one needs them.
+- Old test branches and pull requests on GitHub: removed with the `fleetify_clean` skill after each trial (`.claude/skills/fleetify_clean/`).
 
 ## Concepts
 
@@ -140,13 +164,17 @@ dispatch_after_s = 180   # 0 starts CI at once; unset means 180
 `fleetify schema` prints the JSON Schema of `recipe.toml`. The Python package
 in `authoring/` generates recipes against that schema.
 
-## Build
+## Documentation
 
-```sh
-cargo build --release
-./target/release/fleetify --help
-```
-
+- [`docs/design/`](docs/design/): the target design, one file per topic. Start with [principles](docs/design/principles.md) and [the four basic questions](docs/design/basic-questions.md).
+  - [Credentials](docs/design/credentials.md), [host layer](docs/design/host-layer.md), [agent layer](docs/design/agent-layer.md)
+  - [Verifier](docs/design/verifier.md), [CI gate](docs/design/ci-gate.md), [guards](docs/design/guards.md), [availability](docs/design/availability.md)
+  - [Run flow](docs/design/run-flow.md), [rollout](docs/design/rollout.md), [events and report](docs/design/events-and-report.md), [live view](docs/design/live-view.md)
+  - [CLI](docs/design/cli.md), [commands and OS](docs/design/commands-and-os.md), [security](docs/design/security.md), [testing](docs/design/testing.md), [non-goals](docs/design/non-goals.md)
+- [`docs/working-agreement.md`](docs/working-agreement.md): rules for working on fleetify, for people and agents.
+- [`tasks/`](tasks/README.md): open work and open discussions.
+- [`DECISIONS.md`](DECISIONS.md): what was decided along the way, with the trial records.
+- [`E2E-MATRIX.md`](E2E-MATRIX.md): every combination that ran for real.
 
 ## Origin and notice
 
@@ -159,6 +187,13 @@ cargo build --release
 > `fleetify` is an independent project. It is **not a product of Spotify**, is **not affiliated with, endorsed by, sponsored by or developed in collaboration with Spotify**, and uses no Spotify code. The name and design are inspired by Spotify's public engineering articles on its background coding agent, linked above. "Spotify" is a trademark of Spotify AB. All other product names (GitHub, GitLab, Claude Code, GitHub Copilot, opencode, SonarQube and others) are trademarks of their respective owners and are used for identification only.
 
 German version: `fleetify` ist ein eigenständiges Projekt. Es ist kein Produkt von Spotify, steht in keiner Verbindung zu Spotify, wird weder von Spotify unterstützt noch gefördert und ist keine Kollaboration mit Spotify. Es enthält keinen Spotify-Code. Name und Konzept sind von den öffentlichen Engineering-Artikeln von Spotify inspiriert, die oben verlinkt sind. "Spotify" ist eine Marke der Spotify AB. Alle anderen genannten Produktnamen sind Marken ihrer jeweiligen Inhaber und dienen nur der Bezeichnung.
+
+## Build
+
+```sh
+cargo build --release
+./target/release/fleetify --help
+```
 
 ## License
 

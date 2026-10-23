@@ -21,3 +21,8 @@
 **Done when.** `TRIAL.md` has the numbers per repository and a conclusion, and the open items the trial exposed are filed as tasks.
 
 **Reference.** A reference run on a public fork ended in `error` (HTTP 404 on the CI dispatch). Resolve that first or record it as a known limit, see `fork-ci-triggers.md` and `bug-host-error-endpoint.md`.
+
+## Decision after the trial
+
+If most repositories go through without intervention, extending fleetify is worth it. If the result is thin, improve the prompt and the verifier first. If it stays thin, Armada or the SonarQube Remediation Agent may reach the goal faster than building further. The numbers from `report.json` and the event logs are the basis for that decision; write the decision into DECISIONS.md.
+

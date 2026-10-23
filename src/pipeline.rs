@@ -1,4 +1,4 @@
-//! The no-agent pipeline for one repo (PLAN.md, "Run flow per repo", steps 3–9).
+//! The no-agent pipeline for one repo (docs/design/run-flow.md, "Run flow per repo", steps 3–9).
 //! Every failure ends the repo with a result and a failure block. Nothing is
 //! pushed unless the verifier and every guard passed.
 

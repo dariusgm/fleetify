@@ -13,4 +13,4 @@
 - **Report back.** One comment per issue with the result per repository.
 - **Jira** would be a second source adapter, only if the company works with Jira.
 
-**Done when.** The owner has decided on the points above, and the design is written into PLAN.md.
+**Done when.** The owner has decided on the points above, and the design is written into docs/design/.

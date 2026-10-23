@@ -1,4 +1,4 @@
-//! Cache clones and per-run workspaces (PLAN.md, "The four basic questions").
+//! Cache clones and per-run workspaces (docs/design/basic-questions.md, "The four basic questions").
 //!
 //! A cache clone lives under `clones/<host>/<path>` and always sits on the
 //! default branch. A workspace is a `git clone --local` of the cache, so it

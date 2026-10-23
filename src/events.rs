@@ -1,6 +1,6 @@
 //! Typed event stream. The orchestrator emits [`Event`]s into an [`EventBus`];
 //! renderers, the event log and the report consume them. Nothing shown to a
-//! user comes from anywhere else (PLAN.md, "Events, renderers and the report").
+//! user comes from anywhere else (docs/design/events-and-report.md, "Events, renderers and the report").
 
 use std::sync::{Arc, Mutex, mpsc};
 

@@ -42,7 +42,7 @@ impl Write for RedactingFile {
     }
 }
 
-/// Exit code used when the tool itself crashes (see PLAN.md, "Exit codes").
+/// Exit code used when the tool itself crashes (see docs/design/cli.md, "Exit codes").
 pub const EXIT_CRASH: u8 = 4;
 
 /// Writes JSON trace lines to `path`. `RUST_LOG` overrides the default level
