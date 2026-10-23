@@ -428,6 +428,10 @@ fn process_repo_steps(ctx: &Ctx<'_>, repo: &Repo, agent_ran: &Cell<bool>) -> Rep
     result
 }
 
+/// Reads of a failed commit's jobs before a fix round gives up on finding any.
+const FAILURE_READS: u32 = 3;
+const FAILURE_READ_WAIT: Duration = Duration::from_secs(20);
+
 /// How long the CI gate waits between two looks at a commit's CI items.
 const CI_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -1320,16 +1324,26 @@ fn gate_with_fixes(
         };
         set_phase(ctx, repo, "ci_fix");
         let budget = ctx.config.ci.log_budget();
-        let failures = match hosts::retry_read(|| client.ci_failures(repo, token, &sha, budget)) {
-            Ok(failures) => failures,
-            Err(err) => {
-                result.detail = format!(
-                    "{}; the CI logs could not be read, so no fix round ran: {err}",
-                    result.detail
-                );
-                return (result, sha);
+        // A check run can be complete while its workflow run is not yet: read again briefly.
+        let mut failures = Vec::new();
+        for attempt in 0..FAILURE_READS {
+            if attempt > 0 {
+                std::thread::sleep(FAILURE_READ_WAIT);
             }
-        };
+            match hosts::retry_read(|| client.ci_failures(repo, token, &sha, budget)) {
+                Ok(found) => failures = found,
+                Err(err) => {
+                    result.detail = format!(
+                        "{}; the CI logs could not be read, so no fix round ran: {err}",
+                        result.detail
+                    );
+                    return (result, sha);
+                }
+            }
+            if !failures.is_empty() {
+                break;
+            }
+        }
         ctx.runner.bus().emit(Event::CiFixRound {
             repo: repo.key(),
             round,
