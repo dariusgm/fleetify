@@ -139,6 +139,7 @@ impl Recorder {
             Event::HostRetry { .. } => {}
             Event::RateLimited { .. } => {}
             Event::CiDispatched { .. } => {}
+            Event::CiFixRound { .. } => {}
         }
     }
 

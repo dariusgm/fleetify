@@ -849,6 +849,10 @@ fn dry_run_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
             return crate::pipeline::remote_failure(ctx.layout, &git, repo, err, Some(pattern));
         }
     };
+    let state = match crate::pipeline::resolve_base(ctx.recipe, &git, &cache, state) {
+        Ok(state) => state,
+        Err(message) => return error_result(ctx.layout, repo, message, Some(pattern), Vec::new()),
+    };
 
     phase("checking");
     let facts = RepoFacts {

@@ -45,6 +45,10 @@ pub struct Recipe {
     pub name: String,
     /// Branch created in each repo.
     pub branch: String,
+    /// The branch the change starts from and the pull request targets. Unset means the
+    /// repository's default branch.
+    #[serde(default)]
+    pub base: Option<String>,
     /// Title of the pull or merge request.
     pub pr_title: String,
     /// Commit message. Defaults to `pr_title`.
@@ -238,6 +242,14 @@ pub struct Ci {
     /// as `ci_blocked`.
     #[serde(default)]
     pub dispatch_workflow: Option<String>,
+    /// How many times the agent gets the CI failure and tries to fix it, on the same branch.
+    /// `0` disables the loop. Default 5.
+    #[serde(default = "default_fix_rounds")]
+    pub fix_rounds: u32,
+}
+
+fn default_fix_rounds() -> u32 {
+    5
 }
 
 impl Default for Ci {
@@ -249,6 +261,7 @@ impl Default for Ci {
             merge: off(),
             validate: true,
             dispatch_workflow: None,
+            fix_rounds: default_fix_rounds(),
         }
     }
 }
@@ -454,6 +467,11 @@ impl Recipe {
                 "branch",
                 format!("{:?} is not a valid git branch name", self.branch),
             );
+        }
+        if let Some(base) = &self.base
+            && !is_valid_branch(base)
+        {
+            push("base", format!("{base:?} is not a valid git branch name"));
         }
         if self.pr_title.trim().is_empty() {
             push("pr_title", "must not be empty".into());

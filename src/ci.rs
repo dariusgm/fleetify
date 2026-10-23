@@ -24,7 +24,7 @@ pub enum Verdict {
     Missing,
 }
 
-/// Judges the items of one commit. A failure is final even while others still run.
+/// Judges the items of one commit. A failure is reported once nothing else is still running.
 pub fn evaluate(items: &[CiItem]) -> Verdict {
     if items.is_empty() {
         return Verdict::Missing;
@@ -110,7 +110,14 @@ pub fn poll(
                     (d.start)()?;
                     dispatched = true;
                 }
-                let done = !matches!(verdict, Verdict::Pending(_) | Verdict::Missing);
+                // A failure ends the wait only once nothing else runs: the logs of every failed
+                // job exist only when its workflow run has finished.
+                let running = items.iter().any(|item| item.state == CiState::Pending);
+                let done = match verdict {
+                    Verdict::Pending(_) | Verdict::Missing => false,
+                    Verdict::Failed(_) => !running,
+                    _ => true,
+                };
                 if done || started.elapsed() >= timeout {
                     return Ok(verdict);
                 }
@@ -389,5 +396,37 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, HostError::Unsupported(_)));
+    }
+
+    #[test]
+    fn poll_waits_for_the_running_items_after_a_failure() {
+        let reads = Cell::new(0);
+        let verdict = poll(
+            || {
+                reads.set(reads.get() + 1);
+                Ok(if reads.get() < 3 {
+                    vec![
+                        item("lint", CiState::Failure),
+                        item("test", CiState::Pending),
+                    ]
+                } else {
+                    vec![
+                        item("lint", CiState::Failure),
+                        item("test", CiState::Success),
+                    ]
+                })
+            },
+            |_, _, _| {},
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            None,
+        )
+        .unwrap();
+        assert_eq!(verdict, Verdict::Failed(vec!["lint".to_string()]));
+        assert_eq!(
+            reads.get(),
+            3,
+            "the failure is read only after the running item finished"
+        );
     }
 }

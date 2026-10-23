@@ -6,8 +6,9 @@ use reqwest::Method;
 use serde_json::{Value, json};
 
 use super::{
-    Access, ChangeRequest, CiItem, CiState, CrState, Host, HostError, Http, MergeOutcome, Reply,
-    access_from_status, parse_json, refusal_reason, unexpected,
+    Access, ChangeRequest, CiFailure, CiItem, CiState, CrState, Host, HostError, Http, LogBudget,
+    MAX_CI_FAILURES, MergeOutcome, Reply, access_from_status, failed_step_log, parse_json,
+    refusal_reason, unexpected,
 };
 use crate::credentials::Secret;
 use crate::events::EventBus;
@@ -29,16 +30,25 @@ impl GitHub {
     /// says how many exist. Pages stop at `MAX_PAGES`, so a host that keeps reporting more
     /// cannot make the poll loop forever.
     fn all_pages(&self, path: &str, token: &Secret, key: &str) -> Result<Vec<Value>, HostError> {
+        self.all_pages_with(path, &[], token, key)
+    }
+
+    /// Like `all_pages`, with extra query parameters on every page.
+    fn all_pages_with(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        token: &Secret,
+        key: &str,
+    ) -> Result<Vec<Value>, HostError> {
         let mut items = Vec::new();
         for page in 1..=MAX_PAGES {
             let page_text = page.to_string();
-            let reply = self.http.send(
-                Method::GET,
-                path,
-                &headers(token),
-                &[("per_page", "100"), ("page", &page_text)],
-                None,
-            )?;
+            let mut params = vec![("per_page", "100"), ("page", page_text.as_str())];
+            params.extend_from_slice(query);
+            let reply = self
+                .http
+                .send(Method::GET, path, &headers(token), &params, None)?;
             if reply.status != 200 {
                 return Err(unexpected(&reply));
             }
@@ -73,6 +83,11 @@ fn headers(token: &Secret) -> Vec<(&'static str, String)> {
 
 /// A check run's state. Completed with success, neutral or skipped counts as success;
 /// anything else that completed is a failure; anything not completed is pending.
+/// A GitHub run or job that ended in a failure (a timeout counts as one).
+fn is_failed(item: &Value) -> bool {
+    matches!(item["conclusion"].as_str(), Some("failure" | "timed_out"))
+}
+
 fn check_run_state(run: &Value) -> CiState {
     if run["status"].as_str() != Some("completed") {
         return CiState::Pending;
@@ -266,6 +281,67 @@ impl Host for GitHub {
             204 => Ok(()),
             _ => Err(unexpected(&reply)),
         }
+    }
+
+    fn ci_failures(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        sha: &str,
+        budget: LogBudget,
+    ) -> Result<Vec<CiFailure>, HostError> {
+        let (owner, name) = owner_and_name(repo)?;
+        // Every workflow run of this commit; reusable workflows show up as jobs of their caller.
+        let runs = self.all_pages_with(
+            &format!("/repos/{owner}/{name}/actions/runs"),
+            &[("head_sha", sha)],
+            token,
+            "workflow_runs",
+        )?;
+        let mut failures = Vec::new();
+        for run in runs.iter().filter(|run| is_failed(run)) {
+            let run_id = run["id"].as_u64().unwrap_or_default();
+            let workflow = run["name"].as_str().unwrap_or("workflow");
+            let mut jobs = self.all_pages(
+                &format!("/repos/{owner}/{name}/actions/runs/{run_id}/jobs"),
+                token,
+                "jobs",
+            )?;
+            // The first job that failed is the likely cause; the ones after it may only follow from it.
+            jobs.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
+            for job in jobs.iter().filter(|job| is_failed(job)) {
+                let job_id = job["id"].as_u64().unwrap_or_default();
+                let job_name = job["name"].as_str().unwrap_or("job");
+                // The step that failed is the unit of the failure; post steps are not.
+                let step_name = job["steps"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|step| step["conclusion"].as_str() == Some("failure"))
+                    .and_then(|step| step["name"].as_str())
+                    .unwrap_or("job");
+                let log = self.http.send(
+                    Method::GET,
+                    &format!("/repos/{owner}/{name}/actions/jobs/{job_id}/logs"),
+                    &headers(token),
+                    &[],
+                    None,
+                )?;
+                let log_tail = if log.status == 200 {
+                    failed_step_log(&log.body, budget)
+                } else {
+                    vec![format!("log not available: HTTP {}", log.status)]
+                };
+                failures.push(CiFailure {
+                    name: format!("{workflow} / {job_name} / {step_name}"),
+                    log_tail,
+                });
+                if failures.len() >= MAX_CI_FAILURES {
+                    return Ok(failures);
+                }
+            }
+        }
+        Ok(failures)
     }
 
     fn commit_ci(&self, repo: &Repo, token: &Secret, sha: &str) -> Result<Vec<CiItem>, HostError> {

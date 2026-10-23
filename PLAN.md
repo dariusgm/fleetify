@@ -586,6 +586,8 @@ Each milestone is one branch and ends with its acceptance criteria green on the 
 - **Open (GitHub forks):** push and pull request events do not start workflows on the fork; `workflow_dispatch` works. Cause not known. Fleetify starts CI itself after the wait (`[ci] dispatch_after_s`).
 - **Open questions from the plan, work-related:** tokens and roles on the company GitLab, Copilot login at work, Jenkins as the company CI, `pwsh` on the work machines, name checks on PyPI and npm, binary signing on the work machine.
 
+**Remove the config.toml layer (decided 2026-10-23, next).** Every behaviour setting moves into the recipe, and built-in defaults apply where the recipe is silent. `credentials.toml` stays the only separate file. Affected today: `[ci]` (`dispatch_after_s`, `log_lines`, `log_chars`), `[agents.<name>] model`, `rate_limit`, `policy`, `permissions`, `merge_policy`, `branch_prefix`, and the hosts list. Open points for that item: which of these need a host-level place at all (the host list must stay somewhere, for example in the recipe's `applies_to`), and how `permissions` grants reach the recipe without a second file.
+
 **Windows Support (new, runs on the company laptop or a Windows VM).** Everything that needs Windows is collected here, because it cannot run on the Linux machine:
 
 - The manual check of the live view in Windows Terminal (M13).
@@ -630,6 +632,8 @@ Acceptance: the Windows checks above pass on the company laptop, and the results
 If most repos go through without intervention, extending is worth it. If the result is thin, improve prompt and verifier first. If it stays thin, Armada or the SonarQube Remediation Agent may reach the goal faster than building further. The numbers from `report.json` and the event logs are the basis.
 
 ## Stage 2: the CI-fix loop
+
+**Status (2026-10-22): implemented on `feat/ci-feedback-loop`.** Host layer for GitHub and GitLab, nested pipelines, the fix round, `[ci] fix_rounds`, `[ci] log_lines` and `log_chars`, the `ci_fix_round` output. Open: a live run on a real failing check.
 
 Scope is the CI-fix loop only. Stage 1 ends a repo at `ci_failed` and the user acts on the report. Stage 2 gives the agent the failure and lets it try again, within fixed limits.
 

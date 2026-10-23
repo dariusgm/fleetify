@@ -7,8 +7,9 @@ use reqwest::Method;
 use serde_json::{Value, json};
 
 use super::{
-    Access, ChangeRequest, CiItem, CiState, CrState, Host, HostError, Http, MergeOutcome, Reply,
-    access_from_status, parse_json, refusal_reason, unexpected,
+    Access, ChangeRequest, CiFailure, CiItem, CiState, CrState, Host, HostError, Http, LogBudget,
+    MAX_CI_FAILURES, MergeOutcome, Reply, access_from_status, log_tail, parse_json, refusal_reason,
+    unexpected,
 };
 use crate::credentials::Secret;
 use crate::events::EventBus;
@@ -66,6 +67,92 @@ fn pipeline_state(status: &str) -> Option<CiState> {
         "manual" => Some(CiState::Blocked),
         // Unknown statuses are treated as pending, the same as running ones.
         _ => Some(CiState::Pending),
+    }
+}
+
+/// Child pipelines nest at most this deep; a deeper tree is cut, not followed.
+const MAX_PIPELINE_DEPTH: u32 = 5;
+
+impl GitLab {
+    /// The failed jobs of one pipeline, then those of the child pipelines it triggered.
+    /// Trigger jobs are skipped: their own log says nothing about the cause.
+    fn collect_failures(
+        &self,
+        project: &str,
+        token: &Secret,
+        pipeline: u64,
+        budget: LogBudget,
+        depth: u32,
+        out: &mut Vec<CiFailure>,
+    ) -> Result<(), HostError> {
+        if depth > MAX_PIPELINE_DEPTH || out.len() >= MAX_CI_FAILURES {
+            return Ok(());
+        }
+        let bridges = self.list(
+            &format!("/projects/{project}/pipelines/{pipeline}/bridges"),
+            token,
+        )?;
+        let trigger_ids: Vec<u64> = bridges.iter().filter_map(|b| b["id"].as_u64()).collect();
+        let mut jobs = self.list(
+            &format!("/projects/{project}/pipelines/{pipeline}/jobs"),
+            token,
+        )?;
+        // The earliest start is the likeliest cause; jobs that never started come last.
+        jobs.sort_by(|a, b| {
+            (a["started_at"].is_null(), a["started_at"].as_str())
+                .cmp(&(b["started_at"].is_null(), b["started_at"].as_str()))
+        });
+        for job in &jobs {
+            let job_id = job["id"].as_u64().unwrap_or_default();
+            let failed = job["status"].as_str() == Some("failed")
+                && job["allow_failure"].as_bool() != Some(true);
+            if !failed || trigger_ids.contains(&job_id) {
+                continue;
+            }
+            let reply = self.http.send(
+                Method::GET,
+                &format!("/projects/{project}/jobs/{job_id}/trace"),
+                &headers(token),
+                &[],
+                None,
+            )?;
+            let log_tail = if reply.status == 200 {
+                log_tail(&reply.body, budget)
+            } else {
+                vec![format!("log not available: HTTP {}", reply.status)]
+            };
+            out.push(CiFailure {
+                name: job["name"].as_str().unwrap_or("job").to_string(),
+                log_tail,
+            });
+            if out.len() >= MAX_CI_FAILURES {
+                return Ok(());
+            }
+        }
+        for bridge in &bridges {
+            if let Some(child) = bridge["downstream_pipeline"]["id"].as_u64() {
+                self.collect_failures(project, token, child, budget, depth + 1, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One GET that answers with a JSON array.
+    fn list(&self, path: &str, token: &Secret) -> Result<Vec<Value>, HostError> {
+        let reply = self.http.send(
+            Method::GET,
+            path,
+            &headers(token),
+            &[("per_page", "100")],
+            None,
+        )?;
+        if reply.status != 200 {
+            return Err(unexpected(&reply));
+        }
+        parse_json(&reply)?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| HostError::Parse(format!("{path} is not an array")))
     }
 }
 
@@ -207,6 +294,36 @@ impl Host for GitLab {
             201 => Ok(()),
             _ => Err(unexpected(&reply)),
         }
+    }
+
+    fn ci_failures(
+        &self,
+        repo: &Repo,
+        token: &Secret,
+        sha: &str,
+        budget: LogBudget,
+    ) -> Result<Vec<CiFailure>, HostError> {
+        let project = project_id(&repo.path);
+        let reply = self.http.send(
+            Method::GET,
+            &format!("/projects/{project}/pipelines"),
+            &headers(token),
+            &[("sha", sha), ("per_page", "100")],
+            None,
+        )?;
+        if reply.status != 200 {
+            return Err(unexpected(&reply));
+        }
+        let pipelines = parse_json(&reply)?;
+        let mut failures = Vec::new();
+        for pipeline in pipelines.as_array().into_iter().flatten() {
+            let Some(id) = pipeline["id"].as_u64() else {
+                continue;
+            };
+            self.collect_failures(&project, token, id, budget, 0, &mut failures)?;
+        }
+        failures.truncate(MAX_CI_FAILURES);
+        Ok(failures)
     }
 
     fn commit_ci(&self, repo: &Repo, token: &Secret, sha: &str) -> Result<Vec<CiItem>, HostError> {

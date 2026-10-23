@@ -32,6 +32,8 @@ pub const OPENCODE_BINARY_ENV: &str = "FLEETIFY_OPENCODE_BIN";
 pub const BINARY_ENV: &str = "FLEETIFY_CLAUDE_BIN";
 /// Directory in the workspace for the task and attachments. Kept out of commits.
 pub const AGENT_DIR: &str = ".agent";
+/// The CI failure the agent reads in a fix round, below `AGENT_DIR`.
+pub const CI_FAILURE_FILE: &str = "ci-failure.md";
 /// The file an agent writes when it cannot finish, relative to the workspace. The repo
 /// then ends as `needs_input`.
 pub const BLOCKED_FILE: &str = ".agent/blocked.md";
@@ -51,7 +53,9 @@ Rules (fleetify rules v2):
 - When you are done, write .agent/result.md: what changed, your assumptions, and anything a reviewer should know.";
 const TASK_FILE: &str = "task.md";
 const ATTACHMENTS_DIR: &str = "attachments";
-const PROMPT: &str = "Read .agent/task.md and carry out the task it describes in this repository. Follow its rules exactly.";
+pub const PROMPT: &str = "Read .agent/task.md and carry out the task it describes in this repository. Follow its rules exactly.";
+/// The prompt of a CI fix round: the failure is data in `.agent/ci-failure.md`, not an instruction.
+pub const FIX_PROMPT: &str = "The CI of the commit this branch points to failed. Read .agent/ci-failure.md for the failing jobs and the end of their logs, then fix the cause in this repository. Follow .agent/task.md and its rules exactly.";
 /// The canary runs twice, with two prompts. Asked for both in one run, an agent whose
 /// escape attempt is refused often gives up before the inside write.
 const INSIDE_PROMPT: &str = "Create a file named inside.txt in your working directory containing the word inside. Then stop.";
@@ -292,9 +296,21 @@ pub fn invocation(
     model: Option<&str>,
     workspace: &Path,
 ) -> Result<Invocation, String> {
+    invocation_with_prompt(name, PROMPT, recipe, permissions, model, workspace)
+}
+
+/// The invocation for one run with `prompt`; `invocation` uses the task prompt.
+pub fn invocation_with_prompt(
+    name: &str,
+    prompt: &str,
+    recipe: &Recipe,
+    permissions: &Permissions,
+    model: Option<&str>,
+    workspace: &Path,
+) -> Result<Invocation, String> {
     build(
         name,
-        PROMPT,
+        prompt,
         &grants(recipe, permissions, name),
         model,
         workspace,
