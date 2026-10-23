@@ -696,3 +696,24 @@ fn a_check_run_that_needs_action_is_blocked_not_failed() {
         .unwrap();
     assert_eq!(items[0].state, CiState::Blocked);
 }
+
+#[test]
+fn a_transport_error_names_the_cause_below_the_request_error() {
+    // Nothing listens on the port once the listener is dropped, so the connect is refused.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let http = fleetify::hosts::Http::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let Err(err) = http.send(reqwest::Method::GET, "/", &[], &[], None) else {
+        panic!("a closed port answers");
+    };
+    let HostError::Transport(message) = err else {
+        panic!("a refused connect is a transport error");
+    };
+    assert!(
+        message.contains("refused"),
+        "the cause is missing: {message}"
+    );
+}

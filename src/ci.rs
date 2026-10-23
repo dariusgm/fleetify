@@ -74,7 +74,7 @@ pub struct Dispatch<'a> {
 /// `fetch` must answer for that commit only.
 ///
 /// A transient failure (no answer, 5xx, 429) is retried with back-off and reported through
-/// `on_retry`. If the budget runs out while the host still fails, the last error is returned
+/// `on_retry`, with the number of this retry in the wait. If the budget runs out while the host still fails, the last error is returned
 /// and the caller maps it to `host_unreachable`. Any other error is returned at once. A
 /// timeout while items are still pending returns `Pending`; the caller maps that to
 /// `ci_timeout`. A poll never returns a verdict built from a failed read.
@@ -89,7 +89,9 @@ pub fn poll(
     mut dispatch: Option<Dispatch<'_>>,
 ) -> Result<Verdict, HostError> {
     let started = Instant::now();
-    let mut attempt = 0;
+    // Failures in a row set the back-off; `retries` counts every retry of this wait.
+    let mut failures = 0;
+    let mut retries = 0;
     let mut dispatched = false;
     if let Some(d) = dispatch.as_mut()
         && d.after.is_zero()
@@ -100,7 +102,7 @@ pub fn poll(
     loop {
         match fetch() {
             Ok(items) => {
-                attempt = 0;
+                failures = 0;
                 let verdict = evaluate(&items);
                 if matches!(verdict, Verdict::Missing)
                     && !dispatched
@@ -124,12 +126,13 @@ pub fn poll(
                 thread::sleep(interval);
             }
             Err(err) if err.is_transient() => {
-                attempt += 1;
-                let delay = backoff(interval, attempt);
+                failures += 1;
+                retries += 1;
+                let delay = backoff(interval, failures);
                 if started.elapsed().saturating_add(delay) >= timeout {
                     return Err(err);
                 }
-                on_retry(&err, attempt, delay);
+                on_retry(&err, retries, delay);
                 thread::sleep(delay);
             }
             Err(err) => return Err(err),
@@ -140,7 +143,7 @@ pub fn poll(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     fn item(name: &str, state: CiState) -> CiItem {
         CiItem {
@@ -268,6 +271,34 @@ mod tests {
         assert_eq!(verdict, Verdict::Passed);
         assert_eq!(calls.get(), 3);
         assert_eq!(retries.get(), 2);
+    }
+
+    #[test]
+    fn retries_keep_counting_when_a_read_succeeds_in_between() {
+        let calls = Cell::new(0);
+        let retries = RefCell::new(Vec::new());
+        let verdict = poll(
+            || {
+                calls.set(calls.get() + 1);
+                match calls.get() {
+                    1 | 3 | 5 => Err(HostError::Transport("connection reset".into())),
+                    2 | 4 => Ok(vec![item("test", CiState::Pending)]),
+                    _ => Ok(vec![item("test", CiState::Success)]),
+                }
+            },
+            |_, attempt, delay| retries.borrow_mut().push((attempt, delay)),
+            Duration::from_secs(5),
+            Duration::from_millis(1),
+            None,
+        )
+        .unwrap();
+        assert_eq!(verdict, Verdict::Passed);
+        let interval = Duration::from_millis(1);
+        assert_eq!(
+            *retries.borrow(),
+            vec![(1, interval), (2, interval), (3, interval)],
+            "the count runs over the whole wait; the back-off restarts after a good read"
+        );
     }
 
     #[test]

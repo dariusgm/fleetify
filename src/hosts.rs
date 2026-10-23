@@ -414,6 +414,19 @@ pub fn retry_read<T>(mut read: impl FnMut() -> Result<T, HostError>) -> Result<T
     }
 }
 
+/// The text of a request error with its causes. reqwest's own text only says that the request
+/// failed; the refused connect, DNS or TLS failure sits below it.
+fn transport_message(err: &reqwest::Error) -> String {
+    let mut message = err.to_string();
+    let mut cause = std::error::Error::source(err);
+    while let Some(source) = cause {
+        message.push_str(": ");
+        message.push_str(&source.to_string());
+        cause = source.source();
+    }
+    message
+}
+
 /// A shared HTTP client with one API base. All repos of one host share one client, so a
 /// rate limit that one repo hits also holds back the others on that host.
 pub struct Http {
@@ -453,7 +466,7 @@ impl Http {
             .user_agent(concat!("fleetify/", env!("CARGO_PKG_VERSION")))
             .timeout(API_TIMEOUT)
             .build()
-            .map_err(|err| HostError::Transport(err.to_string()))?;
+            .map_err(|err| HostError::Transport(transport_message(&err)))?;
         Ok(Http {
             client,
             base,
@@ -519,12 +532,12 @@ impl Http {
         }
         let response = request
             .send()
-            .map_err(|err| HostError::Transport(err.to_string()))?;
+            .map_err(|err| HostError::Transport(transport_message(&err)))?;
         let status = response.status().as_u16();
         let response_headers = response.headers().clone();
         let body = response
             .text()
-            .map_err(|err| HostError::Transport(err.to_string()))?;
+            .map_err(|err| HostError::Transport(transport_message(&err)))?;
         let now = unix_now();
         if let Some(limit) = rate_limit(status, &response_headers, &body, now) {
             return Ok(limit);
