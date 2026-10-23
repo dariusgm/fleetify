@@ -1,9 +1,10 @@
 """A small TOML writer for recipe.toml.
 
-It writes the subset recipes use: strings, booleans, integers, arrays of those, tables
-and arrays of tables. Output is deterministic: fields in declaration order, one blank line
-before each table header, strings with a backslash in single quotes (TOML literal strings,
-so a regex such as ``\\s`` needs no escaping).
+It writes the subset recipes use: strings, booleans, integers, arrays of those, tables,
+arrays of tables, and tables keyed by name (``[hosts."name"]``). Output is deterministic:
+fields in declaration order, one blank line before each table header, strings with a
+backslash in single quotes (TOML literal strings, so a regex such as ``\\s`` needs no
+escaping).
 """
 
 from __future__ import annotations
@@ -46,6 +47,17 @@ def _is_table_list(value: Any) -> bool:
     return isinstance(value, (list, tuple)) and bool(value) and all(_is_table(v) for v in value)
 
 
+def _is_keyed_tables(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value) and all(_is_table(v) for v in value.values())
+
+
+def _key(name: str) -> str:
+    """A table key as TOML writes it: bare when it can be, quoted otherwise."""
+    if name and all(c.isascii() and (c.isalnum() or c in "_-") for c in name):
+        return name
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _fields(obj: Any) -> list[tuple[str, Any]]:
     """Declared fields, without the ones that are unset (None) or empty lists."""
     out = []
@@ -53,7 +65,7 @@ def _fields(obj: Any) -> list[tuple[str, Any]]:
         value = getattr(obj, field.name)
         if value is None:
             continue
-        if isinstance(value, (list, tuple)) and not value:
+        if isinstance(value, (list, tuple, dict)) and not value:
             continue
         out.append((field.name, value))
     return out
@@ -74,6 +86,9 @@ def _body(obj: Any) -> list[str]:
             tables.append((key, value, False))
         elif _is_table_list(value):
             tables.append((key, value, True))
+        elif _is_keyed_tables(value):
+            for name, item in value.items():
+                tables.append((f"{key}.{_key(name)}", item, False))
         else:
             scalars.append(f"{key} = {_value(value)}")
     lines = scalars
