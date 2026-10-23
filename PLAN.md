@@ -167,32 +167,10 @@ idle_warn_min = 10
 
 ## Configuration and credentials
 
-Two files, strictly separated:
+Credentials live in `~/.config/fleetify/credentials.toml`, owner-only, next to the configuration file. Behaviour settings are moving into the recipe (see Open work); until that is done, `config.toml` next to it still holds the hosts and permissions.
 
 ```toml
-# ~/.fleetify/config.toml  (no secrets)
-workdir = "~/.fleetify"
-
-[hosts."github.com"]
-type = "github"
-
-[hosts."gitlab.example.com"]
-type = "gitlab"
-
-[policy]
-require_checked_agent = false   # true: refuse agents without a passing check-agent result
-
-[permissions]                       # granted to every agent, on top of the built-in baseline
-commands = []                       # e.g. ["uv run pytest"]; each entry widens what the agent may run
-web = false
-extra_directories = []              # directories besides the workspace
-
-[permissions.agent.opencode]        # additions for one agent
-unrestricted = false                # true = the adapter uses the CLI's blanket "allow everything" options; at your own risk
-```
-
-```toml
-# ~/.fleetify/credentials.toml  (secrets, owner-only permissions)
+# ~/.config/fleetify/credentials.toml  (secrets, owner-only permissions)
 # First matching rule wins. Put more specific rules first.
 [[credential]]
 match = "gitlab.example.com/team-a/project-x"   # single repo (fine-grained token)
@@ -512,7 +490,7 @@ Nothing a renderer shows comes from anywhere but the event stream, so the live v
 - `q` or Ctrl-C behaves like Ctrl-C in plain mode. Respect `NO_COLOR`. On any terminal error it falls back to the plain renderer without losing events.
 - Deliberately not in scope: scrolling through logs, switching views, editing anything. `fleetify logs` and the report cover that.
 
-## CLI (stage 1)
+## CLI
 
 ```
 fleetify run <recipe-dir> repos.txt [--dry-run] [--only a,b] [--parallel 3] [--run NAME]
@@ -556,95 +534,36 @@ Invariants every E2E level asserts: no push when a gate failed; failed, missing 
 
 Company repos probably must only be processed with the agent approved there (Copilot). That needs clearing with compliance and is not a detail of the tool.
 
-## Stage 1: implementation
+## Open work (2026-10-23)
 
-Each milestone is one branch and ends with its acceptance criteria green on the Windows + Linux CI matrix. "Depends on" lists hard prerequisites; milestones without a dependency between them may be done in any order or in parallel. `[ASK]` marks a milestone where Claude Code asks before running anything against real repos, real agents or a merge.
+Built and merged work is not listed here; DECISIONS.md has the history.
 
-**Status (2026-10-22, merged into `main` up to PR #27; details in DECISIONS.md).**
+**Next: remove the config.toml layer (decided 2026-10-23).** Every behaviour setting moves into the recipe, and built-in defaults apply where the recipe is silent. `credentials.toml` stays the only separate file. Affected today: `[ci]` (`dispatch_after_s`, `log_lines`, `log_chars`), `[agents.<name>] model`, `rate_limit`, `policy`, `permissions`, `merge_policy`, `branch_prefix` and the hosts list. Open points: where the host list goes (the recipe's `applies_to` is one option), and how `permissions` grants reach a recipe without a second file.
 
-| Milestone | Status | Open |
-|---|---|---|
-| M9 agent runner | done | — |
-| M10 opencode and check-agent | done; level-3 smoke test passed with opencode and OpenAI `gpt-5-nano` (PR #1, and PR #3 after the prompt change); llama.cpp variant covered by the e2e matrix (run 10220552) | the wrapper finding is fixed by the prompt change |
-| M11 CI gate and merge | done for GitHub and GitLab; paging and `ci_blocked` done | — |
-| M11a outage handling | done for hosts, CI, merge, push, rate limits, reads, cache fetch/clone, `Retry-After` dates, agent wait ceiling and `api_limit` | reset time from agent messages is carried as printed, not parsed; rate-limit phrases not checked against real CLIs (only the credits sentence was observed); push-divergence test needs a race; agent silence ceiling can end a slow local model that is silent after a limit line as its last output |
-| M12 Python authoring package | done in `authoring/` (writer, dataclasses, schema check, byte-for-byte example) | postponed until the core is stable; not published to an index |
-| M13 live view | done on Linux | the Windows Terminal check moves to Windows Support |
-| M14 Claude Code adapter | done for the smoke test on GitHub (PR #1) | full lint test with the complete gate chain; observed rate-limit behaviour |
-| M15a Copilot CLI adapter (private) | done; live canary and level-5 run on a throwaway GitLab project (MR !1, pipeline green) | — |
-| M15b Self-hosted GitLab (work) | done (closed) | tests on self-hosted GitLab run on the company laptop from now on, see Windows Support |
-| M16 LLM judge | postponed | `[judge]` removed from the recipe format; comes back only if the trial needs it |
-| M17 real trial | not started; reference run on the public fork `dariusgm/VoiceStudio` ran to the CI step and ended in `error` (HTTP 404 on the CI dispatch, cause open) | `[ASK]`, three to five repos from the user; the reference run is the first step |
+**Stage 1, still open:**
 
-**Stage 1 — what is still open (2026-10-22).** Nothing in this list blocks stage 2 except the bugs marked *bug*.
+- **M14:** the full level-5 lint test with the complete gate chain, and the documented rate-limit behaviour of Claude Code.
+- **M11a:** reset times from agent messages are carried as printed, not parsed; rate-limit phrases are not checked against the real CLIs; the push-divergence test needs a race; the agent silence ceiling can end a slow local model.
+- **M17, real trial:** `[ASK]`, needs the repositories and the task from the user. The reference run on a public fork ended in `error` (HTTP 404 on the CI dispatch, cause open).
+- **Bug, CI status:** the status request fails with "cannot reach the host" during the wait, and the retry counter stays at `attempt: 1`.
+- **Bug, host errors:** an error such as `HTTP 404: Not Found` does not name the endpoint.
+- **Open, GitHub forks:** push and pull request events start no workflows on a fork; `workflow_dispatch` works. The cause is not known; fleetify starts CI itself after the wait.
+- **Postponed:** M12 (publishing the authoring package, until the core is stable), M16 (LLM judge, only if the trial needs it).
+- **Model selection:** which default models the recipes and examples use is left to the user. Anthropic models through opencode need their own token and a decision first.
 
-- **M14:** the full level-5 lint test with the complete gate chain, and documentation of Claude Code's observed rate-limit behaviour.
-- **M11a:** reset time from agent messages is carried as printed, not parsed; rate-limit phrases are not checked against the real CLIs; the push-divergence test needs a race; the agent silence ceiling can end a slow local model.
-- **M17:** the real trial, after the reference run passes CI.
-- **Bug (CI status):** the CI status request fails with "cannot reach the host" during the wait, and the retry counter stays at `attempt: 1`. The transport error chain is not printed.
-- **Bug (host errors):** an error such as `HTTP 404: Not Found` does not name the endpoint. Host errors should name it.
-- **Open (GitHub forks):** push and pull request events do not start workflows on the fork; `workflow_dispatch` works. Cause not known. Fleetify starts CI itself after the wait (`[ci] dispatch_after_s`).
-- **Open questions from the plan, work-related:** tokens and roles on the company GitLab, Copilot login at work, Jenkins as the company CI, `pwsh` on the work machines, name checks on PyPI and npm, binary signing on the work machine.
-
-**Remove the config.toml layer (decided 2026-10-23, next).** Every behaviour setting moves into the recipe, and built-in defaults apply where the recipe is silent. `credentials.toml` stays the only separate file. Affected today: `[ci]` (`dispatch_after_s`, `log_lines`, `log_chars`), `[agents.<name>] model`, `rate_limit`, `policy`, `permissions`, `merge_policy`, `branch_prefix`, and the hosts list. Open points for that item: which of these need a host-level place at all (the host list must stay somewhere, for example in the recipe's `applies_to`), and how `permissions` grants reach the recipe without a second file.
-
-**Windows Support (new, runs on the company laptop or a Windows VM).** Everything that needs Windows is collected here, because it cannot run on the Linux machine:
+**Windows Support (runs on the company laptop or a Windows VM).** Everything that needs Windows, because it cannot run on the Linux machine:
 
 - The manual check of the live view in Windows Terminal (M13).
-- The Windows checks of each stage-1 milestone: acceptance on Windows as well as Linux (the acceptance rule in the working agreement), `git clone --local` with hard links on NTFS (open question 9), long paths and the 260-character limit, `pwsh` verifier scripts, process-tree termination on Windows.
+- The Windows checks of each stage-1 milestone, as the acceptance rule in the working agreement requires: `git clone --local` with hard links on NTFS (open question 9), long paths and the 260-character limit, `pwsh` verifier scripts, process-tree termination.
 - The Windows CI matrix again, once the Windows tests are green.
-- Windows system locations for config and data (see Todo).
+- Windows system locations for configuration and data.
 - The self-hosted GitLab test (M15b) on the company laptop, including the internal CA through the Windows certificate store and `HTTPS_PROXY`.
 
 Acceptance: the Windows checks above pass on the company laptop, and the results go into DECISIONS.md.
 
-**Stories:** model selection per agent run is implemented (PR #22; open points in DECISIONS.md). Tasks from issues stays an idea.
-
-**Known limits on the live run:** Copilot shell grants match the executable only (a command grants its first word); the Copilot web grant is `--allow-all-urls`.
-
-**M9 — Agent runner with fake agents.** Depends on M7. `Agent` trait, `Permissions` model, baseline + config grants + `needs` check, effective-permissions printing and `permissions_effective` event, `task.md` assembly (rules block, instructions, attachments, verifier command), `.agent/tools` copy, agent start with allowlisted environment and stdin closed, output streaming into the event stream, `wants_input()` polling, idle event, agent timeout, `blocked.md`/`result.md` handling, normalising agent-made commits, results `needs_input`, `blocked`, `agent_timeout` with `failure` blocks; the `fake` adapter driven by scripts. *Acceptance:* fake agents (apply a patch, hang, ask a question, crash, write `blocked.md`, forbidden change, commit by itself, write outside the workspace) each produce the specified result and failure block; a hanging fake agent is terminated with its children on both OS; a recipe whose `needs` exceed the effective permissions is refused before starting (exit 3) with the config entry named; the agent process environment contains only the allowlist.
-
-**M10 — opencode adapter and `check-agent`.** Depends on M9. Check opencode's current docs for the non-interactive invocation and permission options before writing the adapter; map `Permissions` to them and report `unsupported` entries; `env()` allowlist for opencode's config; `judge_command()`; `check-agent` with canary file, per-version cache, `require_checked_agent`, `--allow-unchecked-agent`. *Acceptance:* the adapter builds its command with the baseline grant and `--dry-run` shows the effective permissions and gaps; `fleetify check-agent opencode` passes (or the gap is documented and `unrestricted = true` is required for the smoke test); `[ASK]` level-3 smoke test with opencode and llama.cpp on a throwaway GitHub repo runs through and the invariants hold whether or not the local model solves the task.
-
-**M11 — CI layer, CI gate and merge.** Depends on M6, M7 (can run in parallel with M9–M10). `CiProvider`, `ci/gitlab_ci.rs`, the gate as a separate `tokio` task, failure details into events and report, results `ci_passed`, `ci_failed`, `ci_missing`, `ci_blocked`, `ci_timeout`, resume at the CI gate, two-key merge with the expected-head guard, `merged` and `merge_blocked`, validation error for `wait = true` on GitHub. *Acceptance:* every scenario under "Tests for the CI layer" produces the specified result against the fake GitLab API and the matching `failure` block; failed, missing or blocked CI never leads to a merge; a merge happens only with both keys and a matching head; `[ASK]` one real run against the private gitlab.com project with a trivial pipeline ends as `ci_passed`, and one with `--merge` on a throwaway branch ends as `merged`.
-
-**M11a — Outage handling.** Depends on M11. Retry with back-off for host and CI reads (rule 1), no verdict from partial reads (rule 2), `host_unreachable` with its failure block (rule 3), `host_retry` events, merge check before merging and retry-safe push check (rules 5 and 7), and the resume behaviour of rule 4. *Acceptance:* every test listed under "Availability: outages of hosts and CI" and under "Rate limits (extension of M11a)" passes against the fake host and fake CI server on both OS; a `host_unreachable` result carries a non-empty `failure` block; a `rate_limited` result carries the reset time; no test sends a second push or a second change request. Must be done before the first real run against the company GitLab (M15).
-
-**M12 — Python authoring package (optional).** Depends on M3. Separate `uv` project `fleetify-recipes`: dataclasses mirroring the TOML schema, `write()`, validation against `fleetify schema` output, one example that reproduces the `enable-gitlab-ci` recipe byte-for-byte. *Acceptance:* the generated `recipe.toml` passes `fleetify validate` and equals the hand-written one; a schema-version mismatch is an error.
-
-**M13 — Live view (optional, demo).** Depends on M9. ratatui renderer on the event stream as specified under "Live view", `--ui`, `--tail`, `NO_COLOR`, fallback to plain. *Acceptance:* manual check on Windows Terminal and a Linux terminal with the fake agents; piping to a file ignores `--ui` and produces plain output; the level-2 tests are unchanged.
-
-**M14 — Claude Code adapter (private).** Depends on M10. Same procedure as M10: check current docs, map permissions, allowlist, `judge_command()`, `check-agent`. `[ASK]` Level-5 test: fix a small, deliberately introduced lint violation on a throwaway GitHub repo and open a PR that passes the gates. Observed rate-limit behaviour is documented. *Acceptance:* the test above and a passing or documented `check-agent` result.
-
-**M15 — Copilot CLI adapter and self-hosted GitLab (at work).** Depends on M10, M11 (both done for GitHub; GitLab CI is done as well). Split into two parts, because Copilot CLI is available privately now (Copilot Free, CLI 1.0.101 in `~/.local/bin`).
-
-- **M15a — Copilot adapter (private, now).** `agents/copilot.rs`, same procedure as M14 (docs checked on 2026-10-21, date and URL in the module doc comment). Command: `-p <one-liner> -s --no-ask-user --output-format=json` (`--output-format` to be checked in the run). Permissions map to specific grants only: `Permissions` directories become `--allow-tool='write(<dir>/*)'` per granted directory, never a bare `write`; commands become `shell(<command>)` entries; web becomes `url(...)`. `--allow-all`, `--yolo` and `COPILOT_ALLOW_ALL` are never used unless `unrestricted = true`. `env()` allowlist without any host token; the agent's own login comes from its own config. `unsupported()` reports grants the CLI cannot express. `judge_command()` one-shot without tools. Tests: unit tests for the command building (grants per directory, no bare write, no allow-all), fake-agent tests for the outcome mapping, `check-agent copilot` with the canary. *Acceptance:* `check-agent copilot` passes with the baseline grants, a real level-5 run on a throwaway private GitHub repo opens a PR that passes the gates, and the observed Copilot behaviour (exit codes of `-p`, what happens without a grant, rate-limit messages) is written into the module doc comment and DECISIONS.md.
-- **M15b — Self-hosted GitLab (at work).** Same adapter, on the company's self-hosted GitLab on Windows with the internal CA (MR opened, CI gate evaluated), with Copilot's own login (never the host token). *Acceptance:* the self-hosted GitLab run opens one MR and reports the CI result; the README credentials section lists the required token scopes.
-
-**M16 — Optional: LLM judge.** Depends on M9 (and an adapter from M10/M14/M15). `[judge]` in the recipe, embedded prompt, schema validation, size limit, fixture set, cost and latency recording. *Acceptance:* catches the bad fixtures (suppression comment, deleted test case, unrelated refactor, weakened check) and returns `unsure` on oversized diffs and on malformed output; `fail` → `guard_violation`, `unsure` → `needs_review`, nothing pushed.
-
-**M17 — Real trial.** Depends on M8, M10 or M14, M11. `[ASK]` A recipe with an agent on three to five private repos with `ci.wait` on the GitLab ones, run once in automated mode (plain, `--format json`) and once with `--ui` for the demo. Evaluate from `report.json` and the event logs: how many repos went through without intervention, time per repo, where help was needed, whether the failure blocks were enough to act on without opening the run folder. Write the numbers into `TRIAL.md`.
-
-**Suggested order for one person (remaining):** M10 level-3 smoke test (`[ASK]`) → M17 (`[ASK]`), M15b at work, and M16 only if the trial shows the deterministic guards are not enough.
-
 ## Decision after stage 1
 
 If most repos go through without intervention, extending is worth it. If the result is thin, improve prompt and verifier first. If it stays thin, Armada or the SonarQube Remediation Agent may reach the goal faster than building further. The numbers from `report.json` and the event logs are the basis.
-
-## Stage 2: the CI-fix loop
-
-**Status (2026-10-22): implemented on `feat/ci-feedback-loop`.** Host layer for GitHub and GitLab, nested pipelines, the fix round, `[ci] fix_rounds`, `[ci] log_lines` and `log_chars`, the `ci_fix_round` output. Open: a live run on a real failing check.
-
-Scope is the CI-fix loop only. Stage 1 ends a repo at `ci_failed` and the user acts on the report. Stage 2 gives the agent the failure and lets it try again, within fixed limits.
-
-- **Input.** After a `ci_failed` on the pushed commit, fleetify reads the failed checks from the host: GitHub check-run output and annotations, GitLab job traces. It keeps the last N lines per failed job, redacted like every other output.
-- **Context.** The lines are written to `.agent/ci-failure.md` in the workspace and named in the next agent prompt. They are data for the agent, not instructions: the prompt says so, and the guards and the verifier still decide what counts.
-- **Loop.** The agent runs once more on the same branch, the local verifier runs, then the guards, then a push to the same branch. The CI gate waits again. A new `ci_failed` ends the loop.
-- **Limits.** A recipe key `ci.fix_rounds` (default 1, `0` disables the loop). The total time stays under `limits.agent_timeout_min` per round. The loop never merges and never opens a second change request.
-- **Report.** Each round is an event (`ci_fix_round`) with its number and the outcome. The final result stays one result per repo; `next_step` still applies when the loop ends unsuccessfully.
-- **Acceptance.** A fake CI that fails once and passes on the second commit ends as `ci_passed` after one fix round. A fake CI that always fails ends as `ci_failed` after `fix_rounds` rounds, with the failure block of the last round. The ci-failure file contains no secret (test with a token in the job log). A live run on a fork with a deliberately failing check (for example a failing test added by the reference recipe) shows one fix round in the report.
-
-Prerequisites from stage 1: the three bugs in the open-items list (CI status retries, endpoint names in host errors, fork triggers) are fixed before the loop is built, because the loop depends on reliable CI reads.
 
 ## Idea: deterministic dependency updates with Renovate (not decided)
 
@@ -705,30 +624,7 @@ Other items, not scheduled (not CI-loop, not agent confinement): SQLite instead 
 - Every new failure path must produce a `failure` block in the report with a non-empty message; a test asserts it.
 - When a design question is not answered by this plan, choose the most conservative option, note it in `DECISIONS.md` and continue; do not block on it.
 
-## Todo
-
-- **Config and credentials (decided 2026-10-22, breaking).** Both live in `~/.config/fleetify/` (or `$XDG_CONFIG_HOME`), as opencode keeps its configuration and its keys in `~/.config/opencode/`. `--config FILE` moves both. The working directory `~/.fleetify/` keeps the clones, runs and logs. Windows and macOS system locations are part of Windows Support.
-
 ## Stories
-
-### Model selection per agent run
-
-**Goal.** Choose the model per run, not only the agent's default. The caller of `fleetify run` says which agent and which model solve the task, for example a cheaper model for the easy repos and a stronger one for the hard ones.
-
-**Scope.**
-
-- **Options, in order of precedence:** `--model NAME` on `fleetify run`; `model` in the recipe, next to `agent` (the recipe's default, for the recipe's own agent only); `[agents.<name>] model = "..."` in `config.toml` (the user's default per agent); otherwise the agent's own default. Implemented; see DECISIONS.md. Nothing is passed when none is set, so the agent's own configuration decides, as it does today.
-- **Passed through, not interpreted.** fleetify does not keep a list of models. The name goes to the agent CLI unchanged, through that CLI's own option. The agent rejects a name it does not know, and the run ends as `error` with the agent's message in the failure block.
-- **Adapters (flags to be checked in each CLI's current docs before use, as for every flag in this plan):** Claude Code `--model`; Copilot CLI `--model` (to verify, Copilot CLI 1.0.101 is installed); opencode `--model <provider>/<model>`. opencode reaches only the llama.cpp provider for now; a provider for Anthropic models needs its own token (see open question below).
-- **Visible.** The run header and the `permissions_effective`-style start event name the agent and the model, so a report shows which model solved which repo. The model is part of the report's per-repo data.
-- **Canary.** `check-agent` runs with the model the run would use, because a model can behave differently under the same grants. The pass marker is keyed by agent, version and model.
-
-**Acceptance.** Unit tests: each adapter puts the model flag into its argument list only when a model is set, and takes the precedence order above; `--model` without a recipe that asks for an agent is refused like any other missing agent. A live run (level 5) per agent with two models shows the chosen model in the report.
-
-**Open questions.**
-
-1. Anthropic models through opencode (or any other Anthropic route) cost API credit outside Claude Code. The user would create that API token and decide whether it is used at all. Until then, no test uses it.
-2. Which default models to use in the recipes and in the examples: left to the user, fleetify ships none.
 
 ### Idea: tasks from issues (fan-out, not decided)
 
