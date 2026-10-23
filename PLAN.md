@@ -646,6 +646,19 @@ Scope is the CI-fix loop only. Stage 1 ends a repo at `ci_failed` and the user a
 
 Prerequisites from stage 1: the three bugs in the open-items list (CI status retries, endpoint names in host errors, fork triggers) are fixed before the loop is built, because the loop depends on reliable CI reads.
 
+## Idea: deterministic dependency updates with Renovate (not decided)
+
+**Status: idea, to be aligned before any work.** Dependency updates that are simple and well covered by the repo's own CI should not need an LLM at all. A deterministic bot does them; the LLM comes in only when CI fails.
+
+- **Scope.** Only updates that the bot's own rules call simple (for example patch and minor updates within the declared ranges, with a green CI as the test). Major updates and anything that changes code stay with the agent recipes. The line is decided with the bot's configuration, not in fleetify.
+- **Flow.** Renovate opens the update PR. fleetify waits for CI on that commit, as it does for any change. CI passes: nothing else happens, the PR is merged by the rules the repo already has. CI fails: the existing CI-fix loop runs, bounded by `fix_rounds`, and the agent gets the failing step. No LLM call is made when CI passes.
+- **Loop control.** The CI fix loop is the only place where an agent comes back in, and its limit (`fix_rounds`, default 5) is the stop. A failed round ends the repo as `ci_failed`, it does not start another bot run.
+- **Open points before any work:**
+  - *Branch ownership.* Renovate rebases its own branches and stops when a human has pushed to them. A fix pushed by the fix loop onto a Renovate branch may therefore end Renovate's updates for that PR. Decide whether the fix loop pushes to a separate branch and opens its own PR, or whether Renovate's rebase setting is changed.
+  - *Who runs Renovate.* Renovate itself, as a scheduled app or self-hosted job, or fleetify as the one that starts it per repo. First version: Renovate runs on its own, fleetify only observes the PRs and the CI.
+  - *Reporting.* A Renovate PR that fleetify did not create still needs a row in the report, with the same result names.
+  - *Cost.* A bot run is cheap, a fix round is an agent run. The report should show how often each path ran, so the trial numbers stay honest.
+
 ## Stage 3: narrowing what the coding agents may do
 
 Stage 3 tightens the permissions the agents get, beyond what stage 1 grants:
