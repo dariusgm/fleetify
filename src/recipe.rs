@@ -1,11 +1,17 @@
 //! Recipe format: `recipe.toml` model, JSON Schema export, validation and the
 //! `applies_to` evaluation. A recipe is data; logic lives in `tools/` scripts.
 //!
+//! Every behaviour setting lives here, with a default where the recipe is silent. A recipe
+//! only asks for permissions (`needs`, `policy`, `ci.merge`); the user's grants live in
+//! `credentials.toml` (see [`crate::grants`]). So a recipe copied to another machine runs the
+//! same way, as long as that user's grants cover what it asks for.
+//!
 //! `applies_to` semantics (decided in DECISIONS.md, M3): every listed condition
 //! must hold (AND). Within `host_type` and `path_glob` any listed value may match
 //! (OR). `has_file` needs *all* listed files, `has_file_any` needs *any* of them,
 //! and `not_has_file` needs *none* of them to exist.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Component, Path};
 
@@ -13,6 +19,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::credentials::glob_match;
+use crate::hosts::{HostTable, HostType};
 use crate::runner::{CommandSpec, SpecError};
 
 /// The only schema version this binary reads.
@@ -23,6 +30,13 @@ const KNOWN_CI_PROVIDERS: &[&str] = &["auto", "gitlab-ci"];
 const KNOWN_MERGE_MODES: &[&str] = &["off", "when_green"];
 const DEFAULT_PREPARE_TIMEOUT_S: u64 = 120;
 const DEFAULT_VERIFY_TIMEOUT_S: u64 = 300;
+/// `branch_prefix` when the recipe does not set one: branches are `fleetify/<branch>`.
+pub const DEFAULT_BRANCH_PREFIX: &str = "fleetify";
+/// Unset `ci.dispatch_after_s`: three minutes.
+const DEFAULT_DISPATCH_AFTER_S: u64 = 3 * 60;
+/// Unset `ci.log_lines` and `ci.log_chars`.
+const DEFAULT_LOG_LINES: usize = 100;
+const DEFAULT_LOG_CHARS: usize = 1000;
 /// Markers that make CI skip a pipeline. Refused in branch names and commit messages.
 const SKIP_CI_MARKERS: &[&str] = &[
     "[skip ci]",
@@ -43,8 +57,12 @@ pub struct Recipe {
     pub schema: u32,
     /// Lowercase name, used in the run id.
     pub name: String,
-    /// Branch created in each repo.
+    /// Branch created in each repo, without the prefix.
     pub branch: String,
+    /// Prefix for every branch fleetify pushes: `<prefix>/<branch>`. Unset means `fleetify`;
+    /// an empty string means no prefix.
+    #[serde(default)]
+    pub branch_prefix: Option<String>,
     /// The branch the change starts from and the pull request targets. Unset means the
     /// repository's default branch.
     #[serde(default)]
@@ -59,11 +77,19 @@ pub struct Recipe {
     #[serde(default)]
     pub agent: Option<String>,
     /// Model for the recipe's agent, passed to the agent CLI unchanged. Overridden by
-    /// `--model`; `[agents.<name>] model` in config.toml is the fallback.
+    /// `--model`; `[agents.<name>] model` is the fallback.
     #[serde(default)]
     pub model: Option<String>,
+    /// Defaults per agent, keyed by agent name. Used when the run's agent has no `model`
+    /// from `--model` or from the recipe's own `model`.
+    #[serde(default)]
+    pub agents: BTreeMap<String, AgentSettings>,
     #[serde(default)]
     pub applies_to: AppliesTo,
+    /// Hosts beyond `github.com` and `gitlab.com`, keyed by host name. A repository's host
+    /// comes from its URL; this table says which host type that host is.
+    #[serde(default)]
+    pub hosts: BTreeMap<String, HostEntry>,
     /// Concatenated in order. Empty means no agent: a pure `prepare` run.
     #[serde(default)]
     pub instructions: Vec<Instruction>,
@@ -87,6 +113,68 @@ pub struct Recipe {
     pub delivery: Delivery,
     #[serde(default)]
     pub limits: Limits,
+    #[serde(default)]
+    pub rate_limit: RateLimit,
+    #[serde(default)]
+    pub policy: Policy,
+}
+
+/// `[agents.<name>]`: settings for one agent, used when the recipe names no model.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSettings {
+    /// Model passed to the agent CLI unchanged. Unset leaves the choice to the agent.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// `[hosts."<name>"]`: one host beyond the built-in ones.
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HostEntry {
+    /// github or gitlab: which API and CI integration the host speaks.
+    #[serde(rename = "type")]
+    pub kind: HostType,
+}
+
+/// `[rate_limit]`: how long fleetify waits when a host asks it to hold back.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimit {
+    /// The longest wait for one rate limit, in minutes. A longer wait ends the repo as
+    /// `rate_limited` and is not taken. `0` means never wait. Unset means 15.
+    #[serde(default)]
+    pub max_wait_min: Option<u32>,
+}
+
+impl RateLimit {
+    /// The ceiling as a duration.
+    pub fn max_wait(&self) -> std::time::Duration {
+        match self.max_wait_min {
+            Some(minutes) => std::time::Duration::from_secs(u64::from(minutes) * 60),
+            None => crate::hosts::DEFAULT_MAX_RATE_WAIT,
+        }
+    }
+}
+
+/// `[policy]`: safety settings. Each one can be tightened by a recipe; loosening one needs
+/// the matching grant in `credentials.toml`.
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Policy {
+    /// Refuse agents that did not pass `check-agent`. On by default: an agent that was
+    /// never checked may write outside its workspace (see DECISIONS.md, confinement).
+    /// `false` needs `[permissions] unchecked_agents = true` in credentials.toml.
+    #[serde(default = "default_true")]
+    pub require_checked_agent: bool,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Policy {
+            require_checked_agent: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -161,16 +249,22 @@ pub struct VerifyTable {
     pub error_patterns: Vec<String>,
 }
 
+/// What the recipe asks the agent to have. Each item must be granted by the user in
+/// `credentials.toml`, or the run is refused before any repo is touched. Asking grants nothing.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Needs {
-    /// Extra commands the agent needs. Checked against config.toml; never grants anything.
+    /// Extra commands the agent needs, as `[permissions] commands` lists them.
     #[serde(default)]
     pub commands: Vec<String>,
     #[serde(default)]
     pub web: bool,
     #[serde(default)]
     pub extra_directories: Vec<String>,
+    /// The agent CLI's blanket "allow everything" option. Also needs `[permissions.agent.<name>]
+    /// unrestricted = true` in credentials.toml. Not confined by fleetify's grants.
+    #[serde(default)]
+    pub unrestricted: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -246,6 +340,18 @@ pub struct Ci {
     /// `0` disables the loop. Default 5.
     #[serde(default = "default_fix_rounds")]
     pub fix_rounds: u32,
+    /// Seconds to wait for the host's own CI on the pushed commit. If none has started by
+    /// then, fleetify starts it: `workflow_dispatch` on GitHub, a pipeline on GitLab. `0`
+    /// starts it at once, without asking the host first. Unset means 180.
+    #[serde(default)]
+    pub dispatch_after_s: Option<u64>,
+    /// Lines of each failed CI job's log that reach the agent (the last ones). Unset means 100.
+    #[serde(default)]
+    pub log_lines: Option<usize>,
+    /// Characters of each failed CI job's log that reach the agent. Unset means 1000. The
+    /// smaller of `log_lines` and `log_chars` applies.
+    #[serde(default)]
+    pub log_chars: Option<usize>,
 }
 
 fn default_fix_rounds() -> u32 {
@@ -262,6 +368,24 @@ impl Default for Ci {
             validate: true,
             dispatch_workflow: None,
             fix_rounds: default_fix_rounds(),
+            dispatch_after_s: None,
+            log_lines: None,
+            log_chars: None,
+        }
+    }
+}
+
+impl Ci {
+    /// The wait before fleetify starts CI itself.
+    pub fn dispatch_after(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.dispatch_after_s.unwrap_or(DEFAULT_DISPATCH_AFTER_S))
+    }
+
+    /// How much of each failed job's log reaches the agent.
+    pub fn log_budget(&self) -> crate::hosts::LogBudget {
+        crate::hosts::LogBudget {
+            lines: self.log_lines.unwrap_or(DEFAULT_LOG_LINES),
+            chars: self.log_chars.unwrap_or(DEFAULT_LOG_CHARS),
         }
     }
 }
@@ -505,6 +629,7 @@ impl Recipe {
         self.validate_files(dir, &mut push);
         self.validate_commands(dir, &mut push);
         self.validate_settings(&mut push);
+        self.validate_hosts_and_agents(&mut push);
         // The same problem can be found for both OSes; report it once.
         let mut unique: Vec<Issue> = Vec::with_capacity(issues.len());
         for issue in issues {
@@ -691,6 +816,38 @@ impl Recipe {
                         push(step, err.to_string());
                     }
                 }
+            }
+        }
+    }
+
+    fn validate_hosts_and_agents(&self, push: &mut impl FnMut(&str, String)) {
+        if let Err(message) = self.host_table() {
+            push("hosts", message);
+        }
+        if let Some(prefix) = &self.branch_prefix {
+            let trimmed = prefix.trim_end_matches('/');
+            if !trimmed.is_empty() && !is_valid_branch(&format!("{trimmed}/x")) {
+                push(
+                    "branch_prefix",
+                    format!("{prefix:?} is not valid in a git branch name"),
+                );
+            }
+        }
+        for (name, settings) in &self.agents {
+            let field = format!("agents.{name}");
+            if !KNOWN_AGENTS.contains(&name.as_str()) {
+                push(
+                    &field,
+                    format!(
+                        "unknown agent {name:?}; expected one of {}",
+                        KNOWN_AGENTS.join(", ")
+                    ),
+                );
+            }
+            if let Some(model) = &settings.model
+                && let Err(message) = crate::agents::check_model(model)
+            {
+                push(&format!("{field}.model"), message);
             }
         }
     }
@@ -912,6 +1069,39 @@ pub fn json_schema() -> String {
 }
 
 impl Recipe {
+    /// The branch fleetify pushes: the prefix, a slash, then `branch`. An empty prefix
+    /// pushes `branch` as it is. A trailing slash on the prefix is ignored.
+    pub fn remote_branch(&self) -> String {
+        let prefix = self
+            .branch_prefix
+            .as_deref()
+            .unwrap_or(DEFAULT_BRANCH_PREFIX)
+            .trim_end_matches('/');
+        if prefix.is_empty() {
+            self.branch.clone()
+        } else {
+            format!("{prefix}/{}", self.branch)
+        }
+    }
+
+    /// The hosts this recipe knows: the built-in ones plus `[hosts]`.
+    pub fn host_table(&self) -> Result<HostTable, String> {
+        let mut table = HostTable::with_builtins();
+        for (name, entry) in &self.hosts {
+            table.declare(name, entry.kind)?;
+        }
+        Ok(table)
+    }
+
+    /// The model the recipe itself gives `name`: its own `model` when `name` is its agent,
+    /// else `[agents.<name>] model`. `--model` is applied by the caller.
+    pub fn model_for(&self, name: &str) -> Option<&str> {
+        let own = (self.agent.as_deref() == Some(name))
+            .then_some(self.model.as_deref())
+            .flatten();
+        own.or_else(|| self.agents.get(name).and_then(|a| a.model.as_deref()))
+    }
+
     /// The `prepare` step as a command, if the recipe has one.
     pub fn prepare_spec(&self) -> Option<CommandSpec> {
         self.prepare.as_ref().and_then(command_of_table)
@@ -1317,6 +1507,118 @@ mod tests {
         let schema = json_schema();
         assert!(schema.contains("\"pr_title\""));
         assert!(schema.contains("\"instructions\""));
+    }
+
+    const MINIMAL: &str = r#"
+        schema = 1
+        name = "minimal"
+        branch = "chore/minimal"
+        pr_title = "chore: minimal"
+    "#;
+
+    #[test]
+    fn a_recipe_without_settings_gets_the_defaults_and_needs_no_file() {
+        let recipe = Recipe::parse(MINIMAL).unwrap();
+        assert!(recipe.policy.require_checked_agent);
+        assert!(recipe.needs.commands.is_empty());
+        assert!(!recipe.needs.web && !recipe.needs.unrestricted);
+        assert_eq!(recipe.remote_branch(), "fleetify/chore/minimal");
+        assert_eq!(
+            recipe.ci.dispatch_after(),
+            std::time::Duration::from_secs(180)
+        );
+        let budget = recipe.ci.log_budget();
+        assert_eq!((budget.lines, budget.chars), (100, 1000));
+        assert_eq!(
+            recipe.rate_limit.max_wait(),
+            crate::hosts::DEFAULT_MAX_RATE_WAIT
+        );
+        assert_eq!(recipe.model_for("claude-code"), None);
+        let hosts = recipe.host_table().unwrap();
+        assert_eq!(hosts.get("github.com"), Some(HostType::Github));
+        assert_eq!(hosts.get("gitlab.com"), Some(HostType::Gitlab));
+        assert_eq!(hosts.get("gitlab.example.com"), None);
+        assert_eq!(
+            recipe.validate(&valid_dir("minimal-defaults"), None),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn branch_prefix_defaults_to_fleetify_and_can_be_empty_or_custom() {
+        let custom = Recipe::parse(&format!("{MINIMAL}\nbranch_prefix = \"bot/\"\n")).unwrap();
+        assert_eq!(custom.remote_branch(), "bot/chore/minimal");
+        let none = Recipe::parse(&format!("{MINIMAL}\nbranch_prefix = \"\"\n")).unwrap();
+        assert_eq!(none.remote_branch(), "chore/minimal");
+        let bad = Recipe::parse(&format!("{MINIMAL}\nbranch_prefix = \"bad..prefix\"\n")).unwrap();
+        let issues = bad.validate(&valid_dir("bad-prefix"), None);
+        assert!(
+            issues.iter().any(|i| i.field == "branch_prefix"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn declared_hosts_extend_the_builtins_and_cannot_change_a_builtin_type() {
+        let declared = Recipe::parse(&format!(
+            "{MINIMAL}\n[hosts.\"gitlab.example.com\"]\ntype = \"gitlab\"\n"
+        ))
+        .unwrap();
+        let table = declared.host_table().unwrap();
+        assert_eq!(table.get("GitLab.example.com"), Some(HostType::Gitlab));
+        assert_eq!(table.get("github.com"), Some(HostType::Github));
+
+        let changed = Recipe::parse(&format!(
+            "{MINIMAL}\n[hosts.\"github.com\"]\ntype = \"gitlab\"\n"
+        ))
+        .unwrap();
+        assert!(changed.host_table().is_err());
+        let issues = changed.validate(&valid_dir("host-changed"), None);
+        assert!(issues.iter().any(|i| i.field == "hosts"), "{issues:?}");
+
+        let with_port = Recipe::parse(&format!(
+            "{MINIMAL}\n[hosts.\"https://gitlab.example.com:8443\"]\ntype = \"gitlab\"\n"
+        ))
+        .unwrap();
+        assert!(with_port.host_table().is_err());
+    }
+
+    #[test]
+    fn ci_and_rate_limit_settings_are_read_from_the_recipe() {
+        let recipe = Recipe::parse(&format!(
+            "{MINIMAL}\n[ci]\ndispatch_after_s = 45\nlog_lines = 20\nlog_chars = 500\n\n[rate_limit]\nmax_wait_min = 0\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            recipe.ci.dispatch_after(),
+            std::time::Duration::from_secs(45)
+        );
+        assert_eq!(recipe.ci.log_budget().lines, 20);
+        assert_eq!(recipe.ci.log_budget().chars, 500);
+        assert_eq!(recipe.rate_limit.max_wait(), std::time::Duration::ZERO);
+        assert!(Recipe::parse(&format!("{MINIMAL}\n[ci]\ndispatch_after_min = 3\n")).is_err());
+    }
+
+    #[test]
+    fn policy_and_agent_settings_are_read_and_checked() {
+        let recipe = Recipe::parse(&format!(
+            "{MINIMAL}\nagent = \"claude-code\"\n[agents.claude-code]\nmodel = \"from-table\"\n[agents.gpt-pilot]\nmodel = \"x\"\n[policy]\nrequire_checked_agent = false\n"
+        ))
+        .unwrap();
+        assert!(!recipe.policy.require_checked_agent);
+        assert_eq!(recipe.model_for("claude-code"), Some("from-table"));
+        let issues = recipe.validate(&valid_dir("agents-table"), None);
+        assert!(
+            issues.iter().any(|i| i.field == "agents.gpt-pilot"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn needs_unrestricted_is_read_and_defaults_to_off() {
+        let asks = Recipe::parse(&format!("{MINIMAL}\n[needs]\nunrestricted = true\n")).unwrap();
+        assert!(asks.needs.unrestricted);
+        assert!(!Recipe::parse(MINIMAL).unwrap().needs.unrestricted);
     }
 
     #[test]

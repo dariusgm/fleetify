@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::agents;
 use crate::clock::rfc3339_now;
-use crate::config::{Config, ConfigError, HostTable};
 use crate::credentials::{Credentials, CredentialsError, Secret};
 use crate::events::{Event, EventBus, Redactor};
 use crate::git::{Auth, GitContext, GitError, username_for};
-use crate::hosts::{self, Access, Host, TlsCheck, api_base, tls_self_test};
+use crate::grants::Grants;
+use crate::hosts::{self, Access, Host, HostTable, TlsCheck, api_base, tls_self_test};
 use crate::pipeline;
 use crate::recipe::{Recipe, RepoFacts};
 use crate::report::{self, Failure, RepoResult, Report};
@@ -153,12 +153,6 @@ impl std::fmt::Display for Refused {
     }
 }
 
-impl From<ConfigError> for Refused {
-    fn from(err: ConfigError) -> Self {
-        Refused(err.to_string())
-    }
-}
-
 impl From<CredentialsError> for Refused {
     fn from(err: CredentialsError) -> Self {
         Refused(err.to_string())
@@ -267,15 +261,16 @@ pub enum Mode {
 /// Inputs as given on the command line.
 pub struct RunInput<'a> {
     pub workdir: &'a Path,
-    /// The config file (`--config`, default `~/.config/fleetify/config.toml`).
-    pub config: &'a Path,
+    /// The credentials file, with the grants (`--credentials`, default
+    /// `~/.config/fleetify/credentials.toml`).
+    pub credentials: &'a Path,
     pub recipe_dir: &'a Path,
     pub recipe: &'a Recipe,
     pub repos_file: &'a Path,
     pub layout: &'a RunLayout,
     pub only: &'a [String],
     pub agent: Option<&'a str>,
-    /// `--model`: the model for the agent, overriding the recipe and config.toml.
+    /// `--model`: the model for the agent, overriding the recipe.
     pub model: Option<&'a str>,
     pub allow_unchecked_agent: bool,
     pub waves: Waves<'a>,
@@ -288,7 +283,6 @@ pub struct RunInput<'a> {
 /// Everything a run needs after loading and checking the inputs.
 pub struct Loaded {
     pub credentials: Credentials,
-    pub config: Config,
     pub repos: Vec<Repo>,
     pub clients: BTreeMap<String, Box<dyn Host>>,
     /// The agent that runs the recipe's instructions. `None` for a recipe without instructions.
@@ -298,70 +292,65 @@ pub struct Loaded {
     pub merge: bool,
 }
 
-/// Loads config, credentials, repos and host clients, and runs the TLS self-test.
+/// Loads credentials, repos and host clients, and runs the TLS self-test.
 pub fn load(input: &RunInput<'_>) -> Result<Loaded, Refused> {
     load_for(input, false)
 }
 
-/// `credentials.toml` sits next to the config file, so both live under `~/.config/fleetify/`.
-pub fn credentials_path(config: &Path) -> PathBuf {
-    config
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("credentials.toml")
+/// Refuses the files of the layouts this binary no longer reads. A file that is ignored
+/// silently would change what a run does, so a leftover one stops the run and names the way
+/// out.
+fn refuse_leftover_files(input: &RunInput<'_>) -> Result<(), Refused> {
+    let dir = input.credentials.parent().unwrap_or_else(|| Path::new("."));
+    for found in [dir.join("config.toml"), input.workdir.join("config.toml")] {
+        if found.exists() {
+            return Err(Refused(format!(
+                "{} is no longer read. Move the recipe settings into recipe.toml and the grants \
+                 (permissions, merge_policy) into credentials.toml, then remove the file.",
+                found.display()
+            )));
+        }
+    }
+    let old_credentials = input.workdir.join("credentials.toml");
+    if !input.credentials.exists() && old_credentials.exists() {
+        return Err(Refused(format!(
+            "credentials.toml is no longer read from the working directory: found {}, but fleetify reads {}. Move the file there.",
+            old_credentials.display(),
+            input.credentials.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Loads what a run needs. A dry run reports missing grants and keeps going; a real
 /// run refuses to start.
 fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
-    let credentials_path = credentials_path(input.config);
-    for (old, new) in [
-        (input.workdir.join("config.toml"), input.config),
-        (
-            input.workdir.join("credentials.toml"),
-            credentials_path.as_path(),
-        ),
-    ] {
-        if !new.exists() && old.exists() {
-            return Err(Refused(format!(
-                "{} is no longer read from the working directory: found {}, but fleetify reads {}. Move the file there.",
-                old.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
-                old.display(),
-                new.display()
-            )));
-        }
-    }
-    let config = Config::load(input.config)?;
-    let hosts = config.host_table()?;
-    let (credentials, warnings) = Credentials::load(&credentials_path)?;
+    refuse_leftover_files(input)?;
+    let hosts = input.recipe.host_table().map_err(Refused)?;
+    let (credentials, warnings) = Credentials::load(input.credentials)?;
     for warning in &warnings {
         tracing::warn!(%warning, "credentials");
         eprintln!("warning: {warning}");
     }
     crate::logging::set_redactor(Redactor::new(credentials.secrets()));
-    let (agent, model) = match check_agent(input, &config, dry_run)? {
+    let (agent, model) = match check_agent(input, &credentials.grants, dry_run)? {
         Some((name, model)) => (Some(name), model),
         None => (None, None),
     };
     if let Some(name) = agent.as_deref()
-        && config
-            .permissions
-            .agent
-            .get(name)
-            .is_some_and(|p| p.unrestricted)
+        && agents::grants(input.recipe, &credentials.grants.permissions, name).unrestricted
     {
         tracing::warn!(agent = name, "agent runs unrestricted");
         eprintln!(
-            "WARNING: agent {name} runs UNRESTRICTED (unrestricted = true in config.toml). \
-             It is not confined by fleetify's grants. This is your own choice."
+            "WARNING: agent {name} runs UNRESTRICTED (the recipe asks for it and credentials.toml \
+             grants it). It is not confined by fleetify's grants. This is your own choice."
         );
     }
     check_merge(input.recipe, input.merge).map_err(Refused)?;
     let repos = load_repos(input.repos_file, &hosts, input.only)?;
-    let clients = host_clients(&repos, config.rate_limit.max_wait())?;
+    let clients = host_clients(&repos, input.recipe.rate_limit.max_wait())?;
     Ok(Loaded {
         credentials,
-        config,
         repos,
         clients,
         agent,
@@ -380,12 +369,12 @@ pub fn check_merge(recipe: &Recipe, merge: bool) -> Result<(), String> {
 }
 
 /// Checks what an agent run needs before any repo is touched: the agent is supported,
-/// the model is a valid name, `config.toml` grants what the recipe needs, and the agent
-/// passed `check-agent` for that model when the policy requires it. Returns the agent's
-/// name and model, or `None` without instructions.
+/// the model is a valid name, the user's grants cover what the recipe asks for, and the agent
+/// passed `check-agent` for that model when the recipe's policy requires it. Returns the
+/// agent's name and model, or `None` without instructions.
 fn check_agent(
     input: &RunInput<'_>,
-    config: &Config,
+    grants: &Grants,
     dry_run: bool,
 ) -> Result<Option<(String, Option<String>)>, Refused> {
     if input.recipe.instructions.is_empty() {
@@ -396,7 +385,7 @@ fn check_agent(
         .or(input.recipe.agent.as_deref())
         .ok_or_else(|| Refused("instructions are set but no agent is".into()))?;
     agents::check_supported(name).map_err(Refused)?;
-    let model = agents::resolve_model(input.model, input.recipe, config, name);
+    let model = agents::resolve_model(input.model, input.recipe, name);
     if let Some(model) = &model {
         agents::check_model(model).map_err(Refused)?;
     }
@@ -405,12 +394,12 @@ fn check_agent(
         model
             .as_ref()
             .map_or_else(String::new, |model| format!(" model {model}")),
-        agents::describe_grants(input.recipe, &config.permissions, name)
+        agents::describe_grants(input.recipe, &grants.permissions, name)
     );
-    let missing = agents::missing_permissions(input.recipe, &config.permissions);
+    let missing = agents::missing_permissions(input.recipe, &grants.permissions, name);
     if !missing.is_empty() {
         let message = format!(
-            "config.toml does not grant what the recipe needs: {}",
+            "credentials.toml does not grant what the recipe asks for: {}",
             missing.join(", ")
         );
         if !dry_run {
@@ -418,7 +407,7 @@ fn check_agent(
         }
         eprintln!("dry run: a real run would refuse: {message}");
     }
-    if config.policy.require_checked_agent
+    if input.recipe.policy.require_checked_agent
         && !input.allow_unchecked_agent
         && !agents::is_checked(input.workdir, name, model.as_deref())
     {
@@ -519,7 +508,6 @@ fn execute_loaded_with_view(
         merge: loaded.merge,
         tools: &tools,
         runner: &runner,
-        config: &loaded.config,
         agent: loaded.agent.as_deref(),
         model: loaded.model.as_deref(),
         credentials: &loaded.credentials,
@@ -595,7 +583,6 @@ pub struct Ctx<'a> {
     /// Trusted copy of the recipe's `tools` directory.
     pub tools: &'a Path,
     pub runner: &'a Runner,
-    pub config: &'a Config,
     /// The agent for the recipe's instructions. `None` when there are none.
     pub agent: Option<&'a str>,
     /// The model for `agent`, `None` when the agent's own configuration decides.
@@ -867,7 +854,7 @@ fn dry_run_repo(ctx: &Ctx<'_>, repo: &Repo) -> RepoResult {
             "dry_run",
             &format!(
                 "read access ok; would branch {} from {} at {}",
-                ctx.config.branch_name(&ctx.recipe.branch),
+                ctx.recipe.remote_branch(),
                 state.default_branch,
                 &state.base_sha[..state.base_sha.len().min(12)]
             ),
@@ -910,14 +897,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn credentials_sit_next_to_the_config_file() {
-        assert_eq!(
-            credentials_path(Path::new("/home/u/.config/fleetify/config.toml")),
-            PathBuf::from("/home/u/.config/fleetify/credentials.toml")
-        );
-    }
-
-    #[test]
     fn run_id_defaults_to_recipe_and_date() {
         assert_eq!(
             run_id("enable-gitlab-ci", None, "2026-10-18"),
@@ -931,7 +910,7 @@ mod tests {
         let layout = RunLayout::new(Path::new("/w"), "r1");
         let repo = Repo {
             host: "gitlab.com".into(),
-            host_type: crate::config::HostType::Gitlab,
+            host_type: crate::hosts::HostType::Gitlab,
             path: "group/sub/name".into(),
             name: "name".into(),
             clone_url: String::new(),

@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use fleetify::agents::BINARY_ENV;
-use fleetify::config::{Config, HostType};
 use fleetify::credentials::Credentials;
+use fleetify::hosts::HostType;
 use fleetify::hosts::{Host, client_for};
 use fleetify::recipe::Recipe;
 use fleetify::report::RepoResult;
@@ -109,7 +109,8 @@ fn remote(base: &Path) -> PathBuf {
 }
 
 /// A recipe with one agent instruction, an attachment and a verifier.
-fn recipe_dir(base: &Path, instruction: &str) -> PathBuf {
+/// Writes a one-repo recipe. `extra` is appended to the file, for settings a test needs.
+fn recipe_dir(base: &Path, instruction: &str, extra: &str) -> PathBuf {
     let dir = base.join("recipe");
     fs::create_dir_all(dir.join("tools")).unwrap();
     fs::write(dir.join("tools/verify.sh"), VERIFY_OK).unwrap();
@@ -136,6 +137,7 @@ baseline = false
 
 [guards]
 deny_added_patterns = ["NOSONAR"]
+{extra}
 "#
         ),
     )
@@ -169,18 +171,18 @@ fn host(created: Arc<AtomicBool>) -> support::FakeHost {
 
 /// Runs the pipeline for one repo with an agent and returns its only result.
 fn run_agent_repo(name: &str, instruction: &str) -> (RepoResult, PathBuf, Vec<Recorded>) {
-    run_agent_repo_with(name, instruction, Config::default(), None)
+    run_agent_repo_with(name, instruction, "", None)
 }
 
 fn run_agent_repo_with(
     name: &str,
     instruction: &str,
-    config: Config,
+    recipe_extra: &str,
     model: Option<&str>,
 ) -> (RepoResult, PathBuf, Vec<Recorded>) {
     let base = scratch(name);
     let remote = remote(&base);
-    let recipe_dir = recipe_dir(&base, instruction);
+    let recipe_dir = recipe_dir(&base, instruction, recipe_extra);
     let recipe = Recipe::load(&recipe_dir).unwrap();
     let created = Arc::new(AtomicBool::new(false));
     let host = host(created);
@@ -203,7 +205,6 @@ fn run_agent_repo_with(
     let workspace = layout.workspace_dir(&repo);
     let loaded = Loaded {
         credentials,
-        config,
         repos: vec![repo],
         clients: BTreeMap::from([("github.com".to_string(), client)]),
         agent: Some("claude-code".to_string()),
@@ -317,10 +318,13 @@ fn agent_runs_are_judged_like_any_other_step() {
 
     // An agent that sits silent after a rate-limit line is stopped at the ceiling
     // (max_wait_min = 0 here), so the run ends as rate_limited and not after 60 seconds.
-    let mut no_wait = Config::default();
-    no_wait.rate_limit.max_wait_min = Some(0);
     let started = std::time::Instant::now();
-    let (waited, _, _) = run_agent_repo_with("waited", "WAIT on purpose.", no_wait, None);
+    let (waited, _, _) = run_agent_repo_with(
+        "waited",
+        "WAIT on purpose.",
+        "\n[rate_limit]\nmax_wait_min = 0\n",
+        None,
+    );
     assert_eq!(waited.result, "rate_limited", "{waited:?}");
     assert!(
         started.elapsed() < std::time::Duration::from_secs(40),
@@ -328,12 +332,8 @@ fn agent_runs_are_judged_like_any_other_step() {
     );
 
     // The model reaches the agent's command line and the report names it for this repo.
-    let (modelled, workspace, _) = run_agent_repo_with(
-        "modelled",
-        "Plain change.",
-        Config::default(),
-        Some("fable"),
-    );
+    let (modelled, workspace, _) =
+        run_agent_repo_with("modelled", "Plain change.", "", Some("fable"));
     assert_eq!(modelled.model.as_deref(), Some("fable"), "{modelled:?}");
     let args = fs::read_to_string(workspace.join(".agent/args.txt")).unwrap();
     assert!(args.contains("--model fable"), "{args}");

@@ -5,6 +5,7 @@
 pub mod github;
 pub mod gitlab;
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -13,9 +14,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use reqwest::Method;
 use reqwest::blocking::Client;
 use reqwest::header::HeaderMap;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::HostType;
 use crate::credentials::Secret;
 use crate::events::{Event, EventBus, WeakEventBus};
 use crate::repos::Repo;
@@ -24,6 +26,78 @@ use crate::repos::Repo;
 const API_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest error body kept in an error message.
 const MAX_BODY_CHARS: usize = 300;
+
+/// Kind of Git host. Decides which REST API and CI integration are used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum HostType {
+    Github,
+    Gitlab,
+}
+
+impl HostType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HostType::Github => "github",
+            HostType::Gitlab => "gitlab",
+        }
+    }
+}
+
+impl fmt::Display for HostType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Maps host names to host kinds. A repository's host comes from its URL, and only hosts in
+/// this table are accepted in `repos.txt`. The table holds `github.com` and `gitlab.com`,
+/// plus the hosts the recipe declares in `[hosts."<name>"]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostTable {
+    hosts: BTreeMap<String, HostType>,
+}
+
+impl HostTable {
+    pub fn with_builtins() -> Self {
+        let mut hosts = BTreeMap::new();
+        hosts.insert("github.com".to_string(), HostType::Github);
+        hosts.insert("gitlab.com".to_string(), HostType::Gitlab);
+        HostTable { hosts }
+    }
+
+    /// Adds a declared host. A built-in host keeps its kind; declaring it as another kind is
+    /// an error.
+    pub fn declare(&mut self, name: &str, kind: HostType) -> Result<(), String> {
+        if !is_valid_host_name(name) {
+            return Err(format!(
+                "host name {name:?} must be lowercase letters, digits, '.' or '-' (no scheme, path or port)"
+            ));
+        }
+        match self.get(name) {
+            Some(existing) if existing != kind => Err(format!(
+                "host {name} is built in as {existing} and cannot be declared as {kind}"
+            )),
+            _ => {
+                self.hosts.insert(name.to_string(), kind);
+                Ok(())
+            }
+        }
+    }
+
+    /// Lookup is case-insensitive.
+    pub fn get(&self, host: &str) -> Option<HostType> {
+        self.hosts.get(&host.to_ascii_lowercase()).copied()
+    }
+}
+
+/// Lowercase letters, digits, `.` and `-`, with at least one letter or digit.
+pub fn is_valid_host_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+}
 
 /// Outcome of a read-access probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,7 +369,7 @@ pub fn client_for(
     client_for_policy(host_type, host, base, DEFAULT_MAX_RATE_WAIT)
 }
 
-/// Like `client_for`, with the longest rate-limit wait from `[rate_limit]` in config.toml.
+/// Like `client_for`, with the longest rate-limit wait from the recipe's `[rate_limit]`.
 pub fn client_for_policy(
     host_type: HostType,
     host: &str,
@@ -312,7 +386,7 @@ pub fn client_for_policy(
     })
 }
 
-/// The longest rate-limit wait fleetify takes on its own, when `[rate_limit]` in config.toml
+/// The longest rate-limit wait fleetify takes on its own, when the recipe's `[rate_limit]`
 /// does not say otherwise. A longer wait ends the repo as `rate_limited`.
 pub const DEFAULT_MAX_RATE_WAIT: Duration = Duration::from_secs(15 * 60);
 /// The wait when the host gives neither `Retry-After` nor a reset time.

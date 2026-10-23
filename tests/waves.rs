@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use fleetify::config::{Config, HostType};
 use fleetify::credentials::Credentials;
+use fleetify::hosts::HostType;
 use fleetify::hosts::client_for;
 use fleetify::recipe::Recipe;
 use fleetify::report::{RepoResult, Report};
@@ -51,7 +51,6 @@ fn run_waves(
     let client = client_for(HostType::Github, "github.com", None).unwrap();
     let loaded = Loaded {
         credentials: Credentials::parse("").unwrap(),
-        config: Config::default(),
         repos: paths.iter().map(|p| repo(p)).collect(),
         clients: BTreeMap::from([("github.com".to_string(), client)]),
         agent: None,

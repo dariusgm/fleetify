@@ -3,18 +3,19 @@
 //! ```text
 //! github:owner/name                 (github.com)
 //! gitlab:group/sub/name             (gitlab.com, subgroups allowed)
-//! https://host/path/name.git        (any configured host)
+//! https://host/path/name.git        (any declared host)
 //! ssh://git@host[:port]/path.git
 //! git@host:path/name.git            (scp-like SSH)
 //! ```
 //!
-//! A bare `owner/name` is rejected: the host would be ambiguous. Hosts other than
-//! `github.com` and `gitlab.com` must be configured in `config.toml`.
+//! A bare `owner/name` is rejected: the host would be ambiguous. The host comes from the
+//! URL. A host other than `github.com` and `gitlab.com` must be declared in the recipe
+//! (`[hosts."<name>"] type = "github"|"gitlab"`).
 
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::config::{HostTable, HostType};
+use crate::hosts::{HostTable, HostType};
 
 /// One repository from `repos.txt`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,7 +124,7 @@ fn parse_entry(entry: &str, hosts: &HostTable) -> Result<Repo, String> {
 fn shorthand(host: &str, path: String, hosts: &HostTable) -> Result<Repo, String> {
     let host_type = hosts
         .get(host)
-        .ok_or_else(|| format!("host {host} is not configured"))?;
+        .ok_or_else(|| format!("host {host} is not declared in the recipe"))?;
     let clone_url = format!("https://{host}/{path}.git");
     Ok(build(host, host_type, path, clone_url))
 }
@@ -164,7 +165,7 @@ fn scp_form(entry: &str, hosts: &HostTable) -> Result<Repo, String> {
 
 fn lookup(hosts: &HostTable, host: &str) -> Result<HostType, String> {
     hosts.get(host).ok_or_else(|| {
-        format!("host {host} is not configured; add [hosts.\"{host}\"] with type = \"github\" or \"gitlab\" to config.toml")
+        format!("host {host} is not declared in the recipe; add [hosts.\"{host}\"] with type = \"github\" or \"gitlab\" to recipe.toml")
     })
 }
 
@@ -220,11 +221,15 @@ fn build(host: &str, host_type: HostType, path: String, clone_url: String) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::recipe::Recipe;
 
     fn hosts() -> HostTable {
-        Config::parse(
+        Recipe::parse(
             r#"
+            schema = 1
+            name = "hosts"
+            branch = "b"
+            pr_title = "t"
             [hosts."gitlab.example.com"]
             type = "gitlab"
             "#,
@@ -315,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_host_names_the_config_entry_to_add() {
+    fn unknown_host_names_the_recipe_entry_to_add() {
         let errs = errors("https://git.unknown.example/team/x.git");
         assert!(
             errs[0].message.contains("[hosts.\"git.unknown.example\"]"),

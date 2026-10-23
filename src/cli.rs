@@ -10,6 +10,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::agents;
 use crate::clock::today_utc;
+use crate::credentials::Credentials;
 use crate::logging;
 use crate::recipe::Recipe;
 use crate::report::{self, RepoResult, Report};
@@ -32,9 +33,9 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     pub workdir: Option<PathBuf>,
 
-    /// The config file [default: ~/.config/fleetify/config.toml, or $XDG_CONFIG_HOME]
+    /// The credentials file, with the grants [default: ~/.config/fleetify/credentials.toml, or $XDG_CONFIG_HOME]
     #[arg(long, global = true, value_name = "FILE")]
-    pub config: Option<PathBuf>,
+    pub credentials: Option<PathBuf>,
 
     /// Log at debug level (RUST_LOG takes precedence)
     #[arg(long, global = true)]
@@ -69,7 +70,7 @@ pub struct RunArgs {
     /// Agent to use when the recipe names none
     #[arg(long)]
     pub agent: Option<String>,
-    /// Model for the agent, passed to the agent CLI unchanged (overrides the recipe and config.toml)
+    /// Model for the agent, passed to the agent CLI unchanged (overrides the recipe)
     #[arg(long)]
     pub model: Option<String>,
     /// Wave sizes, e.g. "1,all"
@@ -82,7 +83,7 @@ pub struct RunArgs {
     #[arg(long)]
     pub continue_if_green: bool,
     /// Merge after the change request is open (second key; needs `ci.merge = "when_green"`
-    /// and a `[[merge_policy]]` rule for the repository in config.toml until the CI gate exists)
+    /// and a `[[merge_policy]]` rule for the repository in credentials.toml until the CI gate exists)
     #[arg(long)]
     pub merge: bool,
     /// Allow agents that did not pass `check-agent`
@@ -109,7 +110,7 @@ pub struct RunArgs {
 pub enum Command {
     /// Run a recipe over the repositories listed in a repos file
     Run(Box<RunArgs>),
-    /// Check a recipe: schema, referenced files and rendered commands per OS
+    /// Check a recipe: schema, referenced files, effective settings and rendered commands per OS
     Validate {
         recipe_dir: PathBuf,
         /// Agent to assume when the recipe names none
@@ -171,22 +172,23 @@ pub fn resolve_workdir(explicit: Option<PathBuf>) -> Option<PathBuf> {
     })
 }
 
-/// The default config file: `$XDG_CONFIG_HOME/fleetify/config.toml`, else
-/// `~/.config/fleetify/config.toml`. Like opencode, configuration lives under `.config`;
-/// secrets stay in the working directory.
-pub fn default_config_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+/// The default credentials file: `$XDG_CONFIG_HOME/fleetify/credentials.toml`, else
+/// `~/.config/fleetify/credentials.toml`. Like opencode, configuration and keys live under
+/// `.config`. The file holds the tokens and the user's grants; the working directory holds
+/// only run data.
+pub fn default_credentials_path(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     let base = match xdg.filter(|value| !value.is_empty()) {
         Some(xdg) => PathBuf::from(xdg),
         None => PathBuf::from(home?).join(".config"),
     };
-    Some(base.join("fleetify").join("config.toml"))
+    Some(base.join("fleetify").join("credentials.toml"))
 }
 
-/// Resolves the config file: `--config`, else the default above.
-pub fn resolve_config(explicit: Option<PathBuf>) -> Option<PathBuf> {
+/// Resolves the credentials file: `--credentials`, else the default above.
+pub fn resolve_credentials(explicit: Option<PathBuf>) -> Option<PathBuf> {
     explicit.or_else(|| {
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-        default_config_path(std::env::var_os("XDG_CONFIG_HOME"), home)
+        default_credentials_path(std::env::var_os("XDG_CONFIG_HOME"), home)
     })
 }
 
@@ -202,8 +204,8 @@ fn start_logging(path: &Path, debug: bool) -> Result<(), ExitCode> {
 
 /// Entry point after argument parsing.
 pub fn run(cli: Cli) -> ExitCode {
-    let Some(config) = resolve_config(cli.config.clone()) else {
-        eprintln!("fleetify: cannot determine the config file; pass --config");
+    let Some(credentials) = resolve_credentials(cli.credentials.clone()) else {
+        eprintln!("fleetify: cannot determine the credentials file; pass --credentials");
         return ExitCode::from(2);
     };
     let Some(workdir) = resolve_workdir(cli.workdir.clone()) else {
@@ -213,7 +215,7 @@ pub fn run(cli: Cli) -> ExitCode {
     let debug = cli.debug;
 
     match cli.command {
-        Command::Run(args) => run_command(&workdir, &config, debug, *args),
+        Command::Run(args) => run_command(&workdir, &credentials, debug, *args),
         Command::DebugPanic => {
             if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
                 return code;
@@ -224,7 +226,9 @@ pub fn run(cli: Cli) -> ExitCode {
             println!("{}", crate::recipe::json_schema());
             ExitCode::SUCCESS
         }
-        Command::Validate { recipe_dir, agent } => validate_command(&recipe_dir, agent.as_deref()),
+        Command::Validate { recipe_dir, agent } => {
+            validate_command(&recipe_dir, agent.as_deref(), &credentials)
+        }
         Command::Clean { run } => clean_command(&workdir, debug, run),
         Command::Report {
             run,
@@ -245,7 +249,7 @@ pub fn run(cli: Cli) -> ExitCode {
 }
 
 /// `fleetify run`. A dry run plans; a real run executes the no-agent pipeline.
-fn run_command(workdir: &Path, config: &Path, debug: bool, args: RunArgs) -> ExitCode {
+fn run_command(workdir: &Path, credentials: &Path, debug: bool, args: RunArgs) -> ExitCode {
     let recipe = match Recipe::load(&args.recipe_dir) {
         Ok(recipe) => recipe,
         Err(err) => {
@@ -300,7 +304,7 @@ fn run_command(workdir: &Path, config: &Path, debug: bool, args: RunArgs) -> Exi
 
     let input = RunInput {
         workdir,
-        config,
+        credentials,
         recipe_dir: &args.recipe_dir,
         recipe: &recipe,
         repos_file: &args.repos_file,
@@ -566,7 +570,7 @@ fn check_agent_command(workdir: &Path, debug: bool, name: &str, model: Option<&s
 
 /// `fleetify validate`: prints the rendered commands on success. Exit code 3 when the
 /// recipe is refused, with every issue listed on stderr.
-fn validate_command(dir: &Path, agent: Option<&str>) -> ExitCode {
+fn validate_command(dir: &Path, agent: Option<&str>, credentials: &Path) -> ExitCode {
     let recipe = match Recipe::load(dir) {
         Ok(recipe) => recipe,
         Err(err) => {
@@ -594,7 +598,8 @@ fn validate_command(dir: &Path, agent: Option<&str>) -> ExitCode {
         }
     };
     println!("recipe {} is valid", recipe.name);
-    println!("branch: {}", recipe.branch);
+    println!("branch: {}", recipe.remote_branch());
+    print_settings(&recipe, agent, credentials);
     for command in rendered {
         println!(
             "{} [{}]: {}",
@@ -604,6 +609,83 @@ fn validate_command(dir: &Path, agent: Option<&str>) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+/// The effective settings of a recipe, then what it asks for and whether the user's grants in
+/// `credentials.toml` cover that. A grant that is missing is reported, not refused: the recipe
+/// is valid, and the run will refuse on this machine until the grant is added.
+fn print_settings(recipe: &Recipe, agent: Option<&str>, credentials: &Path) {
+    let budget = recipe.ci.log_budget();
+    let mut hosts = vec![
+        "github.com (github)".to_string(),
+        "gitlab.com (gitlab)".to_string(),
+    ];
+    hosts.extend(
+        recipe
+            .hosts
+            .iter()
+            .map(|(name, entry)| format!("{name} ({})", entry.kind)),
+    );
+    println!("settings:");
+    println!("  hosts: {}", hosts.join(", "));
+    println!(
+        "  policy.require_checked_agent = {}",
+        recipe.policy.require_checked_agent
+    );
+    println!(
+        "  ci.dispatch_after_s = {}",
+        recipe.ci.dispatch_after().as_secs()
+    );
+    println!(
+        "  ci.log_lines = {}, ci.log_chars = {}",
+        budget.lines, budget.chars
+    );
+    println!(
+        "  rate_limit.max_wait_min = {}",
+        recipe.rate_limit.max_wait().as_secs() / 60
+    );
+    if let Some(agent) = agent.or(recipe.agent.as_deref()) {
+        match recipe.model_for(agent) {
+            Some(model) => println!("  model for {agent}: {model}"),
+            None => println!("  model for {agent}: the agent's own choice"),
+        }
+    }
+
+    let needs = &recipe.needs;
+    let list = |items: &[String]| {
+        if items.is_empty() {
+            "none".to_string()
+        } else {
+            items.join(", ")
+        }
+    };
+    println!(
+        "needs: commands [{}], web {}, directories [{}], unrestricted {}",
+        list(&needs.commands),
+        if needs.web { "yes" } else { "no" },
+        list(&needs.extra_directories),
+        if needs.unrestricted { "yes" } else { "no" },
+    );
+    let agent_name = agent.or(recipe.agent.as_deref()).unwrap_or("");
+    match Credentials::load(credentials) {
+        Ok((creds, _)) => {
+            let permissions = &creds.grants.permissions;
+            let missing = agents::missing_permissions(recipe, permissions, agent_name);
+            if missing.is_empty() {
+                println!("grants: all granted in {}", credentials.display());
+            } else {
+                println!("grants: NOT granted here: {}", missing.join(", "));
+                println!("  add to {}:", credentials.display());
+                for line in grant_lines(recipe, permissions, agent_name) {
+                    println!("    {line}");
+                }
+            }
+        }
+        Err(err) => println!("grants: {err}"),
+    }
+    if credentials.with_file_name("config.toml").exists() {
+        println!("warning: config.toml is no longer read; see the run's refusal message");
+    }
 }
 
 /// `fleetify clean`: removes the workspaces of one run. Clones stay.
@@ -661,25 +743,78 @@ fn display_argv(argv: &[String]) -> String {
         .join(" ")
 }
 
+/// The `credentials.toml` lines that would grant what the recipe asks for and the user does
+/// not have yet, as TOML. `validate` prints them, so a recipe shared with someone shows what
+/// to add.
+fn grant_lines(
+    recipe: &Recipe,
+    permissions: &crate::grants::Permissions,
+    agent: &str,
+) -> Vec<String> {
+    let list = |items: Vec<&String>| {
+        let inner: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
+        format!("[{}]", inner.join(", "))
+    };
+    let mut keys = Vec::new();
+    let commands: Vec<&String> = recipe
+        .needs
+        .commands
+        .iter()
+        .filter(|c| !permissions.commands.contains(c))
+        .collect();
+    if !commands.is_empty() {
+        keys.push(format!("commands = {}", list(commands)));
+    }
+    if recipe.needs.web && !permissions.web {
+        keys.push("web = true".to_string());
+    }
+    let directories: Vec<&String> = recipe
+        .needs
+        .extra_directories
+        .iter()
+        .filter(|d| !permissions.extra_directories.contains(d))
+        .collect();
+    if !directories.is_empty() {
+        keys.push(format!("extra_directories = {}", list(directories)));
+    }
+    if !recipe.policy.require_checked_agent && !permissions.unchecked_agents {
+        keys.push("unchecked_agents = true".to_string());
+    }
+
+    let mut lines = Vec::new();
+    if !keys.is_empty() {
+        lines.push("[permissions]".to_string());
+        lines.extend(keys);
+    }
+    if recipe.needs.unrestricted && !permissions.agent.get(agent).is_some_and(|p| p.unrestricted) {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(format!("[permissions.agent.{agent}]"));
+        lines.push("unrestricted = true  # the blanket option; you decide".to_string());
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn config_lives_under_dot_config_and_honours_xdg() {
+    fn credentials_live_under_dot_config_and_honour_xdg() {
         let home = Some(OsString::from("/home/u"));
         assert_eq!(
-            default_config_path(None, home.clone()),
-            Some(PathBuf::from("/home/u/.config/fleetify/config.toml"))
+            default_credentials_path(None, home.clone()),
+            Some(PathBuf::from("/home/u/.config/fleetify/credentials.toml"))
         );
         assert_eq!(
-            default_config_path(Some(OsString::from("/xdg")), home.clone()),
-            Some(PathBuf::from("/xdg/fleetify/config.toml"))
+            default_credentials_path(Some(OsString::from("/xdg")), home.clone()),
+            Some(PathBuf::from("/xdg/fleetify/credentials.toml"))
         );
         assert_eq!(
-            default_config_path(Some(OsString::new()), home),
-            Some(PathBuf::from("/home/u/.config/fleetify/config.toml"))
+            default_credentials_path(Some(OsString::new()), home),
+            Some(PathBuf::from("/home/u/.config/fleetify/credentials.toml"))
         );
-        assert_eq!(default_config_path(None, None), None);
+        assert_eq!(default_credentials_path(None, None), None);
     }
 }

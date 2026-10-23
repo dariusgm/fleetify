@@ -15,9 +15,9 @@ use std::time::Duration;
 use crate::clock::rfc3339_now;
 use serde_json::json;
 
-use crate::config::{Config, Permissions};
 use crate::events::EventBus;
 use crate::events::Redactor;
+use crate::grants::Permissions;
 use crate::recipe::Recipe;
 use crate::runner::{BASE_ENV, EnvPolicy, RunRequest, Runner};
 
@@ -155,8 +155,8 @@ fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// What the recipe needs that `config.toml` does not grant. Empty when all is granted.
-pub fn missing_permissions(recipe: &Recipe, permissions: &Permissions) -> Vec<String> {
+/// What the recipe asks for that the user's grants do not cover. Empty when all is granted.
+pub fn missing_permissions(recipe: &Recipe, permissions: &Permissions, name: &str) -> Vec<String> {
     let mut missing = Vec::new();
     for command in &recipe.needs.commands {
         if !permissions.commands.contains(command) {
@@ -170,6 +170,13 @@ pub fn missing_permissions(recipe: &Recipe, permissions: &Permissions) -> Vec<St
         if !permissions.extra_directories.contains(directory) {
             missing.push(format!("directory {directory}"));
         }
+    }
+    let unrestricted_granted = permissions.agent.get(name).is_some_and(|p| p.unrestricted);
+    if recipe.needs.unrestricted && !unrestricted_granted {
+        missing.push(format!("unrestricted for {name}"));
+    }
+    if !recipe.policy.require_checked_agent && !permissions.unchecked_agents {
+        missing.push("unchecked agents (policy.require_checked_agent = false)".to_string());
     }
     missing
 }
@@ -208,27 +215,14 @@ pub fn check_model(model: &str) -> Result<(), String> {
 }
 
 /// The model for one agent run, by precedence: `--model`, then the recipe's `model` (only
-/// when `name` is the recipe's own agent), then `[agents.<name>] model` in config.toml.
+/// when `name` is the recipe's own agent), then `[agents.<name>] model` in the recipe.
 /// `None` passes nothing, so the agent's own configuration decides.
-pub fn resolve_model(
-    cli: Option<&str>,
-    recipe: &Recipe,
-    config: &Config,
-    name: &str,
-) -> Option<String> {
-    let from_recipe = (recipe.agent.as_deref() == Some(name))
-        .then_some(recipe.model.as_deref())
-        .flatten();
-    cli.or(from_recipe)
-        .or(config
-            .agents
-            .get(name)
-            .and_then(|agent| agent.model.as_deref()))
-        .map(str::to_string)
+pub fn resolve_model(cli: Option<&str>, recipe: &Recipe, name: &str) -> Option<String> {
+    cli.or(recipe.model_for(name)).map(str::to_string)
 }
 
-/// What fleetify grants one agent run, after the recipe's needs were checked against
-/// `config.toml`. Each adapter turns these into its own CLI options.
+/// What fleetify grants one agent run, after the recipe's needs were checked against the
+/// user's grants. Each adapter turns these into its own CLI options.
 #[derive(Debug, Default)]
 pub struct Grants {
     pub commands: Vec<String>,
@@ -256,7 +250,8 @@ pub fn grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> Grants 
             .collect(),
         web: recipe.needs.web && permissions.web,
         directories: recipe.needs.extra_directories.clone(),
-        unrestricted: permissions.agent.get(name).is_some_and(|p| p.unrestricted),
+        unrestricted: recipe.needs.unrestricted
+            && permissions.agent.get(name).is_some_and(|p| p.unrestricted),
     }
 }
 
@@ -778,7 +773,7 @@ mod tests {
         assert!(!wants_input("Why is the build slow?"));
         assert!(!wants_input("Built 2 crates in 3 seconds"));
     }
-    use crate::config::AgentPermissions;
+    use crate::grants::AgentPermissions;
     use std::collections::BTreeMap;
 
     fn recipe(needs: &str) -> Recipe {
@@ -804,6 +799,7 @@ text = "Do the thing."
             commands: commands.iter().map(|c| c.to_string()).collect(),
             web,
             extra_directories: Vec::new(),
+            unchecked_agents: false,
             agent: BTreeMap::new(),
         }
     }
@@ -883,12 +879,14 @@ text = "Do the thing."
     #[test]
     fn missing_grants_are_listed() {
         let recipe = recipe("commands = [\"cargo\"]\nweb = true");
-        let missing = missing_permissions(&recipe, &permissions(&[], false));
+        let missing = missing_permissions(&recipe, &permissions(&[], false), "claude-code");
         assert_eq!(
             missing,
             vec!["command cargo".to_string(), "web".to_string()]
         );
-        assert!(missing_permissions(&recipe, &permissions(&["cargo"], true)).is_empty());
+        assert!(
+            missing_permissions(&recipe, &permissions(&["cargo"], true), "claude-code").is_empty()
+        );
     }
 
     #[test]
@@ -931,12 +929,48 @@ text = "Do the thing."
             "claude-code".to_string(),
             AgentPermissions { unrestricted: true },
         );
+        // Granted but not asked for by the recipe: no flag.
         assert!(
-            invocation("claude-code", &recipe, &perms, None, Path::new("/ws"))
+            !invocation("claude-code", &recipe, &perms, None, Path::new("/ws"))
                 .unwrap()
                 .argv
                 .contains(&flag.to_string())
         );
+        // Asked for and granted: the flag.
+        let asks = self::recipe("unrestricted = true");
+        assert!(
+            invocation("claude-code", &asks, &perms, None, Path::new("/ws"))
+                .unwrap()
+                .argv
+                .contains(&flag.to_string())
+        );
+    }
+
+    #[test]
+    fn asking_for_unrestricted_or_unchecked_agents_needs_a_grant() {
+        let mut perms = permissions(&[], false);
+        let asks = self::recipe("unrestricted = true");
+        assert_eq!(
+            missing_permissions(&asks, &perms, "claude-code"),
+            vec!["unrestricted for claude-code".to_string()]
+        );
+        perms.agent.insert(
+            "claude-code".to_string(),
+            AgentPermissions { unrestricted: true },
+        );
+        assert!(missing_permissions(&asks, &perms, "claude-code").is_empty());
+
+        let mut unchecked = self::recipe("");
+        unchecked.policy.require_checked_agent = false;
+        let unchecked_missing =
+            missing_permissions(&unchecked, &permissions(&[], false), "claude-code");
+        assert_eq!(
+            unchecked_missing,
+            vec!["unchecked agents (policy.require_checked_agent = false)".to_string()]
+        );
+        let mut granted = permissions(&[], false);
+        granted.unchecked_agents = true;
+        assert!(missing_permissions(&unchecked, &granted, "claude-code").is_empty());
     }
 
     #[test]
@@ -1024,43 +1058,37 @@ text = "inline"
     }
 
     #[test]
-    fn model_precedence_is_cli_then_recipe_then_config() {
-        let mut config = Config::default();
-        config.agents.insert(
-            "claude-code".to_string(),
-            crate::config::AgentConfig {
-                model: Some("from-config".to_string()),
-            },
-        );
+    fn model_precedence_is_cli_then_recipe_then_agent_table() {
         let plain = recipe("");
         let mut with_model = recipe("");
         with_model.model = Some("from-recipe".to_string());
+        let mut with_table = recipe("");
+        with_table.agents.insert(
+            "claude-code".to_string(),
+            crate::recipe::AgentSettings {
+                model: Some("from-table".to_string()),
+            },
+        );
         assert_eq!(
-            resolve_model(Some("from-cli"), &with_model, &config, "claude-code").as_deref(),
+            resolve_model(Some("from-cli"), &with_model, "claude-code").as_deref(),
             Some("from-cli")
         );
         assert_eq!(
-            resolve_model(None, &with_model, &config, "claude-code").as_deref(),
+            resolve_model(None, &with_model, "claude-code").as_deref(),
             Some("from-recipe")
         );
         assert_eq!(
-            resolve_model(None, &plain, &config, "claude-code").as_deref(),
-            Some("from-config")
+            resolve_model(None, &with_table, "claude-code").as_deref(),
+            Some("from-table")
         );
-        assert_eq!(
-            resolve_model(None, &plain, &Config::default(), "claude-code"),
-            None
-        );
+        assert_eq!(resolve_model(None, &plain, "claude-code"), None);
     }
 
     #[test]
     fn recipe_model_applies_only_to_the_recipes_own_agent() {
         let mut with_model = recipe("");
         with_model.model = Some("from-recipe".to_string());
-        assert_eq!(
-            resolve_model(None, &with_model, &Config::default(), "opencode"),
-            None
-        );
+        assert_eq!(resolve_model(None, &with_model, "opencode"), None);
     }
 
     #[test]
