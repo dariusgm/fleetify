@@ -935,7 +935,7 @@ Declared but unused: none after the MVP cleanup of 2026-10-22 (see below).
 
 ## Remove the config.toml layer (2026-10-23)
 
-Every behaviour setting lives in the recipe. The user's side is one file, `credentials.toml`, which holds the tokens and the grants. The plan is `tasks/remove-config-layer.md`.
+Every behaviour setting lives in the recipe. The user's side is one file, `credentials.toml`, which holds the tokens and the grants. The plan was `tasks/remove-config-layer.md`; the file was removed when the change merged.
 
 - **Decision: no `config.toml`.** The binary no longer reads it. A run with `config.toml` next to the credentials file, or in the working directory, refuses and names the way out. `--config` is replaced by `--credentials FILE` (default `~/.config/fleetify/credentials.toml`, or `$XDG_CONFIG_HOME`). Reason: a setting that comes from a file the recipe does not show makes the recipe not reproducible on another machine.
 - **Open question 1, hosts: derived from the URL.** The host name comes from the repository line, as before. A host type is needed only for a host beyond `github.com` and `gitlab.com`, and the recipe states it: `[hosts."gitlab.example.com"] type = "gitlab"`. The built-in hosts keep their types, and a recipe that declares one as another type is refused.
