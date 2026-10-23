@@ -31,3 +31,4 @@ cargo build --release
 ## License
 
 MIT, see `LICENSE`.
+CI fix loop test
