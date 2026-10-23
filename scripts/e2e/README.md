@@ -22,8 +22,8 @@ Claude Code use their own quota and are only run when named.
 
 - A built fleetify binary (`cargo build`), or `--fleetify PATH`.
 - `gh` and `glab` logged in as the owner account, and `git`.
-- `~/.fleetify/credentials.toml` with the owner's tokens. fleetify uses these to push and open
-  merge/pull requests; the script copies the file into its work folder.
+- `~/.config/fleetify/credentials.toml` with the owner's tokens and grants. fleetify uses these to push and open
+  merge/pull requests; the script copies the file into its work folder and passes `--credentials`. The grants must include `sh .agent/tools/verify.sh`, and the merge rule for the test owner when a case merges.
 - For `opencode-llamacpp`: the llama.cpp server reachable (`FLEETIFY_E2E_LLAMA_URL`, default
   `http://192.168.178.151:8080/v1/models`) and the `llamacpp` provider in the opencode config.
 

@@ -1,8 +1,8 @@
-# Configuration and credentials
+# Credentials and grants
 
 > Design of fleetify. Moved from the former PLAN.md when it was dissolved (2026-10-23). Describes the target design; open work is in `tasks/`.
 
-Credentials live in `~/.config/fleetify/credentials.toml`, owner-only, next to the configuration file. Behaviour settings are moving into the recipe (see tasks/remove-config-layer.md); until that is done, `config.toml` next to it still holds the hosts and permissions.
+Credentials and grants live in `~/.config/fleetify/credentials.toml`, owner-only. It is the only file on the user's side: tokens (`[[credential]]`), the permissions the user grants (`[permissions]`) and the merge rules (`[[merge_policy]]`). Behaviour settings are in the recipe, and there is no `config.toml` (see DECISIONS.md, "Remove the config.toml layer").
 
 ```toml
 # ~/.config/fleetify/credentials.toml  (secrets, owner-only permissions)

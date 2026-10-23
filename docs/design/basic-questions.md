@@ -13,11 +13,11 @@ git@github.com:myname/project-b.git
 # GitLab (gitlab.com, subgroups allowed)
 gitlab:mygroup/subgroup/project-c
 
-# self-hosted GitLab: full URL, host must be listed in config.toml
+# self-hosted GitLab: full URL, host must be declared in the recipe
 https://gitlab.example.com/team/project-d.git
 ```
 
-Accepted forms: `github:owner/name` and `gitlab:group/.../name` (github.com / gitlab.com); a full clone URL (HTTPS or SSH). `github.com` and `gitlab.com` are recognised. Every other host must be mapped explicitly in `config.toml`, nothing is guessed. A bare `owner/name` is rejected because the host would be ambiguous. Every line normalises to a `Repo` with `host`, `host_type`, `path` (full path including subgroups), `name` (last path segment) and a clone URL. The file lives in Git and is reviewable. Generate it with a small script against the host API if needed, then review by hand.
+Accepted forms: `github:owner/name` and `gitlab:group/.../name` (github.com / gitlab.com); a full clone URL (HTTPS or SSH). `github.com` and `gitlab.com` are recognised. The host comes from the URL. Every other host must be declared in the recipe (`[hosts."<name>"] type = "github"|"gitlab"`), nothing is guessed. A bare `owner/name` is rejected because the host would be ambiguous. Every line normalises to a `Repo` with `host`, `host_type`, `path` (full path including subgroups), `name` (last path segment) and a clone URL. The file lives in Git and is reviewable. Generate it with a small script against the host API if needed, then review by hand.
 
 **2. Where do the repos live?**
 fleetify owns a working directory (default `~/.fleetify/`, configurable) and never touches your normal checkouts.
@@ -78,7 +78,7 @@ posix = ["bash", "{tools}/prepare.sh", "{repo}"]
 windows = ["pwsh", "-NoProfile", "-File", "{tools}/prepare.ps1", "{repo}"]
 timeout_s = 120
 
-[needs]                          # declared needs beyond the baseline; checked against config.toml, never grants
+[needs]                          # declared needs beyond the baseline; checked against credentials.toml, never grants
 commands = ["uv run pytest"]
 web = false
 extra_directories = []

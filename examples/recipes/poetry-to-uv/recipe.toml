@@ -1,7 +1,7 @@
 # Moves a Poetry project to uv. The agent rewrites pyproject.toml and the Dockerfile,
 # runs `uv lock`, and the verifier checks the lock, a minimum-version lower bound
 # (tools/check_lower_bounds.py) and the build. Merging needs --merge, and a
-# [[merge_policy]] rule for the repository in config.toml, because there is no CI gate yet.
+# [[merge_policy]] rule for the repository in credentials.toml, because there is no CI gate yet.
 schema = 1
 name = "poetry-to-uv"
 branch = "chore/poetry-to-uv"

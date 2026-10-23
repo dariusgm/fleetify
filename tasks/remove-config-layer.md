@@ -1,6 +1,6 @@
 # Remove the config.toml layer
 
-**Status:** decided 2026-10-23, next up.
+**Status:** done on branch `feature/remove-config-layer` (2026-10-23), merge request open. The choices are in DECISIONS.md, "Remove the config.toml layer".
 
 **Why.** Behaviour settings live in two places today: the recipe and `config.toml`. A recipe does not show the settings that come from the config, so it is not reproducible on another machine. The decision is that every behaviour setting lives in the recipe, and built-in defaults apply where the recipe is silent.
 

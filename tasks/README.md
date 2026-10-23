@@ -2,10 +2,6 @@
 
 Open work of fleetify, one file per item. Each file says what is known, what is open and when it is done, so it can be worked on alone. Status words: **open** (to be worked on), **needs input** (waiting for the user), **postponed**, **idea** (not decided).
 
-## Next
-
-- [Remove the config.toml layer](remove-config-layer.md)
-
 ## Bugs
 
 - [Bug: CI status requests fail during the wait, retry counter stuck](bug-ci-status-retry.md)

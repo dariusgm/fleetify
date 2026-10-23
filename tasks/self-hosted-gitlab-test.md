@@ -6,7 +6,7 @@
 
 **Steps.**
 
-1. Add the host to the recipe (after the config-layer decision) and a credential rule for it.
+1. Declare the host in the recipe (`[hosts."<name>"] type = "gitlab"`) and add a credential rule for it to `credentials.toml`.
 2. Run the GitLab loop test (`ci-loop-test-gitlab` in the trial history) against the instance.
 3. Check: the internal CA is trusted through the platform verifier, `HTTPS_PROXY` is honoured, the CI dispatch works, the merge request opens.
 
