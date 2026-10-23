@@ -83,7 +83,7 @@ fn process_repo_steps(ctx: &Ctx<'_>, repo: &Repo, agent_ran: &Cell<bool>) -> Rep
         return result;
     }
 
-    let branch = ctx.config.branch_name(&ctx.recipe.branch);
+    let branch = ctx.recipe.remote_branch();
     let Some(client) = ctx.clients.get(&repo.host) else {
         return error_result(
             ctx.layout,
@@ -534,7 +534,7 @@ fn gate_ci(
         phase: "ci_wait".to_string(),
     });
     let timeout = Duration::from_secs(u64::from(ctx.recipe.ci.timeout_min) * 60);
-    let branch = ctx.config.branch_name(&ctx.recipe.branch);
+    let branch = ctx.recipe.remote_branch();
     let workflow = ctx.recipe.ci.dispatch_workflow.as_deref();
     let mut start = || -> Result<(), crate::hosts::HostError> {
         client.dispatch_ci(repo, token, &branch, workflow)?;
@@ -547,7 +547,7 @@ fn gate_ci(
         Ok(())
     };
     let dispatch = crate::ci::Dispatch {
-        after: ctx.config.ci.dispatch_after(),
+        after: ctx.recipe.ci.dispatch_after(),
         start: &mut start,
     };
     let verdict = crate::ci::poll(
@@ -658,12 +658,12 @@ fn merge_change(
     });
     // Without a CI gate, only a merge rule for this repository allows the merge. With
     // `ci.wait` both callers merge only after the gate passed for `expected`.
-    let rule = ctx.config.merge_rule(&repo.key());
+    let rule = ctx.credentials.grants.merge_rule(&repo.key());
     if !ctx.recipe.ci.wait && !rule.is_some_and(|rule| rule.merge_without_ci) {
         result.result = "merge_blocked".to_string();
         result.successful = false;
         result.detail = format!(
-            "no [[merge_policy]] rule in config.toml allows merging {} without a CI gate",
+            "no [[merge_policy]] rule in credentials.toml allows merging {} without a CI gate",
             repo.key()
         );
         return result;
@@ -763,7 +763,7 @@ fn open_change_request(
             Vec::new(),
         );
     };
-    let branch = &ctx.config.branch_name(&ctx.recipe.branch);
+    let branch = &ctx.recipe.remote_branch();
     let body = change_body(ctx, base_sha, default_branch, agent_note);
     match client.create_change_request(
         repo,
@@ -909,11 +909,11 @@ fn run_agent(
         name,
         prompt,
         ctx.recipe,
-        &ctx.config.permissions,
+        &ctx.credentials.grants.permissions,
         ctx.model,
         workspace,
     )?;
-    let grants = agents::grants(ctx.recipe, &ctx.config.permissions, name);
+    let grants = agents::grants(ctx.recipe, &ctx.credentials.grants.permissions, name);
     ctx.runner.bus().emit(Event::PermissionsEffective {
         repo: repo.key(),
         agent: name.to_string(),
@@ -932,7 +932,7 @@ fn run_agent(
     request.idle_warn = (idle_min > 0).then(|| Duration::from_secs(u64::from(idle_min) * 60));
     request.prompt_check = Some(agents::wants_input);
     request.limit_check = Some(agents::is_rate_limit);
-    request.limit_wait = Some(ctx.config.rate_limit.max_wait());
+    request.limit_wait = Some(ctx.recipe.rate_limit.max_wait());
     request.env = invocation.env;
     Ok(ctx.runner.run(request))
 }
@@ -1323,7 +1323,7 @@ fn gate_with_fixes(
             return (result, sha);
         };
         set_phase(ctx, repo, "ci_fix");
-        let budget = ctx.config.ci.log_budget();
+        let budget = ctx.recipe.ci.log_budget();
         // A check run can be complete while its workflow run is not yet: read again briefly.
         let mut failures = Vec::new();
         for attempt in 0..FAILURE_READS {

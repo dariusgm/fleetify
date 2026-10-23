@@ -22,9 +22,8 @@ Known limits: Windows is not verified yet, self-hosted GitLab has not run agains
 
 The open work is one file per item in [`tasks/`](tasks/README.md). The first three:
 
-1. [Remove the config.toml layer](tasks/remove-config-layer.md): every setting moves into the recipe.
-2. [Bug: CI status requests during the wait](tasks/bug-ci-status-retry.md) and [host errors without an endpoint](tasks/bug-host-error-endpoint.md).
-3. [Real trial](tasks/m17-real-trial.md) on three to five private repositories, once the repositories and the task are given.
+1. [Bug: CI status requests during the wait](tasks/bug-ci-status-retry.md) and [host errors without an endpoint](tasks/bug-host-error-endpoint.md).
+2. [Real trial](tasks/m17-real-trial.md) on three to five private repositories, once the repositories and the task are given.
 
 ## What can go
 
@@ -35,7 +34,8 @@ The open work is one file per item in [`tasks/`](tasks/README.md). The first thr
 ## Concepts
 
 - **Repository list.** A text file, one repository per line: `github:owner/name`,
-  `gitlab:group/name` or a clone URL. Other hosts are declared in `config.toml`.
+  `gitlab:group/name` or a clone URL. The host comes from the URL. A self-hosted host is
+  declared in the recipe: `[hosts."gitlab.example.com"] type = "gitlab"`.
 - **Recipe.** A directory with `recipe.toml`, prompts and `tools/` scripts. It
   says which repositories it applies to (`applies_to`), what the agent should do
   (`instructions`), how to verify (`verify`), what may change (`guards`) and how
@@ -128,7 +128,7 @@ fix_rounds = 1
 ```
 
 ```toml
-# config.toml: how much of each failed job's log the agent sees (default 100 lines
+# recipe.toml: how much of each failed job's log the agent sees (default 100 lines
 # or 1000 characters, whichever is smaller)
 [ci]
 log_lines = 100
@@ -150,16 +150,52 @@ fleetify logs <repo> -f                             # tail the agent log of one 
 fleetify check-agent claude-code --model NAME       # canary: is the agent confined?
 ```
 
-Configuration and credentials live together in `~/.config/fleetify/`:
-`config.toml` (no secrets) and `credentials.toml` (tokens, owner-only permissions).
-`--config FILE` moves both (the credentials sit next to the config file), and
-`$XDG_CONFIG_HOME` is honoured. The working directory `~/.fleetify/` holds the clones,
-runs and logs. A minimal `[ci]` section:
+### Recipe settings and grants
+
+Every behaviour setting lives in the recipe, with a default where the recipe is silent.
+There is no `config.toml`: a run that finds one refuses and names the way out.
+
+The one file on your side is `~/.config/fleetify/credentials.toml` (owner-only
+permissions; `--credentials FILE` or `$XDG_CONFIG_HOME` change its place). It holds the
+tokens and your grants. A recipe can only ask for a grant (`needs`, `policy`, `ci.merge`),
+never give itself one. A run refuses before any repository is touched when the grants do
+not cover what the recipe asks for.
 
 ```toml
+# recipe.toml: what the recipe asks for, and the settings it changes
+[needs]
+commands = ["cargo"]          # granted by [permissions] commands in credentials.toml
+unrestricted = false          # the agent CLI's blanket option; needs a grant too
+
+[policy]
+require_checked_agent = true  # default; false needs unchecked_agents in credentials.toml
+
 [ci]
-dispatch_after_s = 180   # 0 starts CI at once; unset means 180
+dispatch_after_s = 180        # 0 starts CI at once; unset means 180
+
+[rate_limit]
+max_wait_min = 15             # 0 never waits; unset means 15
 ```
+
+```toml
+# credentials.toml: your grants and tokens (chmod 600)
+[permissions]
+commands = ["cargo"]
+
+[[merge_policy]]
+match = "github.com/your-name/*"
+merge_without_ci = true
+```
+
+`fleetify validate` prints the effective settings of a recipe, what it asks for, and
+whether your grants cover it, with the lines to add when they do not.
+
+### Sharing a recipe
+
+A recipe is portable: nothing in it refers to your machine, so a copy works for someone
+else as long as their grants cover what it asks for. Copy the recipe directory, or put it
+in a repository. The other person runs `fleetify validate` on it, adds the grants it
+prints to their `credentials.toml`, and runs it with their own tokens.
 
 `fleetify schema` prints the JSON Schema of `recipe.toml`. The Python package
 in `authoring/` generates recipes against that schema.

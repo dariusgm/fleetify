@@ -2,8 +2,8 @@
 
 mod support;
 
-use fleetify::config::HostType;
 use fleetify::credentials::Secret;
+use fleetify::hosts::HostType;
 use fleetify::hosts::client_for_policy;
 use fleetify::hosts::{
     Access, CiItem, CiState, CrState, Host, HostError, MergeOutcome, client_for,

@@ -11,6 +11,13 @@
       ],
       "default": null
     },
+    "agents": {
+      "description": "Defaults per agent, keyed by agent name. Used when the run's agent has no `model`\nfrom `--model` or from the recipe's own `model`.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/AgentSettings"
+      }
+    },
     "applies_to": {
       "$ref": "#/$defs/AppliesTo"
     },
@@ -31,8 +38,16 @@
       "default": null
     },
     "branch": {
-      "description": "Branch created in each repo.",
+      "description": "Branch created in each repo, without the prefix.",
       "type": "string"
+    },
+    "branch_prefix": {
+      "description": "Prefix for every branch fleetify pushes: `<prefix>/<branch>`. Unset means `fleetify`;\nan empty string means no prefix.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
     },
     "ci": {
       "$ref": "#/$defs/Ci"
@@ -51,6 +66,13 @@
     "guards": {
       "$ref": "#/$defs/Guards"
     },
+    "hosts": {
+      "description": "Hosts beyond `github.com` and `gitlab.com`, keyed by host name. A repository's host\ncomes from its URL; this table says which host type that host is.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/HostEntry"
+      }
+    },
     "instructions": {
       "description": "Concatenated in order. Empty means no agent: a pure `prepare` run.",
       "type": "array",
@@ -62,7 +84,7 @@
       "$ref": "#/$defs/Limits"
     },
     "model": {
-      "description": "Model for the recipe's agent, passed to the agent CLI unchanged. Overridden by\n`--model`; `[agents.<name>] model` in config.toml is the fallback.",
+      "description": "Model for the recipe's agent, passed to the agent CLI unchanged. Overridden by\n`--model`; `[agents.<name>] model` is the fallback.",
       "type": [
         "string",
         "null"
@@ -75,6 +97,9 @@
     },
     "needs": {
       "$ref": "#/$defs/Needs"
+    },
+    "policy": {
+      "$ref": "#/$defs/Policy"
     },
     "pr_title": {
       "description": "Title of the pull or merge request.",
@@ -89,6 +114,9 @@
           "type": "null"
         }
       ]
+    },
+    "rate_limit": {
+      "$ref": "#/$defs/RateLimit"
     },
     "schema": {
       "description": "Must be 1.",
@@ -123,6 +151,21 @@
     "pr_title"
   ],
   "$defs": {
+    "AgentSettings": {
+      "description": "`[agents.<name>]`: settings for one agent, used when the recipe names no model.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Model passed to the agent CLI unchanged. Unset leaves the choice to the agent.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
     "AppliesTo": {
       "type": "object",
       "properties": {
@@ -172,6 +215,16 @@
     "Ci": {
       "type": "object",
       "properties": {
+        "dispatch_after_s": {
+          "description": "Seconds to wait for the host's own CI on the pushed commit. If none has started by\nthen, fleetify starts it: `workflow_dispatch` on GitHub, a pipeline on GitLab. `0`\nstarts it at once, without asking the host first. Unset means 180.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
         "dispatch_workflow": {
           "description": "GitHub only: the workflow file fleetify starts with `workflow_dispatch` when the\nhost starts no CI for the pushed commit, for example `tests.yml`. The file needs a\n`workflow_dispatch` trigger. Unset, fleetify cannot start GitHub CI and the repo ends\nas `ci_blocked`.",
           "type": [
@@ -185,6 +238,26 @@
           "type": "integer",
           "format": "uint32",
           "default": 5,
+          "minimum": 0
+        },
+        "log_chars": {
+          "description": "Characters of each failed CI job's log that reach the agent. Unset means 1000. The\nsmaller of `log_lines` and `log_chars` applies.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "log_lines": {
+          "description": "Lines of each failed CI job's log that reach the agent (the last ones). Unset means 100.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
           "minimum": 0
         },
         "merge": {
@@ -330,6 +403,28 @@
       },
       "additionalProperties": false
     },
+    "HostEntry": {
+      "description": "`[hosts.\"<name>\"]`: one host beyond the built-in ones.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "github or gitlab: which API and CI integration the host speaks.",
+          "$ref": "#/$defs/HostType"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "HostType": {
+      "description": "Kind of Git host. Decides which REST API and CI integration are used.",
+      "type": "string",
+      "enum": [
+        "github",
+        "gitlab"
+      ]
+    },
     "Instruction": {
       "type": "object",
       "properties": {
@@ -371,10 +466,11 @@
       "additionalProperties": false
     },
     "Needs": {
+      "description": "What the recipe asks the agent to have. Each item must be granted by the user in\n`credentials.toml`, or the run is refused before any repo is touched. Asking grants nothing.",
       "type": "object",
       "properties": {
         "commands": {
-          "description": "Extra commands the agent needs. Checked against config.toml; never grants anything.",
+          "description": "Extra commands the agent needs, as `[permissions] commands` lists them.",
           "type": "array",
           "default": [],
           "items": {
@@ -388,9 +484,43 @@
             "type": "string"
           }
         },
+        "unrestricted": {
+          "description": "The agent CLI's blanket \"allow everything\" option. Also needs `[permissions.agent.<name>]\nunrestricted = true` in credentials.toml. Not confined by fleetify's grants.",
+          "type": "boolean",
+          "default": false
+        },
         "web": {
           "type": "boolean",
           "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Policy": {
+      "description": "`[policy]`: safety settings. Each one can be tightened by a recipe; loosening one needs\nthe matching grant in `credentials.toml`.",
+      "type": "object",
+      "properties": {
+        "require_checked_agent": {
+          "description": "Refuse agents that did not pass `check-agent`. On by default: an agent that was\nnever checked may write outside its workspace (see DECISIONS.md, confinement).\n`false` needs `[permissions] unchecked_agents = true` in credentials.toml.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "RateLimit": {
+      "description": "`[rate_limit]`: how long fleetify waits when a host asks it to hold back.",
+      "type": "object",
+      "properties": {
+        "max_wait_min": {
+          "description": "The longest wait for one rate limit, in minutes. A longer wait ends the repo as\n`rate_limited` and is not taken. `0` means never wait. Unset means 15.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
         }
       },
       "additionalProperties": false

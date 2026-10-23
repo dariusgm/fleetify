@@ -12,8 +12,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use fleetify::agents::{RESULT_FILE, invocation, write_task};
-use fleetify::config::Permissions;
 use fleetify::events::{EventBus, Redactor};
+use fleetify::grants::Permissions;
 use fleetify::recipe::Recipe;
 use fleetify::runner::{RunRequest, Runner};
 

@@ -4,8 +4,8 @@
 
 mod support;
 
-use fleetify::config::HostType;
 use fleetify::credentials::Secret;
+use fleetify::hosts::HostType;
 use fleetify::hosts::{LogBudget, client_for};
 use fleetify::repos::Repo;
 use support::{Recorded, serve};

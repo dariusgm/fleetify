@@ -263,11 +263,17 @@ DELETE_GITHUB = {"delete_repo"}
 REQUIRED_GITLAB = {"api"}
 
 
+def credentials_file() -> Path:
+    """The user's credentials.toml: tokens and grants, where fleetify reads it."""
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "fleetify" / "credentials.toml"
+
+
 def credential_token(host: str) -> str | None:
-    """The first token in ~/.fleetify/credentials.toml for this host (fleetify's own token)."""
+    """The first token in credentials.toml for this host (fleetify's own token)."""
     import tomllib
 
-    path = Path.home() / ".fleetify" / "credentials.toml"
+    path = credentials_file()
     if not path.is_file():
         return None
     host_name = "github.com" if host == "github" else "gitlab.com"
@@ -369,20 +375,20 @@ def preflight(fleetify: Path, agents: list[str], hosts: list[str]) -> None:
             print(f"note: {name} uses its own quota for each run", file=sys.stderr)
 
 
-def write_config(workdir: Path, owner: str, run_id: str) -> None:
-    (workdir / "config.toml").write_text(
-        "[permissions]\n"
-        'commands = ["sh .agent/tools/verify.sh"]\n\n'
-        "[policy]\nrequire_checked_agent = true\n"
-    )
-    creds = Path.home() / ".fleetify" / "credentials.toml"
-    shutil.copy(creds, workdir / "credentials.toml")
+def write_credentials(workdir: Path) -> Path:
+    """Copies the user's credentials.toml into the work folder. Its grants must cover the
+    e2e recipes (`sh .agent/tools/verify.sh`, and merge rules for the merge cases). The copy
+    keeps the file mode, so it stays owner-only."""
+    path = workdir / "credentials.toml"
+    shutil.copy(credentials_file(), path)
+    return path
 
 
-def check_agents(fleetify: Path, workdir: Path, agents: list[str]) -> None:
+def check_agents(fleetify: Path, workdir: Path, agents: list[str], credentials: Path) -> None:
     for name in agents:
         agent, model = AGENTS[name]
-        args = [str(fleetify), "--workdir", str(workdir), "check-agent", agent]
+        args = [str(fleetify), "--workdir", str(workdir), "--credentials", str(credentials),
+                "check-agent", agent]
         if model:
             args += ["--model", model]
         run(args)
@@ -417,8 +423,8 @@ def execute(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir) if args.workdir else Path(tempfile.mkdtemp(prefix="fleetify-e2e-"))
     workdir.mkdir(parents=True, exist_ok=True)
     owners = {host: owner_of(host) for host in hosts}
-    write_config(workdir, owners.get("github", ""), run_id)
-    check_agents(fleetify, workdir, agents)
+    credentials = write_credentials(workdir)
+    check_agents(fleetify, workdir, agents, credentials)
 
     scratch = workdir / "scratch"
     for case in cases:
@@ -433,7 +439,8 @@ def execute(args: argparse.Namespace) -> int:
         recipe = write_recipe(workdir, name, case.host, case)
         repos_file = workdir / f"{name}.repos"
         repos_file.write_text(f"{HOSTS[case.host].spec}:{owner}/{name}\n")
-        command = [str(fleetify), "--workdir", str(workdir), "run", str(recipe), str(repos_file),
+        command = [str(fleetify), "--workdir", str(workdir), "--credentials", str(credentials),
+                   "run", str(recipe), str(repos_file),
                    "--run", f"e2e-{run_id}-{case.key}", "--plain"]
         if case.agent:
             command += ["--agent", AGENTS[case.agent][0]]

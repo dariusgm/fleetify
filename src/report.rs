@@ -101,7 +101,7 @@ pub fn next_step(class: &str) -> Option<&'static str> {
              run again. No second push happens."
         }
         "rate_limited" | "api_limit" => {
-            "A rate limit stopped the run. Run again after the reset, or raise rate_limit.max_wait_min."
+            "A rate limit stopped the run. Run again after the reset, or raise rate_limit.max_wait_min in the recipe."
         }
         "merge_blocked" => {
             "The change request could not be merged. Resolve checks, reviews or conflicts on the \

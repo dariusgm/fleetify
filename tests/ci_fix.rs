@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fleetify::agents::BINARY_ENV;
-use fleetify::config::{Config, HostType};
 use fleetify::credentials::Credentials;
+use fleetify::hosts::HostType;
 use fleetify::hosts::{Host, client_for};
 use fleetify::recipe::Recipe;
 use fleetify::repos::Repo;
@@ -247,7 +247,6 @@ fn run(name: &str, fix_rounds: u32, ci: Ci) -> (fleetify::report::RepoResult, Pa
     let workspace = layout.workspace_dir(&repo);
     let loaded = Loaded {
         credentials,
-        config: Config::default(),
         repos: vec![repo],
         clients: BTreeMap::from([("github.com".to_string(), client)]),
         agent: Some("claude-code".to_string()),

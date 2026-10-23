@@ -12,8 +12,10 @@ use fleetify::state::{Recorder, write_atomic};
 fn fleetify(workdir: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fleetify"));
     command.arg("--workdir").arg(workdir);
-    // Never read the developer's own config: each test gets its own, empty one.
-    command.arg("--config").arg(workdir.join("config.toml"));
+    // Never read the developer's own grants: each test gets its own, empty file.
+    command
+        .arg("--credentials")
+        .arg(workdir.join("credentials.toml"));
     command
 }
 

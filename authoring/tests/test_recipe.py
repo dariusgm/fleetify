@@ -15,8 +15,14 @@ sys.path.insert(0, str(ROOT / "authoring" / "examples"))
 from enable_gitlab_ci import enable_gitlab_ci  # noqa: E402
 
 from fleetify_recipes import (  # noqa: E402
+    AgentSettings,
     AppliesTo,
+    Ci,
+    HostEntry,
     Limits,
+    Needs,
+    Policy,
+    RateLimit,
     Recipe,
     SchemaVersionError,
     check,
@@ -105,3 +111,27 @@ def test_fleetify_validate_accepts_the_generated_recipe(tmp_path):
         [fleetify_binary(), "validate", str(recipe_dir)], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_the_settings_that_moved_into_the_recipe_are_written_as_tables_and_pass_the_contract():
+    recipe = Recipe(
+        name="layered",
+        branch="chore/layered",
+        branch_prefix="bot/",
+        pr_title="chore: layered",
+        agent="claude-code",
+        model="claude-haiku-5-5",
+        agents={"opencode": AgentSettings(model="gpt-5-nano")},
+        hosts={"gitlab.example.com": HostEntry(type="gitlab")},
+        needs=Needs(unrestricted=True),
+        ci=Ci(dispatch_after_s=0, log_lines=20, log_chars=500),
+        rate_limit=RateLimit(max_wait_min=0),
+        policy=Policy(require_checked_agent=False),
+    )
+    text = to_text(recipe)
+    assert 'branch_prefix = "bot/"' in text
+    assert '[hosts."gitlab.example.com"]\ntype = "gitlab"' in text
+    assert '[agents.opencode]\nmodel = "gpt-5-nano"' in text
+    assert "[rate_limit]\nmax_wait_min = 0" in text
+    assert "[policy]\nrequire_checked_agent = false" in text
+    assert check(recipe, contract_schema()) == []

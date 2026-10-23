@@ -57,6 +57,34 @@ class Needs:
     commands: list[str] | None = None
     web: bool | None = None
     extra_directories: list[str] | None = None
+    unrestricted: bool | None = None
+
+
+@dataclass
+class HostEntry:
+    """`[hosts."<name>"]`: the host type of a host beyond github.com and gitlab.com."""
+
+    type: str
+
+
+@dataclass
+class AgentSettings:
+    """`[agents.<name>]`: the model for an agent the recipe does not name with `model`."""
+
+    model: str | None = None
+
+
+@dataclass
+class RateLimit:
+    max_wait_min: int | None = None
+
+
+@dataclass
+class Policy:
+    """Loosening `require_checked_agent` needs `[permissions] unchecked_agents` in
+    credentials.toml."""
+
+    require_checked_agent: bool | None = None
 
 
 @dataclass
@@ -84,6 +112,9 @@ class Ci:
     merge: str | None = None
     validate: bool | None = None
     dispatch_workflow: str | None = None
+    dispatch_after_s: int | None = None
+    log_lines: int | None = None
+    log_chars: int | None = None
 
 
 @dataclass
@@ -97,13 +128,16 @@ class Recipe:
     schema: int = SCHEMA_VERSION
     name: str
     branch: str
+    branch_prefix: str | None = None
     pr_title: str
     commit_message: str | None = None
     agent: str | None = None
     model: str | None = None
+    agents: dict[str, AgentSettings] | None = None
     attachments: list[str] = field(default_factory=list)
     tools: str | None = None
     applies_to: AppliesTo | None = None
+    hosts: dict[str, HostEntry] | None = None
     instructions: list[Instruction] = field(default_factory=list)
     prepare: CommandTable | None = None
     verify: VerifyTable | None = None
@@ -112,6 +146,8 @@ class Recipe:
     guards: Guards | None = None
     ci: Ci | None = None
     limits: Limits | None = None
+    rate_limit: RateLimit | None = None
+    policy: Policy | None = None
 
 
 def check_version(recipe: Recipe) -> None:

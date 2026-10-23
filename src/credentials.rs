@@ -1,5 +1,6 @@
-//! `credentials.toml`: host tokens, kept apart from `config.toml`. It sits next to the config
-//! file (`~/.config/fleetify/`), with owner-only permissions.
+//! `credentials.toml`: the user's file. It holds the host tokens (`[[credential]]`) and the
+//! user's grants (`[permissions]`, `[[merge_policy]]`, see [`crate::grants`]). It sits in
+//! `~/.config/fleetify/`, with owner-only permissions. Keys and grants go here and nowhere else.
 //!
 //! Rules are checked in file order and the first match wins, so specific
 //! patterns go first. A pattern is a glob on `<host>/<path>`, where `*` matches
@@ -12,6 +13,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+
+use crate::grants::{Grants, MergeRule, Permissions};
 
 /// A token. Read it with [`Secret::expose`] only at the point of use.
 #[derive(Clone, PartialEq, Eq)]
@@ -52,6 +55,8 @@ impl CredentialRule {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Credentials {
     rules: Vec<CredentialRule>,
+    /// The user's grants from the same file.
+    pub grants: Grants,
 }
 
 #[derive(Debug)]
@@ -130,6 +135,10 @@ impl std::error::Error for CredentialsError {}
 struct RawFile {
     #[serde(default)]
     credential: Vec<RawRule>,
+    #[serde(default)]
+    permissions: Permissions,
+    #[serde(default)]
+    merge_policy: Vec<MergeRule>,
 }
 
 #[derive(Deserialize)]
@@ -152,6 +161,10 @@ impl Credentials {
     }
 
     fn from_raw(raw: RawFile) -> Result<Credentials, CredentialsError> {
+        let grants = Grants {
+            permissions: raw.permissions,
+            merge_policy: raw.merge_policy,
+        };
         let mut rules = Vec::with_capacity(raw.credential.len());
         for (index, rule) in raw.credential.into_iter().enumerate() {
             let invalid = |message: &str| CredentialsError::Invalid {
@@ -172,7 +185,7 @@ impl Credentials {
                 token: Secret::new(rule.token),
             });
         }
-        Ok(Credentials { rules })
+        Ok(Credentials { rules, grants })
     }
 
     /// Loads the file and returns it with any warnings. A missing file is an
@@ -257,7 +270,7 @@ fn check_permissions(path: &Path, warnings: &mut Vec<String>) -> Result<(), Cred
 
 /// A concrete host name: lowercase, contains a dot, no wildcard.
 fn is_host_like(host: &str) -> bool {
-    host.contains('.') && crate::config::is_valid_host_name(host)
+    host.contains('.') && crate::hosts::is_valid_host_name(host)
 }
 
 /// Glob with `*` as the only metacharacter; `*` also matches `/`.
@@ -380,6 +393,51 @@ mod tests {
             empty_token,
             Err(CredentialsError::Invalid { index: 0, .. })
         ));
+    }
+
+    #[test]
+    fn grants_are_read_from_the_same_file_as_the_tokens() {
+        let creds = Credentials::parse(
+            r#"
+            [permissions]
+            commands = ["cargo"]
+            unchecked_agents = true
+
+            [permissions.agent.opencode]
+            unrestricted = true
+
+            [[merge_policy]]
+            match = "github.com/owner/*"
+            merge_without_ci = true
+
+            [[credential]]
+            match = "github.com/owner/*"
+            token = "t0k3n"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(creds.grants.permissions.commands, ["cargo"]);
+        assert!(creds.grants.permissions.unchecked_agents);
+        assert!(creds.grants.permissions.agent["opencode"].unrestricted);
+        assert!(
+            creds
+                .grants
+                .merge_rule("github.com/owner/repo")
+                .unwrap()
+                .merge_without_ci
+        );
+        assert!(creds.find("github.com", "owner/repo").is_ok());
+    }
+
+    #[test]
+    fn recipe_settings_are_refused_in_the_credentials_file() {
+        for leftover in [
+            "[hosts.\"gitlab.example.com\"]\ntype = \"gitlab\"\n",
+            "[policy]\nrequire_checked_agent = false\n",
+            "[ci]\ndispatch_after_s = 0\n",
+        ] {
+            assert!(Credentials::parse(leftover).is_err(), "{leftover}");
+        }
     }
 
     #[test]

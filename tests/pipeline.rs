@@ -12,8 +12,8 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use fleetify::config::{Config, HostType};
 use fleetify::credentials::Credentials;
+use fleetify::hosts::HostType;
 use fleetify::hosts::{Host, client_for};
 use fleetify::recipe::Recipe;
 use fleetify::repos::Repo;
@@ -199,10 +199,13 @@ fn run_with(
 ) -> fleetify::report::RepoResult {
     let recipe = Recipe::load(&s.recipe_dir).unwrap();
     let workdir = s.base.join("work");
-    let credentials = Credentials::parse(&format!(
-        "[[credential]]\nmatch = \"github.com/o/*\"\ntoken = \"{TOKEN}\"\n"
-    ))
-    .unwrap();
+    let mut text = format!("[[credential]]\nmatch = \"github.com/o/*\"\ntoken = \"{TOKEN}\"\n");
+    if merge_without_ci {
+        text.push_str(
+            "\n[[merge_policy]]\nmatch = \"github.com/o/*\"\nmerge_without_ci = true\ndelete_branch = true\n",
+        );
+    }
+    let credentials = Credentials::parse(&text).unwrap();
     let repo = Repo {
         host: "github.com".into(),
         host_type: HostType::Github,
@@ -215,17 +218,8 @@ fn run_with(
         client_for(HostType::Github, "github.com", Some(&s.host.base)).unwrap();
     let clients = BTreeMap::from([("github.com".to_string(), client)]);
     let layout = RunLayout::new(&workdir, run_id);
-    let mut config = Config::default();
-    if merge_without_ci {
-        config.merge_policy.push(fleetify::config::MergeRule {
-            pattern: "github.com/o/*".into(),
-            merge_without_ci: true,
-            delete_branch: true,
-        });
-    }
     let loaded = Loaded {
         credentials,
-        config,
         repos: vec![repo],
         clients,
         agent: None,
