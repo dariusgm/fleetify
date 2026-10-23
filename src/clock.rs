@@ -47,6 +47,10 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (year, month, day)
 }
 
+fn ci_loop_probe() -> u8 {
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,8 +67,4 @@ mod tests {
         assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
         assert_eq!(rfc3339(951_782_400 + 3661), "2000-02-29T01:01:01Z");
     }
-}
-
-fn ci_loop_probe() -> u8 {
-    1
 }
