@@ -1,4 +1,4 @@
-//! Results, the run report (`report.json`) and its JSON schema (PLAN.md,
+//! Results, the run report (`report.json`) and its JSON schema (docs/design/events-and-report.md,
 //! "Events, renderers and the report"). Every text in a report is redacted and
 //! length-limited. A non-successful repo always carries a `failure` block with a
 //! non-empty message.
@@ -19,7 +19,7 @@ const MAX_MESSAGE_CHARS: usize = 2000;
 const MAX_TAIL_LINES: usize = 40;
 const MAX_LINE_CHARS: usize = 300;
 
-/// Results that count as success (PLAN.md, "Successful results"). `dry_run` counts
+/// Results that count as success (docs/design/events-and-report.md, "Successful results"). `dry_run` counts
 /// as success because a dry run has no failures to report, only plans.
 pub fn is_successful(result: &str) -> bool {
     matches!(

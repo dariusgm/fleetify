@@ -1,4 +1,4 @@
-//! Diff guards, the outer gate before anything is pushed (PLAN.md, "Guards").
+//! Diff guards, the outer gate before anything is pushed (docs/design/guards.md, "Guards").
 //! Pure functions over parsed git output, so every rule can be tested without a
 //! repository. A violation names the rule and the offending lines.
 

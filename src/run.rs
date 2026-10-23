@@ -1,5 +1,5 @@
 //! Runs: run folders, the shared setup, the worker pool and the report. A dry run
-//! and a real run share everything except the per-repo step (PLAN.md, "Run flow
+//! and a real run share everything except the per-repo step (docs/design/run-flow.md, "Run flow
 //! per repo"). A dry run only refreshes caches, evaluates `applies_to` and probes
 //! read access. Nothing is pushed.
 

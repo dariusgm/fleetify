@@ -9,4 +9,4 @@ Items that are neither the CI loop nor agent confinement. Each one needs a reaso
 - Tokens from the OS credential store; optional CLI variants of the host layer.
 - Judge evaluation over time, failure classes, webhook on `needs_human`.
 - An embedded scripting language (Rhai) for `applies_to`, only if the condition list proves insufficient.
-- `verify` as an MCP tool, plan SDK with JSON plans, broadcast shell, web UI, statistics per recipe version (see `PLAN-ausbau.md`).
+- `verify` as an MCP tool, plan SDK with JSON plans, broadcast shell, web UI, statistics per recipe version (the referenced PLAN-ausbau.md is not in the repository).

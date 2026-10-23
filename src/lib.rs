@@ -1,5 +1,5 @@
 //! `fleetify`: run one task across many Git repositories, with an optional
-//! coding agent, a verifier and a CI gate. See `PLAN.md` for the design.
+//! coding agent, a verifier and a CI gate. See `README.md` and `docs/design/` for the design.
 
 pub mod agents;
 pub mod ci;

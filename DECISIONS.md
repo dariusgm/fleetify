@@ -1,5 +1,7 @@
 # Decisions
 
+> References to `PLAN.md` point to the plan before it was dissolved (2026-10-23). Its design is in `docs/design/`, its open items in `tasks/`.
+
 Design questions the plan does not answer. Each entry names the milestone.
 
 ## M0 — skeleton

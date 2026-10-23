@@ -1,4 +1,4 @@
-//! Per-repo state and logs, written by one event consumer (PLAN.md, "Events,
+//! Per-repo state and logs, written by one event consumer (docs/design/events-and-report.md, "Events,
 //! renderers and the report"). `state.json` is replaced atomically so another
 //! terminal (`fleetify status`) can read it at any time. `output.log` collects
 //! every command line and output line of the repo. `events.jsonl` gets every event.
