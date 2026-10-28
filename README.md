@@ -224,13 +224,22 @@ The orchestrator is in the root `Dockerfile` (`docker build -t fleetify .`). It 
 
 ```sh
 docker run --rm -e HOME="$HOME" \
+  -e OPENAI_API_KEY \
   -v "$XDG_RUNTIME_DIR/docker.sock:/var/run/docker.sock" \
   -v "$HOME/.fleetify:$HOME/.fleetify" \
   -v "$HOME/.config/fleetify:$HOME/.config/fleetify:ro" \
+  -v "$HOME/.claude/.credentials.json:$HOME/.claude/.credentials.json:ro" \
+  -v "$PWD:$PWD" -w "$PWD" \
   fleetify run ...
 ```
 
-You can keep the orchestrator on the host and still run the agents in containers. Only the agent containers need the docker daemon in that case.
+Nothing from the host reaches the orchestrator container unless it is passed here, and the agent containers only see what the orchestrator passes on:
+
+- Every variable a recipe lists in `agent_env` must also be given to this container with `-e NAME`, as `-e OPENAI_API_KEY` above. Otherwise the run refuses to start, and a `-e` without a value passes the value from your shell.
+- Claude Code's login file must be mounted at the same path, as above. Without it the Claude container has no login and its canary fails.
+- Mount each recipe directory and the working directory at its host path too, so the agent containers see the same paths.
+
+You can keep the orchestrator on the host and still run the agents in containers. The agent containers still need the daemon, and the host run reads the keys from your shell and the login file directly. In that setup you need nothing from this section beyond the agent images.
 
 #### Example: opencode against a local llama.cpp server
 
@@ -267,6 +276,8 @@ output = 8192
 ```
 
 Before a run, export the variable in the shell that starts fleetify, for example `export OPENAI_API_KEY=...`. A llama.cpp server accepts any value there, so a placeholder works. The recipe holds no secret values. A run refuses to start if a listed variable is not set, and its value is redacted from logs and reports.
+
+The keys and the login file are read on the machine that starts fleetify, and they reach the agent container only when that machine passes them explicitly, as in the orchestrator example above. Put them in the shell that starts the run, not in the recipe.
 
 The `[agents.opencode.config]` table is merged into opencode's inline config, and `permission` is set by fleetify, so a recipe cannot widen the grants. Only opencode takes a config table.
 
