@@ -200,11 +200,15 @@ prints to their `credentials.toml`, and runs it with their own tokens.
 `fleetify schema` prints the JSON Schema of `recipe.toml`. The Python package
 in `authoring/` generates recipes against that schema.
 
-### Containers
+### Containers (optional)
 
-A recipe can name a container image with `image = "..."`. The agent then runs in a container from that image instead of on the host. The workspace and every granted directory are mounted at the paths they have on the host, the agent's own variables are passed on by name, and nothing else from the host is visible. The image must carry the label `io.fleetify.agent` with the agent's name, so one agent cannot run in another's image by mistake.
+Running in docker is optional. Without `image` in a recipe, the agent runs on the host, as before, and nothing else in this section applies. Add `image` to run the agent in a container instead.
 
-Agent images for the three agents are in `docker/agents/`. Build them on a Linux host with rootless docker:
+With `image = "..."`, the agent runs in a container from that image. The workspace and every granted directory are mounted at the paths they have on the host. The agent's own variables and the ones the recipe lists are passed in by name, and nothing else from the host is visible. The image must carry the label `io.fleetify.agent` with the agent's name, so one agent cannot run in another's image by mistake.
+
+#### Build the agent images
+
+Images for the three agents are in `docker/agents/`. Build the ones you use, on a Linux host with rootless docker:
 
 ```sh
 docker build -t fleetify-agent-claude-code docker/agents/claude-code
@@ -213,6 +217,8 @@ docker build -t fleetify-agent-copilot docker/agents/copilot
 ```
 
 `fleetify check-agent claude-code --image fleetify-agent-claude-code` runs the canary inside the container. A pass counts for that image only, and a recipe with `image` is refused until it has passed.
+
+#### Run the orchestrator in docker (also optional)
 
 The orchestrator is in the root `Dockerfile` (`docker build -t fleetify .`). It starts the agent containers through the docker client, so the working directory must have the same path inside the orchestrator container as on the host. Mount the daemon socket and the working directory at their host paths:
 
@@ -224,24 +230,55 @@ docker run --rm -e HOME="$HOME" \
   fleetify run ...
 ```
 
-Variables for the agent's container are listed in the recipe by name, and their values come from the environment that starts fleetify:
+You can keep the orchestrator on the host and still run the agents in containers. Only the agent containers need the docker daemon in that case.
+
+#### Example: opencode against a local llama.cpp server
+
+This recipe runs opencode in its container against a llama.cpp server on the LAN. The provider settings are in the recipe, and the key is a placeholder. Its value comes from the environment that starts fleetify:
 
 ```toml
-image = "fleetify-agent-opencode"
-agent_env = ["OPENAI_API_KEY"]
+schema = 1
+name = "upgrade-deps"
+branch = "chore/upgrade-deps"
+pr_title = "chore: upgrade dependencies"
+agent = "opencode"
+model = "llamacpp/qwen3.8-flash-next"
+image = "fleetify-agent-opencode"       # the container the agent runs in
+agent_env = ["OPENAI_API_KEY"]          # names only; the value comes from the environment
+
+[[instructions]]
+text = "Update the dependencies in this repository and keep the build green."
 
 [agents.opencode.config.provider.llamacpp]
 npm = "@ai-sdk/openai-compatible"
-name = "llama.cpp"
+name = "llama.cpp (LAN)"
 
 [agents.opencode.config.provider.llamacpp.options]
 baseURL = "http://192.168.178.151:9931/v1"
-apiKey = "{env:OPENAI_API_KEY}"
+apiKey = "{env:OPENAI_API_KEY}"         # opencode fills this from the agent's environment
+
+[agents.opencode.config.provider.llamacpp.models."qwen3.8-flash-next"]
+name = "Qwen3.8 Flash Next"
+tool_call = true
+
+[agents.opencode.config.provider.llamacpp.models."qwen3.8-flash-next".limit]
+context = 32768
+output = 8192
 ```
 
-The recipe holds no secret values, only names and placeholders. A run refuses to start if a listed variable is not set.
+Before a run, export the variable in the shell that starts fleetify, for example `export OPENAI_API_KEY=...`. A llama.cpp server accepts any value there, so a placeholder works. The recipe holds no secret values. A run refuses to start if a listed variable is not set, and its value is redacted from logs and reports.
 
-Limits, stated plainly: the socket gives the orchestrator control of the docker daemon, so the trust boundary moves to the socket. An agent container keeps network access, since it must reach its model. Claude Code's login file is mounted read-only, because the agent needs it to reach its model; the agent can read it. The other two agents get no login file yet, so their canary fails until one is passed in. Container runs need a Linux host.
+The `[agents.opencode.config]` table is merged into opencode's inline config, and `permission` is set by fleetify, so a recipe cannot widen the grants. Only opencode takes a config table.
+
+#### Limits
+
+- The socket gives the orchestrator control of the docker daemon, so the trust boundary moves to the socket when the orchestrator runs in docker.
+- An agent container keeps network access, since it must reach its model.
+- Claude Code's login file is mounted read-only, because the agent needs it to reach its model. The agent can read it.
+- Variables from `agent_env` and opencode's `{env:...}` values are readable by the agent. This limits what the agent gets, not what it can do with it.
+- `check-agent` does not read the recipe, so an opencode canary without the recipe's provider can fail when it needs a model answer.
+- Copilot gets no login file and no variables from fleetify yet. List its token in `agent_env` when you need one.
+- Container runs need a Linux host.
 
 ## Documentation
 
