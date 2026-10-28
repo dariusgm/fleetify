@@ -200,6 +200,32 @@ prints to their `credentials.toml`, and runs it with their own tokens.
 `fleetify schema` prints the JSON Schema of `recipe.toml`. The Python package
 in `authoring/` generates recipes against that schema.
 
+### Containers
+
+A recipe can name a container image with `image = "..."`. The agent then runs in a container from that image instead of on the host. The workspace and every granted directory are mounted at the paths they have on the host, the agent's own variables are passed on by name, and nothing else from the host is visible. The image must carry the label `io.fleetify.agent` with the agent's name, so one agent cannot run in another's image by mistake.
+
+Agent images for the three agents are in `docker/agents/`. Build them on a Linux host with rootless docker:
+
+```sh
+docker build -t fleetify-agent-claude-code docker/agents/claude-code
+docker build -t fleetify-agent-opencode docker/agents/opencode
+docker build -t fleetify-agent-copilot docker/agents/copilot
+```
+
+`fleetify check-agent claude-code --image fleetify-agent-claude-code` runs the canary inside the container. A pass counts for that image only, and a recipe with `image` is refused until it has passed.
+
+The orchestrator is in the root `Dockerfile` (`docker build -t fleetify .`). It starts the agent containers through the docker client, so the working directory must have the same path inside the orchestrator container as on the host. Mount the daemon socket and the working directory at their host paths:
+
+```sh
+docker run --rm -e HOME="$HOME" \
+  -v "$XDG_RUNTIME_DIR/docker.sock:/var/run/docker.sock" \
+  -v "$HOME/.fleetify:$HOME/.fleetify" \
+  -v "$HOME/.config/fleetify:$HOME/.config/fleetify:ro" \
+  fleetify run ...
+```
+
+Limits, stated plainly: the socket gives the orchestrator control of the docker daemon, so the trust boundary moves to the socket. An agent container keeps network access, since it must reach its model. Claude Code's login file is mounted read-only, because the agent needs it to reach its model; the agent can read it. The other two agents get no login file yet, so their canary fails until one is passed in. Container runs need a Linux host.
+
 ## Documentation
 
 - [`docs/design/`](docs/design/): the target design, one file per topic. Start with [principles](docs/design/principles.md) and [the four basic questions](docs/design/basic-questions.md).
