@@ -36,6 +36,25 @@ pub fn docker_binary() -> String {
     std::env::var(DOCKER_BINARY_ENV).unwrap_or_else(|_| "docker".to_string())
 }
 
+/// Refuses a variable name a container run cannot take from the recipe: anything but
+/// `[A-Za-z_][A-Za-z0-9_]*`, and the variables fleetify and the docker client set themselves.
+pub fn check_env_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let shaped = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !shaped {
+        return Err(format!("{name:?} is not an environment variable name"));
+    }
+    if BASE_ENV.contains(&name) || CLIENT_ENV.contains(&name) {
+        return Err(format!(
+            "{name} is set by fleetify or docker, not by the recipe"
+        ));
+    }
+    Ok(())
+}
+
 /// Refuses an image reference with anything but letters, digits and `._/:@-`. Such a name
 /// cannot be read as an option or split the docker command line.
 pub fn check_name(image: &str) -> Result<(), String> {
@@ -332,5 +351,16 @@ mod tests {
         );
         assert!(ok(&missing).unwrap_err().contains("not available locally"));
         let _ = std::fs::remove_dir_all(right.parent().unwrap());
+    }
+
+    #[test]
+    fn env_names_are_shaped_and_never_fleetify_or_docker_variables() {
+        assert!(check_env_name("OPENAI_API_KEY").is_ok());
+        assert!(check_env_name("_x1").is_ok());
+        assert!(check_env_name("1X").is_err());
+        assert!(check_env_name("A-B").is_err());
+        assert!(check_env_name("").is_err());
+        assert!(check_env_name("PATH").is_err());
+        assert!(check_env_name("DOCKER_HOST").is_err());
     }
 }

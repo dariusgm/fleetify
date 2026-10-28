@@ -323,6 +323,15 @@ fn refuse_leftover_files(input: &RunInput<'_>) -> Result<(), Refused> {
     Ok(())
 }
 
+/// The values of the variables the recipe passes into the agent's container, for redaction.
+fn container_env_values(recipe: &Recipe) -> Vec<String> {
+    recipe
+        .agent_env
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .collect()
+}
+
 /// Loads what a run needs. A dry run reports missing grants and keeps going; a real
 /// run refuses to start.
 fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
@@ -333,7 +342,13 @@ fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
         tracing::warn!(%warning, "credentials");
         eprintln!("warning: {warning}");
     }
-    crate::logging::set_redactor(Redactor::new(credentials.secrets()));
+    crate::logging::set_redactor(Redactor::new(
+        credentials.secrets().chain(
+            container_env_values(input.recipe)
+                .iter()
+                .map(String::as_str),
+        ),
+    ));
     let (agent, model) = match check_agent(input, &credentials.grants, dry_run)? {
         Some((name, model)) => (Some(name), model),
         None => (None, None),
@@ -416,6 +431,17 @@ fn check_agent(
             return Err(Refused(message));
         }
         eprintln!("dry run: a real run would refuse: {message}");
+    }
+    for name in &input.recipe.agent_env {
+        if std::env::var_os(name).is_none() {
+            let message = format!(
+                "environment variable {name} is not set; the recipe passes it to the agent container"
+            );
+            if !dry_run {
+                return Err(Refused(message));
+            }
+            eprintln!("dry run: a real run would refuse: {message}");
+        }
     }
     if input.recipe.policy.require_checked_agent
         && !input.allow_unchecked_agent
@@ -502,7 +528,12 @@ fn execute_loaded_with_view(
     };
     write_meta(layout, &meta).map_err(|err| Refused(err.to_string()))?;
 
-    let redactor = Redactor::new(loaded.credentials.secrets());
+    let redactor = Redactor::new(
+        loaded
+            .credentials
+            .secrets()
+            .chain(container_env_values(recipe).iter().map(String::as_str)),
+    );
     let bus = EventBus::new();
     // Rate-limit waits of the host clients go to the same event stream as everything else.
     for client in loaded.clients.values() {

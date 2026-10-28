@@ -224,6 +224,23 @@ docker run --rm -e HOME="$HOME" \
   fleetify run ...
 ```
 
+Variables for the agent's container are listed in the recipe by name, and their values come from the environment that starts fleetify:
+
+```toml
+image = "fleetify-agent-opencode"
+agent_env = ["OPENAI_API_KEY"]
+
+[agents.opencode.config.provider.llamacpp]
+npm = "@ai-sdk/openai-compatible"
+name = "llama.cpp"
+
+[agents.opencode.config.provider.llamacpp.options]
+baseURL = "http://192.168.178.151:9931/v1"
+apiKey = "{env:OPENAI_API_KEY}"
+```
+
+The recipe holds no secret values, only names and placeholders. A run refuses to start if a listed variable is not set.
+
 Limits, stated plainly: the socket gives the orchestrator control of the docker daemon, so the trust boundary moves to the socket. An agent container keeps network access, since it must reach its model. Claude Code's login file is mounted read-only, because the agent needs it to reach its model; the agent can read it. The other two agents get no login file yet, so their canary fails until one is passed in. Container runs need a Linux host.
 
 ## Documentation

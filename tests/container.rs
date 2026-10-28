@@ -170,3 +170,73 @@ fn an_image_built_for_another_agent_is_refused() {
     let err = container::check_image(IMAGE, "opencode").unwrap_err();
     assert!(err.contains("is for agent claude-code"), "{err}");
 }
+
+#[test]
+#[ignore = "needs docker, the fleetify-agent-opencode image and FLEETIFY_TEST_LLAMACPP_URL"]
+fn opencode_in_its_container_answers_from_the_recipe_provider() {
+    let Ok(url) = std::env::var("FLEETIFY_TEST_LLAMACPP_URL") else {
+        eprintln!("skipped: FLEETIFY_TEST_LLAMACPP_URL is not set");
+        return;
+    };
+    let (root, workspace, _) = fixture("opencode-recipe");
+    // The provider key is a placeholder in the recipe. The value reaches the container
+    // through `agent_env`, and opencode fills the placeholder from its environment.
+    // SAFETY: this test is the only one that sets this variable.
+    unsafe { std::env::set_var("FLEETIFY_TEST_KEY", "not-a-real-key") };
+    let text = format!(
+        r#"schema = 1
+name = "opencode-container"
+branch = "chore/opencode"
+pr_title = "chore: opencode"
+agent = "opencode"
+image = "fleetify-agent-opencode"
+agent_env = ["FLEETIFY_TEST_KEY"]
+
+[[instructions]]
+text = "Create a file named inside.txt containing the word inside. Then reply pong."
+
+[agents.opencode.config.provider.llamacpp]
+npm = "@ai-sdk/openai-compatible"
+name = "llama.cpp"
+
+[agents.opencode.config.provider.llamacpp.options]
+baseURL = "{url}"
+apiKey = "{{env:FLEETIFY_TEST_KEY}}"
+
+[agents.opencode.config.provider.llamacpp.models."qwen3.8-flash-next"]
+name = "Qwen3.8"
+tool_call = true
+
+[agents.opencode.config.provider.llamacpp.models."qwen3.8-flash-next".limit]
+context = 32768
+output = 8192
+"#
+    );
+    let recipe = fleetify::recipe::Recipe::parse(&text).unwrap();
+    let invocation = fleetify::agents::invocation_with_prompt(
+        "opencode",
+        "Create a file named inside.txt containing the word inside. Then reply pong.",
+        &recipe,
+        &fleetify::grants::Permissions::default(),
+        Some("llamacpp/qwen3.8-flash-next"),
+        &workspace,
+    )
+    .unwrap();
+    let mut request = RunRequest::new("opencode", invocation.argv);
+    request.cwd = Some(workspace.clone());
+    request.timeout = Some(Duration::from_secs(900));
+    request.env = invocation.env;
+    request.on_stop = invocation.stop;
+    let result = runner().run(request);
+    assert!(
+        matches!(result.outcome, Outcome::Exited { code: Some(0) }),
+        "{:?}",
+        result.outcome
+    );
+    assert!(
+        workspace.join("inside.txt").is_file(),
+        "the agent wrote nothing"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

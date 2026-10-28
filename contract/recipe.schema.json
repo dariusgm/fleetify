@@ -11,6 +11,14 @@
       ],
       "default": null
     },
+    "agent_env": {
+      "description": "Environment variables passed into the agent's container, by name. The values come from\nthe orchestrator's environment when the run starts; the recipe holds only the names.\nNeeds `image`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
     "agents": {
       "description": "Defaults per agent, keyed by agent name. Used when the run's agent has no `model`\nfrom `--model` or from the recipe's own `model`.",
       "type": "object",
@@ -163,6 +171,10 @@
       "description": "`[agents.<name>]`: settings for one agent, used when the recipe names no model.",
       "type": "object",
       "properties": {
+        "config": {
+          "description": "The agent's own configuration, as a table. Opencode only: it is merged into opencode's\ninline config. Keep secrets out of it and write `{env:NAME}` where a key goes;\nopencode fills it from the environment of the agent.",
+          "default": null
+        },
         "model": {
           "description": "Model passed to the agent CLI unchanged. Unset leaves the choice to the agent.",
           "type": [

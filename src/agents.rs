@@ -309,6 +309,13 @@ pub fn invocation_with_prompt(
     model: Option<&str>,
     workspace: &Path,
 ) -> Result<Invocation, String> {
+    let extra = Extra {
+        container_env: &recipe.agent_env,
+        config: recipe
+            .agents
+            .get(name)
+            .and_then(|settings| settings.config.as_ref()),
+    };
     build(
         name,
         prompt,
@@ -316,7 +323,16 @@ pub fn invocation_with_prompt(
         model,
         workspace,
         recipe.image.as_deref(),
+        &extra,
     )
+}
+
+/// What a recipe adds to an agent run: variables passed into the container, and the agent's
+/// own configuration.
+#[derive(Default)]
+pub struct Extra<'a> {
+    pub container_env: &'a [String],
+    pub config: Option<&'a serde_json::Value>,
 }
 
 /// The canary's invocation: the baseline grants only, so it tests what every run gets.
@@ -327,7 +343,15 @@ fn canary_invocation(
     model: Option<&str>,
     image: Option<&str>,
 ) -> Result<Invocation, String> {
-    build(name, prompt, &Grants::default(), model, workspace, image)
+    build(
+        name,
+        prompt,
+        &Grants::default(),
+        model,
+        workspace,
+        image,
+        &Extra::default(),
+    )
 }
 
 /// The program name inside an agent's container image.
@@ -377,16 +401,25 @@ fn build(
     model: Option<&str>,
     workspace: &Path,
     image: Option<&str>,
+    extra: &Extra,
 ) -> Result<Invocation, String> {
     check_supported(name)?;
     let (mut argv, names, set) = match name {
         OPENCODE => {
-            let config = opencode_config(grants).to_string();
+            // The recipe's table first; fleetify's permissions are written over it.
+            let mut config = extra.config.cloned().unwrap_or_else(|| json!({}));
+            if let (Some(map), Some(permissions)) =
+                (config.as_object_mut(), opencode_config(grants).as_object())
+            {
+                for (key, value) in permissions {
+                    map.insert(key.clone(), value.clone());
+                }
+            }
             let mut argv = vec![binary(OPENCODE_BINARY_ENV, "opencode"), "run".to_string()];
             argv.extend(model_flag(model));
             argv.push(prompt.to_string());
             let set = vec![
-                ("OPENCODE_CONFIG_CONTENT".to_string(), config),
+                ("OPENCODE_CONFIG_CONTENT".to_string(), config.to_string()),
                 // A repository's own opencode.json must not widen the grants.
                 (
                     "OPENCODE_DISABLE_PROJECT_CONFIG".to_string(),
@@ -435,11 +468,16 @@ fn build(
         .copied()
         .filter(|name| !HOST_PATH_ENV.contains(name))
         .collect();
-    let forwarded: Vec<String> = names
+    let mut forwarded: Vec<String> = names
         .iter()
         .map(|name| name.to_string())
         .chain(set.iter().map(|(key, _)| key.clone()))
         .collect();
+    for name in extra.container_env {
+        if !forwarded.contains(name) {
+            forwarded.push(name.clone());
+        }
+    }
     argv[0] = program(name).to_string();
     let (files, tmpfs) = login(name);
     let container = container::container_name();
@@ -848,6 +886,7 @@ mod tests {
             None,
             Path::new("/ws"),
             None,
+            &Extra::default(),
         )
         .unwrap();
         let EnvPolicy::Allowlist { names, .. } = invocation.env else {
@@ -1182,6 +1221,7 @@ text = "inline"
             "claude-code".to_string(),
             crate::recipe::AgentSettings {
                 model: Some("from-table".to_string()),
+                config: None,
             },
         );
         assert_eq!(
@@ -1245,6 +1285,7 @@ text = "inline"
             Some("llama/qwen"),
             Path::new("/ws"),
             None,
+            &Extra::default(),
         )
         .unwrap();
         assert_eq!(opencode.argv[1..], ["run", "--model", "llama/qwen", "p"]);
@@ -1359,5 +1400,47 @@ text = "inline"
             checked_marker(dir, "copilot", None, Some("img:1")),
             checked_marker(dir, "copilot", None, None)
         );
+    }
+
+    #[test]
+    fn the_recipe_config_is_merged_and_the_named_variables_reach_the_container() {
+        let mut recipe = in_image("opencode");
+        recipe.image = Some("fleetify-agent-opencode".to_string());
+        recipe.agent_env = vec!["OPENAI_API_KEY".to_string()];
+        recipe.agents.insert(
+            "opencode".to_string(),
+            crate::recipe::AgentSettings {
+                model: None,
+                config: Some(json!({
+                    "provider": {"llamacpp": {"options": {"baseURL": "http://lan.example:9931/v1"}}}
+                })),
+            },
+        );
+        let invocation = invocation(
+            "opencode",
+            &recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        let EnvPolicy::Allowlist { names, set } = &invocation.env else {
+            panic!("the docker client gets an allowlist");
+        };
+        let (_, content) = set
+            .iter()
+            .find(|(key, _)| key == "OPENCODE_CONFIG_CONTENT")
+            .expect("the config is set for the client");
+        let config: serde_json::Value = serde_json::from_str(content).unwrap();
+        assert_eq!(
+            config["provider"]["llamacpp"]["options"]["baseURL"],
+            "http://lan.example:9931/v1"
+        );
+        assert!(config.get("permission").is_some());
+        assert!(names.contains(&"OPENAI_API_KEY".to_string()));
+        let env = invocation.argv.iter().position(|a| a == "-e").unwrap();
+        assert!(invocation.argv.iter().any(|a| a == "OPENAI_API_KEY"));
+        assert!(!invocation.argv.iter().any(|a| a.contains("lan.example")));
+        assert_eq!(invocation.argv[env + 1], "ANTHROPIC_API_KEY");
     }
 }
