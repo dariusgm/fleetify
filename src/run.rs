@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agents;
 use crate::clock::rfc3339_now;
+use crate::container;
 use crate::credentials::{Credentials, CredentialsError, Secret};
 use crate::events::{Event, EventBus, Redactor};
 use crate::git::{Auth, GitContext, GitError, username_for};
@@ -396,6 +397,15 @@ fn check_agent(
             .map_or_else(String::new, |model| format!(" model {model}")),
         agents::describe_grants(input.recipe, &grants.permissions, name)
     );
+    if let Some(image) = &input.recipe.image {
+        eprintln!("agent {name} runs in the container image {image}");
+        if let Err(message) = container::check_image(image, name) {
+            if !dry_run {
+                return Err(Refused(message));
+            }
+            eprintln!("dry run: a real run would refuse: {message}");
+        }
+    }
     let missing = agents::missing_permissions(input.recipe, &grants.permissions, name);
     if !missing.is_empty() {
         let message = format!(
@@ -409,7 +419,12 @@ fn check_agent(
     }
     if input.recipe.policy.require_checked_agent
         && !input.allow_unchecked_agent
-        && !agents::is_checked(input.workdir, name, model.as_deref())
+        && !agents::is_checked(
+            input.workdir,
+            name,
+            model.as_deref(),
+            input.recipe.image.as_deref(),
+        )
     {
         return Err(Refused(format!(
             "agent {name} has not passed check-agent: run `fleetify check-agent {name}` or pass --allow-unchecked-agent"

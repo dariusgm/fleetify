@@ -6,6 +6,7 @@ pub mod ci;
 pub mod ci_config;
 pub mod cli;
 pub mod clock;
+pub mod container;
 pub mod credentials;
 pub mod events;
 pub mod git;

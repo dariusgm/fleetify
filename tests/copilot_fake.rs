@@ -48,8 +48,8 @@ fn check_agent_copilot_passes_only_when_confined() {
     // SAFETY: this is the only test that reads or sets this variable in this binary.
     // A confined agent passes, records the check, and was started with a per-path write grant.
     unsafe { std::env::set_var(COPILOT_BINARY_ENV, fake_binary(&bin, "confined", CONFINED)) };
-    check(&workdir, "copilot", None).expect("a confined agent passes");
-    assert!(is_checked(&workdir, "copilot", None));
+    check(&workdir, "copilot", None, None).expect("a confined agent passes");
+    assert!(is_checked(&workdir, "copilot", None, None));
     let args =
         fs::read_to_string(workdir.join("agents/canary/copilot/workspace/args.txt")).unwrap();
     assert!(args.starts_with("-p "), "{args}");
@@ -62,13 +62,13 @@ fn check_agent_copilot_passes_only_when_confined() {
 
     // An agent that writes the escape file fails, and the pass marker is removed.
     unsafe { std::env::set_var(COPILOT_BINARY_ENV, fake_binary(&bin, "leaky", LEAKY)) };
-    let err = check(&workdir, "copilot", None).unwrap_err();
+    let err = check(&workdir, "copilot", None, None).unwrap_err();
     assert!(err.contains("not confined"), "{err}");
-    assert!(!is_checked(&workdir, "copilot", None));
+    assert!(!is_checked(&workdir, "copilot", None, None));
 
     // An agent that never writes inside its workspace fails.
     unsafe { std::env::set_var(COPILOT_BINARY_ENV, fake_binary(&bin, "silent", SILENT)) };
-    let err = check(&workdir, "copilot", None).unwrap_err();
+    let err = check(&workdir, "copilot", None, None).unwrap_err();
     assert!(err.contains("did not write inside"), "{err}");
 
     unsafe { std::env::remove_var(COPILOT_BINARY_ENV) };

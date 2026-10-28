@@ -80,6 +80,10 @@ pub struct Recipe {
     /// `--model`; `[agents.<name>] model` is the fallback.
     #[serde(default)]
     pub model: Option<String>,
+    /// Container image the agent runs in. Unset means the agent runs on the host. The image
+    /// must carry the label `io.fleetify.agent` with the agent's name (see `container.rs`).
+    #[serde(default)]
+    pub image: Option<String>,
     /// Defaults per agent, keyed by agent name. Used when the run's agent has no `model`
     /// from `--model` or from the recipe's own `model`.
     #[serde(default)]
@@ -670,6 +674,17 @@ impl Recipe {
                 "instructions are set but no agent is: set agent in recipe.toml or pass --agent"
                     .into(),
             );
+        }
+        if let Some(image) = &self.image {
+            if let Err(message) = crate::container::check_name(image) {
+                push("image", message);
+            }
+            if self.instructions.is_empty() {
+                push(
+                    "image",
+                    "image runs the agent, but the recipe has no instructions".into(),
+                );
+            }
         }
     }
 
@@ -1288,6 +1303,33 @@ mod tests {
             issues
                 .iter()
                 .any(|i| i.field == "agent" && i.message.contains("gpt-pilot"))
+        );
+    }
+
+    #[test]
+    fn image_must_be_an_image_name_and_needs_instructions() {
+        let option_like = VALID.replace(
+            "agent = \"claude-code\"\n",
+            "agent = \"claude-code\"\nimage = \"--privileged\"\n",
+        );
+        assert!(
+            issues_for(&option_like, "image")
+                .iter()
+                .any(|i| i.field == "image")
+        );
+        let image = VALID.replace(
+            "agent = \"claude-code\"\n",
+            "agent = \"claude-code\"\nimage = \"fleetify-agent-claude-code:1\"\n",
+        );
+        assert!(issues_for(&image, "image").is_empty());
+        let mut no_instructions = Recipe::parse(&image).unwrap();
+        no_instructions.instructions.clear();
+        let dir = valid_dir("image-no-instructions");
+        assert!(
+            no_instructions
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "image")
         );
     }
 

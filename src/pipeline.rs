@@ -934,6 +934,7 @@ fn run_agent(
     request.limit_check = Some(agents::is_rate_limit);
     request.limit_wait = Some(ctx.recipe.rate_limit.max_wait());
     request.env = invocation.env;
+    request.on_stop = invocation.stop;
     Ok(ctx.runner.run(request))
 }
 

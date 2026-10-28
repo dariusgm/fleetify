@@ -73,6 +73,14 @@
         "$ref": "#/$defs/HostEntry"
       }
     },
+    "image": {
+      "description": "Container image the agent runs in. Unset means the agent runs on the host. The image\nmust carry the label `io.fleetify.agent` with the agent's name (see `container.rs`).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
     "instructions": {
       "description": "Concatenated in order. Empty means no agent: a pure `prepare` run.",
       "type": "array",

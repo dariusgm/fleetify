@@ -340,9 +340,19 @@ fn agent_runs_are_judged_like_any_other_step() {
 
     // The canary passes for a confined agent and leaves its marker behind.
     let checks = scratch("check");
-    assert!(!fleetify::agents::is_checked(&checks, "claude-code", None));
-    fleetify::agents::check(&checks, "claude-code", None).unwrap();
-    assert!(fleetify::agents::is_checked(&checks, "claude-code", None));
+    assert!(!fleetify::agents::is_checked(
+        &checks,
+        "claude-code",
+        None,
+        None
+    ));
+    fleetify::agents::check(&checks, "claude-code", None, None).unwrap();
+    assert!(fleetify::agents::is_checked(
+        &checks,
+        "claude-code",
+        None,
+        None
+    ));
 
     // An agent that writes outside its workspace fails the canary and leaves no marker.
     let leaky = scratch("leaky");
@@ -352,9 +362,14 @@ fn agent_runs_are_judged_like_any_other_step() {
     // SAFETY: as above, this test is the only one in this binary.
     unsafe { std::env::set_var(BINARY_ENV, &leaky_bin) };
     let leaking = scratch("check-leaky");
-    let err = fleetify::agents::check(&leaking, "claude-code", None).unwrap_err();
+    let err = fleetify::agents::check(&leaking, "claude-code", None, None).unwrap_err();
     assert!(err.contains("not confined"), "{err}");
-    assert!(!fleetify::agents::is_checked(&leaking, "claude-code", None));
+    assert!(!fleetify::agents::is_checked(
+        &leaking,
+        "claude-code",
+        None,
+        None
+    ));
     unsafe { std::env::set_var(BINARY_ENV, &fake) };
 
     let _ = fs::remove_file(&fake);
