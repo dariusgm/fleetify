@@ -84,6 +84,10 @@ pub struct Recipe {
     /// must carry the label `io.fleetify.agent` with the agent's name (see `container.rs`).
     #[serde(default)]
     pub image: Option<String>,
+    /// The isolation backend that runs the agent's container. Unset means docker. Needs
+    /// `image`; see `isolation.rs` for the backends this build knows.
+    #[serde(default)]
+    pub isolation: Option<String>,
     /// Environment variables passed into the agent's container, by name. The values come from
     /// the orchestrator's environment when the run starts; the recipe holds only the names.
     /// Needs `image`.
@@ -693,6 +697,23 @@ impl Recipe {
                 push(
                     "image",
                     "image runs the agent, but the recipe has no instructions".into(),
+                );
+            }
+        }
+        if let Some(isolation) = &self.isolation {
+            if self.image.is_none() {
+                push(
+                    "isolation",
+                    "needs image: only a container has an isolation backend".into(),
+                );
+            }
+            if !crate::isolation::BACKENDS.contains(&isolation.as_str()) {
+                push(
+                    "isolation",
+                    format!(
+                        "unknown isolation {isolation:?}; expected one of {}",
+                        crate::isolation::BACKENDS.join(", ")
+                    ),
                 );
             }
         }
@@ -1374,6 +1395,28 @@ mod tests {
                 .validate(&dir, None)
                 .iter()
                 .any(|i| i.field == "image")
+        );
+    }
+
+    #[test]
+    fn isolation_names_a_known_backend_and_needs_an_image() {
+        let dir = valid_dir("isolation");
+        let mut recipe = Recipe::parse(VALID).unwrap();
+        recipe.isolation = Some("docker".to_string());
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "isolation")
+        );
+        recipe.image = Some("fleetify-agent-claude-code".to_string());
+        assert!(recipe.validate(&dir, None).is_empty());
+        recipe.isolation = Some("firecracker".to_string());
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "isolation")
         );
     }
 

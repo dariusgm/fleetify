@@ -13,6 +13,7 @@ pub mod git;
 pub mod grants;
 pub mod guards;
 pub mod hosts;
+pub mod isolation;
 pub mod live;
 pub mod logging;
 pub mod pipeline;

@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::agents;
 use crate::clock::rfc3339_now;
-use crate::container;
 use crate::credentials::{Credentials, CredentialsError, Secret};
 use crate::events::{Event, EventBus, Redactor};
 use crate::git::{Auth, GitContext, GitError, username_for};
@@ -414,7 +413,15 @@ fn check_agent(
     );
     if let Some(image) = &input.recipe.image {
         eprintln!("agent {name} runs in the container image {image}");
-        if let Err(message) = container::check_image(image, name) {
+        let backend = crate::isolation::backend(
+            input
+                .recipe
+                .isolation
+                .as_deref()
+                .unwrap_or(crate::isolation::DOCKER),
+        )
+        .map_err(Refused)?;
+        if let Err(message) = backend.check_image(image, name) {
             if !dry_run {
                 return Err(Refused(message));
             }

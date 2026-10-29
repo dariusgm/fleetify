@@ -96,6 +96,14 @@
         "$ref": "#/$defs/Instruction"
       }
     },
+    "isolation": {
+      "description": "The isolation backend that runs the agent's container. Unset means docker. Needs\n`image`; see `isolation.rs` for the backends this build knows.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
     "limits": {
       "$ref": "#/$defs/Limits"
     },

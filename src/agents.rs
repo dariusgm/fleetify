@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crate::clock::rfc3339_now;
 use crate::container;
+use crate::isolation;
 use serde_json::json;
 
 use crate::events::EventBus;
@@ -315,6 +316,7 @@ pub fn invocation_with_prompt(
             .agents
             .get(name)
             .and_then(|settings| settings.config.as_ref()),
+        isolation: recipe.isolation.as_deref(),
     };
     build(
         name,
@@ -333,6 +335,8 @@ pub fn invocation_with_prompt(
 pub struct Extra<'a> {
     pub container_env: &'a [String],
     pub config: Option<&'a serde_json::Value>,
+    /// The isolation backend for a container run. None means docker.
+    pub isolation: Option<&'a str>,
 }
 
 /// The canary's invocation: the baseline grants only, so it tests what every run gets.
@@ -480,22 +484,22 @@ fn build(
     }
     argv[0] = program(name).to_string();
     let (files, tmpfs) = login(name);
-    let container = container::container_name();
-    let argv = container::run_argv(&container::Run {
+    let backend = isolation::backend(extra.isolation.unwrap_or(isolation::DOCKER))?;
+    let launch = backend.launch(&isolation::Spec {
         image,
-        name: &container,
         program: &argv[0],
         args: &argv[1..],
         workspace,
         directories: &grants.directories,
         forwarded: &forwarded,
+        set: &set,
         files: &files,
         tmpfs: &tmpfs,
     })?;
     Ok(Invocation {
-        argv,
-        env: container::client_env(forwarded, set),
-        stop: Some(container::stop_argv(&container)),
+        argv: launch.argv,
+        env: launch.env,
+        stop: Some(launch.stop),
     })
 }
 
