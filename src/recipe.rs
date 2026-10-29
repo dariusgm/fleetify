@@ -80,6 +80,19 @@ pub struct Recipe {
     /// `--model`; `[agents.<name>] model` is the fallback.
     #[serde(default)]
     pub model: Option<String>,
+    /// Container image the agent runs in. Unset means the agent runs on the host. The image
+    /// must carry the label `io.fleetify.agent` with the agent's name (see `container.rs`).
+    #[serde(default)]
+    pub image: Option<String>,
+    /// The isolation backend that runs the agent's container. Unset means docker. Needs
+    /// `image`; see `isolation.rs` for the backends this build knows.
+    #[serde(default)]
+    pub isolation: Option<String>,
+    /// Environment variables passed into the agent's container, by name. The values come from
+    /// the orchestrator's environment when the run starts; the recipe holds only the names.
+    /// Needs `image`.
+    #[serde(default)]
+    pub agent_env: Vec<String>,
     /// Defaults per agent, keyed by agent name. Used when the run's agent has no `model`
     /// from `--model` or from the recipe's own `model`.
     #[serde(default)]
@@ -126,6 +139,11 @@ pub struct AgentSettings {
     /// Model passed to the agent CLI unchanged. Unset leaves the choice to the agent.
     #[serde(default)]
     pub model: Option<String>,
+    /// The agent's own configuration, as a table. Opencode only: it is merged into opencode's
+    /// inline config. Keep secrets out of it and write `{env:NAME}` where a key goes;
+    /// opencode fills it from the environment of the agent.
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
 }
 
 /// `[hosts."<name>"]`: one host beyond the built-in ones.
@@ -670,6 +688,68 @@ impl Recipe {
                 "instructions are set but no agent is: set agent in recipe.toml or pass --agent"
                     .into(),
             );
+        }
+        if let Some(image) = &self.image {
+            if let Err(message) = crate::container::check_name(image) {
+                push("image", message);
+            }
+            if self.instructions.is_empty() {
+                push(
+                    "image",
+                    "image runs the agent, but the recipe has no instructions".into(),
+                );
+            }
+        }
+        if let Some(isolation) = &self.isolation {
+            if self.image.is_none() {
+                push(
+                    "isolation",
+                    "needs image: only a container has an isolation backend".into(),
+                );
+            }
+            if !crate::isolation::BACKENDS.contains(&isolation.as_str()) {
+                push(
+                    "isolation",
+                    format!(
+                        "unknown isolation {isolation:?}; expected one of {}",
+                        crate::isolation::BACKENDS.join(", ")
+                    ),
+                );
+            }
+        }
+        self.validate_agent_env(push);
+        for (agent, settings) in &self.agents {
+            let Some(config) = &settings.config else {
+                continue;
+            };
+            let field = format!("agents.{agent}.config");
+            if agent != crate::agents::OPENCODE {
+                push(&field, "only opencode takes a config table".into());
+            } else if !config.is_object() {
+                push(&field, "must be a table".into());
+            } else if config.get("permission").is_some() {
+                push(
+                    &field,
+                    "permission is set by fleetify, not by the recipe".into(),
+                );
+            }
+        }
+    }
+
+    fn validate_agent_env(&self, push: &mut impl FnMut(&str, String)) {
+        if !self.agent_env.is_empty() && self.image.is_none() {
+            push(
+                "agent_env",
+                "needs image: only a container gets these variables".into(),
+            );
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for name in &self.agent_env {
+            if let Err(message) = crate::container::check_env_name(name) {
+                push("agent_env", message);
+            } else if !seen.insert(name) {
+                push("agent_env", format!("{name} is listed twice"));
+            }
         }
     }
 
@@ -1288,6 +1368,110 @@ mod tests {
             issues
                 .iter()
                 .any(|i| i.field == "agent" && i.message.contains("gpt-pilot"))
+        );
+    }
+
+    #[test]
+    fn image_must_be_an_image_name_and_needs_instructions() {
+        let option_like = VALID.replace(
+            "agent = \"claude-code\"\n",
+            "agent = \"claude-code\"\nimage = \"--privileged\"\n",
+        );
+        assert!(
+            issues_for(&option_like, "image")
+                .iter()
+                .any(|i| i.field == "image")
+        );
+        let image = VALID.replace(
+            "agent = \"claude-code\"\n",
+            "agent = \"claude-code\"\nimage = \"fleetify-agent-claude-code:1\"\n",
+        );
+        assert!(issues_for(&image, "image").is_empty());
+        let mut no_instructions = Recipe::parse(&image).unwrap();
+        no_instructions.instructions.clear();
+        let dir = valid_dir("image-no-instructions");
+        assert!(
+            no_instructions
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "image")
+        );
+    }
+
+    #[test]
+    fn isolation_names_a_known_backend_and_needs_an_image() {
+        let dir = valid_dir("isolation");
+        let mut recipe = Recipe::parse(VALID).unwrap();
+        recipe.isolation = Some("docker".to_string());
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "isolation")
+        );
+        recipe.image = Some("fleetify-agent-claude-code".to_string());
+        assert!(recipe.validate(&dir, None).is_empty());
+        recipe.isolation = Some("firecracker".to_string());
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "isolation")
+        );
+    }
+
+    #[test]
+    fn agent_env_needs_an_image_and_real_names_and_config_needs_opencode() {
+        let mut bare = Recipe::parse(VALID).unwrap();
+        bare.agent_env = vec!["OPENAI_API_KEY".to_string()];
+        let dir = valid_dir("agent-env-bare");
+        assert!(
+            bare.validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "agent_env")
+        );
+
+        let mut contained = Recipe::parse(VALID).unwrap();
+        contained.image = Some("fleetify-agent-claude-code".to_string());
+        contained.agent_env = vec!["OPENAI_API_KEY".to_string()];
+        assert!(contained.validate(&dir, None).is_empty());
+
+        contained.agent_env = vec!["PATH".to_string()];
+        assert!(
+            contained
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "agent_env")
+        );
+
+        contained.agent_env = Vec::new();
+        contained.agents.insert(
+            "claude-code".to_string(),
+            AgentSettings {
+                model: None,
+                config: Some(serde_json::json!({"provider": {}})),
+            },
+        );
+        assert!(
+            contained
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "agents.claude-code.config")
+        );
+
+        contained.agents.clear();
+        contained.agents.insert(
+            "opencode".to_string(),
+            AgentSettings {
+                model: None,
+                config: Some(serde_json::json!({"permission": {}})),
+            },
+        );
+        assert!(
+            contained
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "agents.opencode.config")
         );
     }
 

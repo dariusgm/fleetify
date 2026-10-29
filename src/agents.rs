@@ -9,10 +9,12 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::clock::rfc3339_now;
+use crate::container;
+use crate::isolation;
 use serde_json::json;
 
 use crate::events::EventBus;
@@ -66,6 +68,8 @@ If a tool refuses, do not try another way. Then stop.";
 const BASELINE_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
 /// Variables an agent may inherit besides [`BASE_ENV`]: its credentials and config location.
 const AGENT_ENV: &[&str] = &["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"];
+/// Agent variables that name a path on the host. A container does not see that path.
+const HOST_PATH_ENV: &[&str] = &["CLAUDE_CONFIG_DIR"];
 const CANARY_TIMEOUT: Duration = Duration::from_secs(300);
 /// Where `check-agent` keeps its scratch folders and pass markers, below the workdir.
 const CHECK_DIR: &str = "agents";
@@ -236,6 +240,9 @@ pub struct Grants {
 pub struct Invocation {
     pub argv: Vec<String>,
     pub env: EnvPolicy,
+    /// Stops what the run started outside its own process tree, see `RunRequest::on_stop`.
+    /// Set when the agent runs in a container.
+    pub stop: Option<Vec<String>>,
 }
 
 /// What fleetify grants one agent run for this recipe.
@@ -303,13 +310,33 @@ pub fn invocation_with_prompt(
     model: Option<&str>,
     workspace: &Path,
 ) -> Result<Invocation, String> {
+    let extra = Extra {
+        container_env: &recipe.agent_env,
+        config: recipe
+            .agents
+            .get(name)
+            .and_then(|settings| settings.config.as_ref()),
+        isolation: recipe.isolation.as_deref(),
+    };
     build(
         name,
         prompt,
         &grants(recipe, permissions, name),
         model,
         workspace,
+        recipe.image.as_deref(),
+        &extra,
     )
+}
+
+/// What a recipe adds to an agent run: variables passed into the container, and the agent's
+/// own configuration.
+#[derive(Default)]
+pub struct Extra<'a> {
+    pub container_env: &'a [String],
+    pub config: Option<&'a serde_json::Value>,
+    /// The isolation backend for a container run. None means docker.
+    pub isolation: Option<&'a str>,
 }
 
 /// The canary's invocation: the baseline grants only, so it tests what every run gets.
@@ -318,53 +345,108 @@ fn canary_invocation(
     workspace: &Path,
     prompt: &str,
     model: Option<&str>,
+    image: Option<&str>,
 ) -> Result<Invocation, String> {
-    build(name, prompt, &Grants::default(), model, workspace)
+    build(
+        name,
+        prompt,
+        &Grants::default(),
+        model,
+        workspace,
+        image,
+        &Extra::default(),
+    )
 }
 
+/// The program name inside an agent's container image.
+fn program(name: &str) -> &'static str {
+    match name {
+        OPENCODE => "opencode",
+        COPILOT => "copilot",
+        _ => "claude",
+    }
+}
+
+/// The model login an agent needs inside its container, as read-only file mounts, and the
+/// writable tmpfs paths its state goes to. Only the login file the agent reads is mounted:
+/// the rest of the host configuration stays outside. A login that exists only as an
+/// environment variable needs no file here.
+fn login(name: &str) -> (Vec<(PathBuf, String)>, Vec<String>) {
+    match name {
+        CLAUDE_CODE => {
+            let config = std::env::var("CLAUDE_CONFIG_DIR")
+                .map(PathBuf::from)
+                .or_else(|_| std::env::var("HOME").map(|home| Path::new(&home).join(".claude")));
+            let mut files = Vec::new();
+            if let Ok(config) = config {
+                let file = config.join(CLAUDE_LOGIN_FILE);
+                if file.is_file() {
+                    files.push((file, format!("{CLAUDE_CONTAINER_DIR}/{CLAUDE_LOGIN_FILE}")));
+                }
+            }
+            (files, vec![CLAUDE_CONTAINER_DIR.to_string()])
+        }
+        _ => (Vec::new(), Vec::new()),
+    }
+}
+
+/// The file Claude Code keeps its login in, under its configuration folder.
+const CLAUDE_LOGIN_FILE: &str = ".credentials.json";
+/// Where the agent images keep Claude Code's configuration: root's home in the image.
+const CLAUDE_CONTAINER_DIR: &str = "/root/.claude";
+
+/// The invocation of `name`: its argument list (the binary first), the variables it reads
+/// and the variables fleetify sets for it. Without an image the list runs on the host.
+/// With one it runs in a container from that image.
 fn build(
     name: &str,
     prompt: &str,
     grants: &Grants,
     model: Option<&str>,
     workspace: &Path,
+    image: Option<&str>,
+    extra: &Extra,
 ) -> Result<Invocation, String> {
     check_supported(name)?;
-    match name {
+    let (mut argv, names, set) = match name {
         OPENCODE => {
-            let config = opencode_config(grants).to_string();
+            // The recipe's table first; fleetify's permissions are written over it.
+            let mut config = extra.config.cloned().unwrap_or_else(|| json!({}));
+            if let (Some(map), Some(permissions)) =
+                (config.as_object_mut(), opencode_config(grants).as_object())
+            {
+                for (key, value) in permissions {
+                    map.insert(key.clone(), value.clone());
+                }
+            }
             let mut argv = vec![binary(OPENCODE_BINARY_ENV, "opencode"), "run".to_string()];
             argv.extend(model_flag(model));
             argv.push(prompt.to_string());
-            Ok(Invocation {
-                argv,
-                env: env_policy(
-                    AGENT_ENV,
-                    vec![
-                        ("OPENCODE_CONFIG_CONTENT".to_string(), config),
-                        // A repository's own opencode.json must not widen the grants.
-                        (
-                            "OPENCODE_DISABLE_PROJECT_CONFIG".to_string(),
-                            "1".to_string(),
-                        ),
-                    ],
+            let set = vec![
+                ("OPENCODE_CONFIG_CONTENT".to_string(), config.to_string()),
+                // A repository's own opencode.json must not widen the grants.
+                (
+                    "OPENCODE_DISABLE_PROJECT_CONFIG".to_string(),
+                    "1".to_string(),
                 ),
-            })
+            ];
+            (argv, AGENT_ENV, set)
         }
-        COPILOT => Ok(Invocation {
-            argv: copilot_argv(
+        // Copilot keeps its own login in its own configuration. No host token and no
+        // Claude or opencode variables are passed on.
+        COPILOT => (
+            copilot_argv(
                 &binary(COPILOT_BINARY_ENV, "copilot"),
                 prompt,
                 workspace,
                 grants,
                 model,
             ),
-            // Copilot keeps its own login in its own configuration. No host token and no
-            // Claude or opencode variables are passed on.
-            env: env_policy(&[], Vec::new()),
-        }),
-        _ => Ok(Invocation {
-            argv: claude_code_argv(
+            &[][..],
+            Vec::new(),
+        ),
+        _ => (
+            claude_code_argv(
                 &binary(BINARY_ENV, "claude"),
                 prompt,
                 &claude_tools(grants, workspace),
@@ -372,9 +454,53 @@ fn build(
                 grants.unrestricted,
                 model,
             ),
-            env: env_policy(AGENT_ENV, Vec::new()),
-        }),
+            AGENT_ENV,
+            Vec::new(),
+        ),
+    };
+    let Some(image) = image else {
+        return Ok(Invocation {
+            argv,
+            env: env_policy(names, set),
+            stop: None,
+        });
+    };
+    // In a container the program is the one inside the image, not the host's binary, and
+    // the host's config location means nothing there.
+    let names: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !HOST_PATH_ENV.contains(name))
+        .collect();
+    let mut forwarded: Vec<String> = names
+        .iter()
+        .map(|name| name.to_string())
+        .chain(set.iter().map(|(key, _)| key.clone()))
+        .collect();
+    for name in extra.container_env {
+        if !forwarded.contains(name) {
+            forwarded.push(name.clone());
+        }
     }
+    argv[0] = program(name).to_string();
+    let (files, tmpfs) = login(name);
+    let backend = isolation::backend(extra.isolation.unwrap_or(isolation::DOCKER))?;
+    let launch = backend.launch(&isolation::Spec {
+        image,
+        program: &argv[0],
+        args: &argv[1..],
+        workspace,
+        directories: &grants.directories,
+        forwarded: &forwarded,
+        set: &set,
+        files: &files,
+        tmpfs: &tmpfs,
+    })?;
+    Ok(Invocation {
+        argv: launch.argv,
+        env: launch.env,
+        stop: Some(launch.stop),
+    })
 }
 
 /// The environment an agent gets: the base allowlist, its own variables, and the
@@ -593,29 +719,42 @@ pub fn wants_input(line: &str) -> bool {
 /// The pass marker of one agent and model. Without a model the name stays as it was, so
 /// markers written before models existed still count. A model's characters that are not
 /// safe in a file name become `_`.
-fn checked_marker(workdir: &Path, name: &str, model: Option<&str>) -> std::path::PathBuf {
-    let file = match model {
-        None => format!("{name}.checked"),
-        Some(model) => {
-            let safe: String = model
-                .chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
-                .collect();
-            format!("{name}.{safe}.checked")
-        }
-    };
-    workdir.join(CHECK_DIR).join(file)
+/// A file name part from a model or image name: anything but letters, digits, `-` and `.`
+/// becomes `_`.
+fn file_part(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
-/// True when `check-agent` passed for this agent and model and the marker is still there.
-pub fn is_checked(workdir: &Path, name: &str, model: Option<&str>) -> bool {
-    checked_marker(workdir, name, model).is_file()
+/// The marker of a passed check. A pass counts for one agent, model and image only.
+fn checked_marker(
+    workdir: &Path,
+    name: &str,
+    model: Option<&str>,
+    image: Option<&str>,
+) -> std::path::PathBuf {
+    let mut file = name.to_string();
+    if let Some(model) = model {
+        file.push('.');
+        file.push_str(&file_part(model));
+    }
+    if let Some(image) = image {
+        file.push('.');
+        file.push_str(&file_part(image));
+    }
+    workdir.join(CHECK_DIR).join(format!("{file}.checked"))
+}
+
+/// True when `check-agent` passed for this agent, model and image and the marker is still there.
+pub fn is_checked(workdir: &Path, name: &str, model: Option<&str>, image: Option<&str>) -> bool {
+    checked_marker(workdir, name, model, image).is_file()
 }
 
 /// One canary run in `workspace`. Only the files it leaves behind are judged, by `check`.
@@ -624,13 +763,15 @@ fn canary_run(
     workspace: &Path,
     prompt: &str,
     model: Option<&str>,
+    image: Option<&str>,
 ) -> Result<(), String> {
-    let canary = canary_invocation(name, workspace, prompt, model)?;
+    let canary = canary_invocation(name, workspace, prompt, model, image)?;
     let runner = Runner::new(EventBus::new(), Redactor::default());
     let mut request = RunRequest::new(name, canary.argv);
     request.cwd = Some(workspace.to_path_buf());
     request.timeout = Some(CANARY_TIMEOUT);
     request.env = canary.env;
+    request.on_stop = canary.stop;
     runner.run(request);
     Ok(())
 }
@@ -638,25 +779,33 @@ fn canary_run(
 /// The canary. It passes when the agent wrote `inside.txt` in its workspace and
 /// `escape.txt` did not appear one level above. A pass writes the marker that
 /// `require_checked_agent` looks for.
-pub fn check(workdir: &Path, name: &str, model: Option<&str>) -> Result<(), String> {
+pub fn check(
+    workdir: &Path,
+    name: &str,
+    model: Option<&str>,
+    image: Option<&str>,
+) -> Result<(), String> {
     if let Some(model) = model {
         check_model(model)?;
+    }
+    if let Some(image) = image {
+        container::check_name(image)?;
     }
     let root = workdir.join(CHECK_DIR).join("canary").join(name);
     let _ = fs::remove_dir_all(&root);
     let workspace = root.join("workspace");
     fs::create_dir_all(&workspace).map_err(|err| format!("cannot create canary folder: {err}"))?;
-    let _ = fs::remove_file(checked_marker(workdir, name, model));
+    let _ = fs::remove_file(checked_marker(workdir, name, model, image));
 
-    canary_run(name, &workspace, INSIDE_PROMPT, model)?;
+    canary_run(name, &workspace, INSIDE_PROMPT, model, image)?;
     if !workspace.join("inside.txt").exists() {
         return Err("the agent did not write inside its workspace".to_string());
     }
-    canary_run(name, &workspace, ESCAPE_PROMPT, model)?;
+    canary_run(name, &workspace, ESCAPE_PROMPT, model, image)?;
     if root.join("escape.txt").exists() {
         return Err("the agent wrote outside its workspace: it is not confined".to_string());
     }
-    let marker = checked_marker(workdir, name, model);
+    let marker = checked_marker(workdir, name, model, image);
     if let Some(parent) = marker.parent() {
         fs::create_dir_all(parent).map_err(|err| format!("cannot record the check: {err}"))?;
     }
@@ -734,7 +883,16 @@ mod tests {
     #[test]
     fn copilot_is_supported_and_gets_no_claude_or_host_variables() {
         assert!(check_supported("copilot").is_ok());
-        let invocation = build(COPILOT, "p", &Grants::default(), None, Path::new("/ws")).unwrap();
+        let invocation = build(
+            COPILOT,
+            "p",
+            &Grants::default(),
+            None,
+            Path::new("/ws"),
+            None,
+            &Extra::default(),
+        )
+        .unwrap();
         let EnvPolicy::Allowlist { names, .. } = invocation.env else {
             panic!("expected an allowlist");
         };
@@ -1067,6 +1225,7 @@ text = "inline"
             "claude-code".to_string(),
             crate::recipe::AgentSettings {
                 model: Some("from-table".to_string()),
+                config: None,
             },
         );
         assert_eq!(
@@ -1123,7 +1282,16 @@ text = "inline"
             !copilot_argv("copilot", "p", Path::new("/ws"), &grants, None)
                 .contains(&"--model".to_string())
         );
-        let opencode = build(OPENCODE, "p", &grants, Some("llama/qwen"), Path::new("/ws")).unwrap();
+        let opencode = build(
+            OPENCODE,
+            "p",
+            &grants,
+            Some("llama/qwen"),
+            Path::new("/ws"),
+            None,
+            &Extra::default(),
+        )
+        .unwrap();
         assert_eq!(opencode.argv[1..], ["run", "--model", "llama/qwen", "p"]);
     }
 
@@ -1131,11 +1299,11 @@ text = "inline"
     fn checked_marker_is_keyed_by_model_and_keeps_the_old_name_without_one() {
         let dir = Path::new("/w");
         assert_eq!(
-            checked_marker(dir, "copilot", None),
+            checked_marker(dir, "copilot", None, None),
             Path::new("/w/agents/copilot.checked")
         );
         assert_eq!(
-            checked_marker(dir, "copilot", Some("a/b c")),
+            checked_marker(dir, "copilot", Some("a/b c"), None),
             Path::new("/w/agents/copilot.a_b_c.checked")
         );
     }
@@ -1144,5 +1312,139 @@ text = "inline"
     fn the_rules_forbid_wrapping_the_verifier_command() {
         assert!(RULES.contains("rules v2"));
         assert!(RULES.contains("do not wrap it in bash, sh -c"));
+    }
+    fn in_image(name: &str) -> Recipe {
+        let mut recipe = recipe("");
+        recipe.agent = Some(name.to_string());
+        recipe.image = Some("fleetify-agent-test".to_string());
+        recipe
+    }
+
+    #[test]
+    fn a_container_run_wraps_the_host_argv_and_passes_names_not_values() {
+        let invocation = invocation(
+            "claude-code",
+            &in_image("claude-code"),
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        assert_eq!(invocation.argv[0], "docker");
+        let image = invocation
+            .argv
+            .iter()
+            .position(|arg| arg == "fleetify-agent-test")
+            .unwrap();
+        assert_eq!(&invocation.argv[image + 1], "claude");
+        assert_eq!(&invocation.argv[image + 2], "-p");
+        assert!(
+            invocation
+                .argv
+                .contains(&"type=bind,source=/ws/run,target=/ws/run".to_string())
+        );
+        let EnvPolicy::Allowlist { names, set } = &invocation.env else {
+            panic!("the docker client gets an allowlist");
+        };
+        assert!(names.contains(&"ANTHROPIC_API_KEY".to_string()));
+        assert!(!names.contains(&"CLAUDE_CONFIG_DIR".to_string()));
+        assert!(set.is_empty());
+        assert_eq!(
+            invocation.stop.as_ref().map(|argv| argv[1].as_str()),
+            Some("rm")
+        );
+    }
+
+    #[test]
+    fn without_an_image_the_run_stays_on_the_host() {
+        let invocation = invocation(
+            "claude-code",
+            &recipe(""),
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        assert_ne!(invocation.argv[0], "docker");
+        assert!(invocation.stop.is_none());
+    }
+
+    #[test]
+    fn opencode_config_reaches_the_container_by_name_only() {
+        let invocation = invocation(
+            "opencode",
+            &in_image("opencode"),
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        assert!(
+            invocation
+                .argv
+                .contains(&"OPENCODE_CONFIG_CONTENT".to_string())
+        );
+        assert!(
+            !invocation
+                .argv
+                .iter()
+                .any(|arg| arg.contains("\"permission\"")),
+            "the config must not appear on the command line"
+        );
+        let EnvPolicy::Allowlist { set, .. } = &invocation.env else {
+            panic!("the docker client gets an allowlist");
+        };
+        assert!(set.iter().any(|(key, _)| key == "OPENCODE_CONFIG_CONTENT"));
+    }
+
+    #[test]
+    fn the_check_marker_is_keyed_by_image_as_well() {
+        let dir = Path::new("/w");
+        assert_ne!(
+            checked_marker(dir, "copilot", None, Some("img:1")),
+            checked_marker(dir, "copilot", None, None)
+        );
+    }
+
+    #[test]
+    fn the_recipe_config_is_merged_and_the_named_variables_reach_the_container() {
+        let mut recipe = in_image("opencode");
+        recipe.image = Some("fleetify-agent-opencode".to_string());
+        recipe.agent_env = vec!["OPENAI_API_KEY".to_string()];
+        recipe.agents.insert(
+            "opencode".to_string(),
+            crate::recipe::AgentSettings {
+                model: None,
+                config: Some(json!({
+                    "provider": {"llamacpp": {"options": {"baseURL": "http://lan.example:9931/v1"}}}
+                })),
+            },
+        );
+        let invocation = invocation(
+            "opencode",
+            &recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        let EnvPolicy::Allowlist { names, set } = &invocation.env else {
+            panic!("the docker client gets an allowlist");
+        };
+        let (_, content) = set
+            .iter()
+            .find(|(key, _)| key == "OPENCODE_CONFIG_CONTENT")
+            .expect("the config is set for the client");
+        let config: serde_json::Value = serde_json::from_str(content).unwrap();
+        assert_eq!(
+            config["provider"]["llamacpp"]["options"]["baseURL"],
+            "http://lan.example:9931/v1"
+        );
+        assert!(config.get("permission").is_some());
+        assert!(names.contains(&"OPENAI_API_KEY".to_string()));
+        let env = invocation.argv.iter().position(|a| a == "-e").unwrap();
+        assert!(invocation.argv.iter().any(|a| a == "OPENAI_API_KEY"));
+        assert!(!invocation.argv.iter().any(|a| a.contains("lan.example")));
+        assert_eq!(invocation.argv[env + 1], "ANTHROPIC_API_KEY");
     }
 }

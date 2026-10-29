@@ -152,6 +152,9 @@ pub enum Command {
         /// Check this model: a pass counts for that model only
         #[arg(long)]
         model: Option<String>,
+        /// Check the agent in this container image: a pass counts for that image only
+        #[arg(long)]
+        image: Option<String>,
     },
     /// Delete the workspaces of a run (clones are kept)
     Clean {
@@ -242,8 +245,8 @@ pub fn run(cli: Cli) -> ExitCode {
             follow,
             lines,
         } => logs_command(&workdir, debug, &repo, run, follow, lines),
-        Command::CheckAgent { name, model } => {
-            check_agent_command(&workdir, debug, &name, model.as_deref())
+        Command::CheckAgent { name, model, image } => {
+            check_agent_command(&workdir, debug, &name, model.as_deref(), image.as_deref())
         }
     }
 }
@@ -551,12 +554,19 @@ fn logs_command(
 }
 
 /// `fleetify check-agent <name>`: the canary. Exit code 1 when the agent fails it.
-fn check_agent_command(workdir: &Path, debug: bool, name: &str, model: Option<&str>) -> ExitCode {
+fn check_agent_command(
+    workdir: &Path,
+    debug: bool,
+    name: &str,
+    model: Option<&str>,
+    image: Option<&str>,
+) -> ExitCode {
     if let Err(code) = start_logging(&workdir.join(TOOL_LOG), debug) {
         return code;
     }
     let label = model.map_or_else(|| name.to_string(), |model| format!("{name} model {model}"));
-    match agents::check(workdir, name, model) {
+    let label = image.map_or_else(|| label.clone(), |image| format!("{label} in {image}"));
+    match agents::check(workdir, name, model, image) {
         Ok(()) => {
             println!("agent {label} passed check-agent");
             ExitCode::SUCCESS

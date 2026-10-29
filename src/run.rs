@@ -322,6 +322,15 @@ fn refuse_leftover_files(input: &RunInput<'_>) -> Result<(), Refused> {
     Ok(())
 }
 
+/// The values of the variables the recipe passes into the agent's container, for redaction.
+fn container_env_values(recipe: &Recipe) -> Vec<String> {
+    recipe
+        .agent_env
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .collect()
+}
+
 /// Loads what a run needs. A dry run reports missing grants and keeps going; a real
 /// run refuses to start.
 fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
@@ -332,7 +341,13 @@ fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
         tracing::warn!(%warning, "credentials");
         eprintln!("warning: {warning}");
     }
-    crate::logging::set_redactor(Redactor::new(credentials.secrets()));
+    crate::logging::set_redactor(Redactor::new(
+        credentials.secrets().chain(
+            container_env_values(input.recipe)
+                .iter()
+                .map(String::as_str),
+        ),
+    ));
     let (agent, model) = match check_agent(input, &credentials.grants, dry_run)? {
         Some((name, model)) => (Some(name), model),
         None => (None, None),
@@ -396,6 +411,23 @@ fn check_agent(
             .map_or_else(String::new, |model| format!(" model {model}")),
         agents::describe_grants(input.recipe, &grants.permissions, name)
     );
+    if let Some(image) = &input.recipe.image {
+        eprintln!("agent {name} runs in the container image {image}");
+        let backend = crate::isolation::backend(
+            input
+                .recipe
+                .isolation
+                .as_deref()
+                .unwrap_or(crate::isolation::DOCKER),
+        )
+        .map_err(Refused)?;
+        if let Err(message) = backend.check_image(image, name) {
+            if !dry_run {
+                return Err(Refused(message));
+            }
+            eprintln!("dry run: a real run would refuse: {message}");
+        }
+    }
     let missing = agents::missing_permissions(input.recipe, &grants.permissions, name);
     if !missing.is_empty() {
         let message = format!(
@@ -407,9 +439,25 @@ fn check_agent(
         }
         eprintln!("dry run: a real run would refuse: {message}");
     }
+    for name in &input.recipe.agent_env {
+        if std::env::var_os(name).is_none() {
+            let message = format!(
+                "environment variable {name} is not set; the recipe passes it to the agent container"
+            );
+            if !dry_run {
+                return Err(Refused(message));
+            }
+            eprintln!("dry run: a real run would refuse: {message}");
+        }
+    }
     if input.recipe.policy.require_checked_agent
         && !input.allow_unchecked_agent
-        && !agents::is_checked(input.workdir, name, model.as_deref())
+        && !agents::is_checked(
+            input.workdir,
+            name,
+            model.as_deref(),
+            input.recipe.image.as_deref(),
+        )
     {
         return Err(Refused(format!(
             "agent {name} has not passed check-agent: run `fleetify check-agent {name}` or pass --allow-unchecked-agent"
@@ -487,7 +535,12 @@ fn execute_loaded_with_view(
     };
     write_meta(layout, &meta).map_err(|err| Refused(err.to_string()))?;
 
-    let redactor = Redactor::new(loaded.credentials.secrets());
+    let redactor = Redactor::new(
+        loaded
+            .credentials
+            .secrets()
+            .chain(container_env_values(recipe).iter().map(String::as_str)),
+    );
     let bus = EventBus::new();
     // Rate-limit waits of the host clients go to the same event stream as everything else.
     for client in loaded.clients.values() {

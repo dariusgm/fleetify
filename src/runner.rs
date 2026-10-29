@@ -213,6 +213,11 @@ pub struct RunRequest {
     pub limit_check: Option<fn(&str) -> bool>,
     pub limit_wait: Option<Duration>,
     pub env: EnvPolicy,
+    /// Run once after fleetify stopped the process tree (timeout, interrupt, or waiting for
+    /// input), with the same environment. It stops whatever the process started outside its
+    /// own tree, such as a container whose docker client was killed. Its output is dropped.
+    /// Not run after a normal exit. None: nothing to stop.
+    pub on_stop: Option<Vec<String>>,
 }
 
 impl RunRequest {
@@ -227,6 +232,7 @@ impl RunRequest {
             limit_check: None,
             limit_wait: None,
             env: EnvPolicy::Inherit,
+            on_stop: None,
         }
     }
 }
@@ -339,6 +345,11 @@ impl Runner {
         let mut lines = Vec::new();
         let mut dropped = 0;
         let outcome = self.supervise(id, &req, &mut lines, &mut dropped);
+        if let Some(stop) = &req.on_stop
+            && !matches!(outcome, Outcome::Exited { .. })
+        {
+            run_stop(stop, &req.env);
+        }
         let duration = started.elapsed();
 
         self.bus.emit(Event::CommandFinished {
@@ -550,6 +561,21 @@ impl Runner {
             *dropped += 1;
         }
     }
+}
+
+/// Runs an `on_stop` command and ignores its result: the run has already ended.
+fn run_stop(argv: &[String], env: &EnvPolicy) {
+    let Some((program, args)) = argv.split_first() else {
+        return;
+    };
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    apply_env(&mut command, env);
+    let _ = command.status();
 }
 
 fn apply_env(command: &mut Command, policy: &EnvPolicy) {

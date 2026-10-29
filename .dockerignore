@@ -1,0 +1,9 @@
+# Keep the build context small: build output, git data and the other projects.
+target
+.git
+.claude
+authoring
+docs
+tasks
+tests
+scripts
