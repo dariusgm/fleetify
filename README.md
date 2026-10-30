@@ -206,6 +206,17 @@ Running in docker is optional. Without `image` in a recipe, the agent runs on th
 
 With `image = "..."`, the agent runs in a container from that image. The workspace and every granted directory are mounted at the paths they have on the host. The agent's own variables and the ones the recipe lists are passed in by name, and nothing else from the host is visible. The image must carry the label `io.fleetify.agent` with the agent's name, so one agent cannot run in another's image by mistake.
 
+#### Network
+
+A container run has a network of its own, and the agent reaches only the hosts the recipe lists in `[network]`. Each entry is `host:port`, where the host is a DNS name (looked up again for each connection, so a changed record is followed) or an IPv4 address for a host configured by address. Ranges, wildcards and schemes are refused. The agent's HTTP clients get the proxy through their environment, and a request to any other host is refused by the proxy. Refusals are reported with the run's events, and the agent only sees a failed connection. `[network]` is required with `image`, and the list must name the model's host.
+
+```toml
+[network]
+allow = ["api.anthropic.com:443", "llm-box.lan:9931"]
+```
+
+The proxy image is built once from `docker/proxy/`: `docker build -t fleetify-proxy:1 docker/proxy`.
+
 #### Build the agent images
 
 Images for the three agents are in `docker/agents/`. Build the ones you use, on a Linux host with rootless docker:
@@ -273,6 +284,9 @@ tool_call = true
 [agents.opencode.config.provider.llamacpp.models."qwen3.8-flash-next".limit]
 context = 32768
 output = 8192
+
+[network]
+allow = ["192.168.178.151:9931"]        # the llama.cpp host and port; a DNS name works too
 ```
 
 Before a run, export the variable in the shell that starts fleetify, for example `export OPENAI_API_KEY=...`. A llama.cpp server accepts any value there, so a placeholder works. The recipe holds no secret values. A run refuses to start if a listed variable is not set, and its value is redacted from logs and reports.
@@ -284,7 +298,9 @@ The `[agents.opencode.config]` table is merged into opencode's inline config, an
 #### Limits
 
 - The socket gives the orchestrator control of the docker daemon, so the trust boundary moves to the socket when the orchestrator runs in docker.
-- An agent container keeps network access, since it must reach its model.
+- An agent container reaches only the `[network]` entries, through its proxy. It has no route around the proxy, but the allowed hosts are reachable from it, and a host the recipe lists is trusted to be the one it names.
+- Whether each agent's HTTP client honours the proxy variables is not yet checked by a canary. Node clients may ignore them unless configured to use them, so a run may fail to reach its model. The live canary through the proxy is still open.
+- `check-agent` runs without the recipe's network, so it does not test the proxy.
 - Claude Code's login file is mounted read-only, because the agent needs it to reach its model. The agent can read it.
 - Variables from `agent_env` and opencode's `{env:...}` values are readable by the agent. This limits what the agent gets, not what it can do with it.
 - `check-agent` does not read the recipe, so an opencode canary without the recipe's provider can fail when it needs a model answer.

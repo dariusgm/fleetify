@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::container;
+use crate::egress;
 use crate::runner::EnvPolicy;
 
 /// The backend that runs containers through the docker client. The default.
@@ -37,6 +38,20 @@ pub struct Spec<'a> {
     pub files: &'a [(PathBuf, String)],
     /// Paths inside that get a fresh, empty, writable area.
     pub tmpfs: &'a [String],
+    /// The network set up for this run, when the recipe restricts it.
+    pub network: Option<&'a Network>,
+}
+
+/// The network of one agent run, set up by the backend before the run starts and torn down
+/// after it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Network {
+    /// The backend's name for the network the agent joins.
+    pub name: String,
+    /// Variables the agent gets, pointing its HTTP clients at the proxy.
+    pub env: Vec<(String, String)>,
+    /// A host directory the backend wrote for the network. Removed at tear-down.
+    pub dir: PathBuf,
 }
 
 /// What the runner needs to start one isolated run.
@@ -55,6 +70,13 @@ pub trait Backend {
     fn check_image(&self, image: &str, agent: &str) -> Result<(), String>;
     /// The command line for one run. Starts nothing itself.
     fn launch(&self, spec: &Spec) -> Result<Launch, String>;
+    /// Sets up the run's network before the run starts: the agent can reach only the
+    /// `allow` entries, through a proxy. The files for it go under `base`, a host path, since
+    /// a backend may mount them. Cleans up what it started when it fails.
+    fn set_up_network(&self, allow: &[egress::Entry], base: &Path) -> Result<Network, String>;
+    /// Removes the network after the run ended, whatever the outcome. Returns the requests
+    /// the proxy refused during the run.
+    fn tear_down_network(&self, network: &Network) -> Vec<String>;
 }
 
 /// The backend with this name. Refuses names this build does not know.
@@ -88,12 +110,21 @@ impl Backend for Docker {
             forwarded: spec.forwarded,
             files: spec.files,
             tmpfs: spec.tmpfs,
+            network: spec.network.map(|network| network.name.as_str()),
         })?;
         Ok(Launch {
             argv,
             env: container::client_env(spec.forwarded.to_vec(), spec.set.to_vec()),
             stop: container::stop_argv(&name),
         })
+    }
+
+    fn set_up_network(&self, allow: &[egress::Entry], base: &Path) -> Result<Network, String> {
+        container::set_up_network(allow, base)
+    }
+
+    fn tear_down_network(&self, network: &Network) -> Vec<String> {
+        container::tear_down_network(network)
     }
 }
 
@@ -128,6 +159,7 @@ mod tests {
                 set: &set,
                 files: &[],
                 tmpfs: &[],
+                network: None,
             })
             .unwrap();
         assert_eq!(launch.argv[0], "docker");

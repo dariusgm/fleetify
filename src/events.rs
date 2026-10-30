@@ -126,6 +126,12 @@ pub enum Event {
         /// The model the agent runs with, when one is set.
         model: Option<String>,
     },
+    /// A request the agent's proxy refused, as `METHOD target`. It is not shown to the agent.
+    NetworkDenied {
+        repo: String,
+        agent: String,
+        target: String,
+    },
 }
 
 /// Fan-out of events to any number of subscribers. Subscribers that have been

@@ -8,10 +8,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::agents;
+use crate::egress;
 use crate::events::{Event, Outcome};
 use crate::git::{GitContext, git};
 use crate::guards;
 use crate::hosts::{self, ChangeRequest, CiFailure, CrState, MergeOutcome};
+use crate::isolation::{self, Network};
 use crate::recipe::Recipe;
 use crate::report::{Failure, RepoResult};
 use crate::repos::Repo;
@@ -905,13 +907,46 @@ fn run_agent(
 ) -> Result<CommandResult, String> {
     agents::write_task(workspace, ctx.recipe_dir, ctx.recipe)
         .map_err(|err| format!("cannot write the agent task: {err}"))?;
-    let invocation = agents::invocation_with_prompt(
+    // A container run gets its own network before the agent starts, and it is removed after
+    // the agent ends, whatever the outcome. Refused requests are reported as events.
+    let backend = isolation::backend(ctx.recipe.isolation.as_deref().unwrap_or(isolation::DOCKER))?;
+    let network = match &ctx.recipe.image {
+        Some(_) => {
+            let allow = egress::parse_entries(&ctx.recipe.network.allow)?;
+            Some(backend.set_up_network(&allow, &ctx.layout.root.join("networks"))?)
+        }
+        None => None,
+    };
+    let result = agent_in_network(ctx, repo, name, workspace, prompt, network.as_ref());
+    if let Some(network) = &network {
+        for target in backend.tear_down_network(network) {
+            ctx.runner.bus().emit(Event::NetworkDenied {
+                repo: repo.key(),
+                agent: name.to_string(),
+                target,
+            });
+        }
+    }
+    result
+}
+
+/// Runs the agent once, inside `network` when the run has one.
+fn agent_in_network(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    name: &str,
+    workspace: &Path,
+    prompt: &str,
+    network: Option<&Network>,
+) -> Result<CommandResult, String> {
+    let invocation = agents::invocation_in_network(
         name,
         prompt,
         ctx.recipe,
         &ctx.credentials.grants.permissions,
         ctx.model,
         workspace,
+        network,
     )?;
     let grants = agents::grants(ctx.recipe, &ctx.credentials.grants.permissions, name);
     ctx.runner.bus().emit(Event::PermissionsEffective {

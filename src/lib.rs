@@ -8,6 +8,7 @@ pub mod cli;
 pub mod clock;
 pub mod container;
 pub mod credentials;
+pub mod egress;
 pub mod events;
 pub mod git;
 pub mod grants;

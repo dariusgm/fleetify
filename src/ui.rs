@@ -93,6 +93,11 @@ pub fn plain_line(event: &Event) -> String {
             directories.join(", "),
             if *unrestricted { ", unrestricted" } else { "" }
         ),
+        Event::NetworkDenied {
+            repo,
+            agent,
+            target,
+        } => format!("{repo} | agent {agent} was refused {target} by its proxy"),
         Event::CommandFinished {
             label,
             outcome,

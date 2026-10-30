@@ -122,6 +122,10 @@
     "needs": {
       "$ref": "#/$defs/Needs"
     },
+    "network": {
+      "description": "`[network]`: the hosts an agent container may reach through its proxy.",
+      "$ref": "#/$defs/Network"
+    },
     "policy": {
       "$ref": "#/$defs/Policy"
     },
@@ -520,6 +524,21 @@
         "web": {
           "type": "boolean",
           "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Network": {
+      "description": "`[network]`: the hosts an agent container may reach. Needs `image`, and is required when\n`image` is set, since the agent must reach its model.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "`host:port` entries. The host is a DNS name or an IPv4 address; names are looked up\nagain when a connection opens. No ranges, wildcards or schemes.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

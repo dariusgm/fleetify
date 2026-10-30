@@ -45,6 +45,7 @@ fn in_container(workspace: &Path, script: &str) -> (Outcome, String) {
         forwarded: &[],
         files: &[],
         tmpfs: &[],
+        network: None,
     })
     .unwrap();
     let mut request = RunRequest::new("container", argv);
@@ -138,6 +139,7 @@ fn a_stopped_run_removes_its_container() {
         forwarded: &[],
         files: &[],
         tmpfs: &[],
+        network: None,
     })
     .unwrap();
     let mut request = RunRequest::new("container", argv);
@@ -183,6 +185,14 @@ fn opencode_in_its_container_answers_from_the_recipe_provider() {
     // through `agent_env`, and opencode fills the placeholder from its environment.
     // SAFETY: this test is the only one that sets this variable.
     unsafe { std::env::set_var("FLEETIFY_TEST_KEY", "not-a-real-key") };
+    // The allowlist entry is the URL's host and port, as the proxy will see them.
+    let target = url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_string();
     let text = format!(
         r#"schema = 1
 name = "opencode-container"
@@ -210,16 +220,27 @@ tool_call = true
 [agents.opencode.config.provider.llamacpp.models."qwen3.8-flash-next".limit]
 context = 32768
 output = 8192
+
+[network]
+allow = ["{target}"]
 "#
     );
     let recipe = fleetify::recipe::Recipe::parse(&text).unwrap();
-    let invocation = fleetify::agents::invocation_with_prompt(
+    // The run gets the network a real run gets: the recipe's allowlist, a proxy, and the
+    // proxy variables in the agent's environment.
+    let backend = fleetify::isolation::backend(fleetify::isolation::DOCKER).unwrap();
+    let allow = fleetify::egress::parse_entries(&recipe.network.allow).unwrap();
+    let network = backend
+        .set_up_network(&allow, &workspace.join("networks"))
+        .unwrap();
+    let invocation = fleetify::agents::invocation_in_network(
         "opencode",
         "Create a file named inside.txt containing the word inside. Then reply pong.",
         &recipe,
         &fleetify::grants::Permissions::default(),
         Some("llamacpp/qwen3.8-flash-next"),
         &workspace,
+        Some(&network),
     )
     .unwrap();
     let mut request = RunRequest::new("opencode", invocation.argv);
@@ -228,6 +249,9 @@ output = 8192
     request.env = invocation.env;
     request.on_stop = invocation.stop;
     let result = runner().run(request);
+    for denied in backend.tear_down_network(&network) {
+        eprintln!("refused by the proxy: {denied}");
+    }
     assert!(
         matches!(result.outcome, Outcome::Exited { code: Some(0) }),
         "{:?}",
