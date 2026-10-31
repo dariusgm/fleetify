@@ -126,12 +126,22 @@ pub enum Event {
         /// The model the agent runs with, when one is set.
         model: Option<String>,
     },
-    /// A request the agent's proxy refused, as `METHOD target`. It is not shown to the agent.
+    /// A target the agent's proxy refused, with how many requests it refused for it. The agent
+    /// sees only a failed connection, so this event is the record of why the run failed.
     NetworkDenied {
         repo: String,
         agent: String,
         target: String,
+        count: u32,
     },
+}
+
+/// The log line for refused requests: the target, the reason, and how many requests.
+pub fn denial_text(agent: &str, target: &str, count: u32) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    format!(
+        "agent {agent} was refused {target} by its proxy: not in the recipe's [network] allow ({count} request{plural})"
+    )
 }
 
 /// Fan-out of events to any number of subscribers. Subscribers that have been

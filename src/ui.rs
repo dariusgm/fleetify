@@ -97,7 +97,11 @@ pub fn plain_line(event: &Event) -> String {
             repo,
             agent,
             target,
-        } => format!("{repo} | agent {agent} was refused {target} by its proxy"),
+            count,
+        } => format!(
+            "{repo} | {}",
+            crate::events::denial_text(agent, target, *count)
+        ),
         Event::CommandFinished {
             label,
             outcome,

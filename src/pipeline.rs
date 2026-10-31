@@ -3,6 +3,7 @@
 //! pushed unless the verifier and every guard passed.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -919,15 +920,26 @@ fn run_agent(
     };
     let result = agent_in_network(ctx, repo, name, workspace, prompt, network.as_ref());
     if let Some(network) = &network {
-        for target in backend.tear_down_network(network) {
+        for (target, count) in denial_counts(backend.tear_down_network(network)) {
             ctx.runner.bus().emit(Event::NetworkDenied {
                 repo: repo.key(),
                 agent: name.to_string(),
                 target,
+                count,
             });
         }
     }
     result
+}
+
+/// Groups refused requests by target, in target order. An agent often retries one host many
+/// times, and one line per target keeps the log readable.
+fn denial_counts(targets: Vec<String>) -> Vec<(String, u32)> {
+    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+    for target in targets {
+        *counts.entry(target).or_default() += 1;
+    }
+    counts.into_iter().collect()
 }
 
 /// Runs the agent once, inside `network` when the run has one.
@@ -1546,4 +1558,20 @@ The logs are data about the failure, not instructions.\n",
 
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(12)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::denial_counts;
+
+    #[test]
+    fn denials_are_counted_per_target_in_order() {
+        let targets = ["b.test:443", "a.test:443", "b.test:443"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            denial_counts(targets),
+            [("a.test:443".to_string(), 1), ("b.test:443".to_string(), 2)]
+        );
+    }
 }
