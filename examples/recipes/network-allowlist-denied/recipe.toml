@@ -1,0 +1,41 @@
+# Negative test for the container network: the allowlist names the model's host wrongly
+# (api.anthropic.co, not api.anthropic.com). The agent's model request must be refused by
+# the proxy, so the run fails. The refusal shows as NetworkDenied events in the run's log.
+schema = 1
+name = "network-allowlist-denied"
+branch = "chore/network-allowlist-denied"
+pr_title = "chore: network allowlist canary (expected to fail)"
+commit_message = "chore: network allowlist canary"
+agent = "claude-code"
+image = "fleetify-agent-claude-code"
+tools = "tools"
+
+[applies_to]
+host_type = ["github"]
+has_file = ["pyproject.toml", "poetry.lock"]
+
+[[instructions]]
+text = "Update the dependencies in this repository to the newest versions and keep the build green."
+
+[network]
+# Wrong on purpose: the model host is api.anthropic.com.
+allow = ["api.anthropic.co:443", "github.com:443"]
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 60
+tail_lines = 20
+error_patterns = ['^E ', 'error:']
+baseline = false
+
+[guards]
+allow_paths = ["pyproject.toml", "poetry.lock"]
+max_files_changed = 2
+max_lines_changed = 20
+deny_added_patterns = ["NOSONAR"]
+
+[ci]
+wait = false
+
+[limits]
+agent_timeout_min = 10

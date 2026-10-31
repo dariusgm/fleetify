@@ -93,6 +93,15 @@ pub fn plain_line(event: &Event) -> String {
             directories.join(", "),
             if *unrestricted { ", unrestricted" } else { "" }
         ),
+        Event::NetworkDenied {
+            repo,
+            agent,
+            target,
+            count,
+        } => format!(
+            "{repo} | {}",
+            crate::events::denial_text(agent, target, *count)
+        ),
         Event::CommandFinished {
             label,
             outcome,

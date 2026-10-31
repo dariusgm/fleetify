@@ -130,6 +130,20 @@ pub struct Recipe {
     pub rate_limit: RateLimit,
     #[serde(default)]
     pub policy: Policy,
+    /// `[network]`: the hosts an agent container may reach through its proxy.
+    #[serde(default)]
+    pub network: Network,
+}
+
+/// `[network]`: the hosts an agent container may reach. Needs `image`, and is required when
+/// `image` is set, since the agent must reach its model.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Network {
+    /// `host:port` entries. The host is a DNS name or an IPv4 address; names are looked up
+    /// again when a connection opens. No ranges, wildcards or schemes.
+    #[serde(default)]
+    pub allow: Vec<String>,
 }
 
 /// `[agents.<name>]`: settings for one agent, used when the recipe names no model.
@@ -718,6 +732,7 @@ impl Recipe {
             }
         }
         self.validate_agent_env(push);
+        self.validate_network(push);
         for (agent, settings) in &self.agents {
             let Some(config) = &settings.config else {
                 continue;
@@ -732,6 +747,28 @@ impl Recipe {
                     &field,
                     "permission is set by fleetify, not by the recipe".into(),
                 );
+            }
+        }
+    }
+
+    fn validate_network(&self, push: &mut impl FnMut(&str, String)) {
+        let allow = &self.network.allow;
+        if !allow.is_empty() && self.image.is_none() {
+            push(
+                "network",
+                "needs image: only a container has a network to restrict".into(),
+            );
+        }
+        if self.image.is_some() && allow.is_empty() {
+            push(
+                "network",
+                "allow lists no host, so the agent could not reach its model; list the model host as host:port"
+                    .into(),
+            );
+        }
+        for entry in allow {
+            if let Err(message) = crate::egress::parse_entry(entry) {
+                push("network.allow", message);
             }
         }
     }
@@ -1382,9 +1419,12 @@ mod tests {
                 .iter()
                 .any(|i| i.field == "image")
         );
-        let image = VALID.replace(
-            "agent = \"claude-code\"\n",
-            "agent = \"claude-code\"\nimage = \"fleetify-agent-claude-code:1\"\n",
+        let image = format!(
+            "{}\n[network]\nallow = [\"api.example.com:443\"]\n",
+            VALID.replace(
+                "agent = \"claude-code\"\n",
+                "agent = \"claude-code\"\nimage = \"fleetify-agent-claude-code:1\"\n",
+            )
         );
         assert!(issues_for(&image, "image").is_empty());
         let mut no_instructions = Recipe::parse(&image).unwrap();
@@ -1399,6 +1439,41 @@ mod tests {
     }
 
     #[test]
+    fn network_needs_an_image_a_list_and_valid_entries() {
+        let dir = valid_dir("network");
+        let mut bare = Recipe::parse(VALID).unwrap();
+        bare.network.allow = vec!["api.example.com:443".to_string()];
+        assert!(
+            bare.validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "network")
+        );
+
+        let mut contained = Recipe::parse(VALID).unwrap();
+        contained.image = Some("fleetify-agent-claude-code".to_string());
+        assert!(
+            contained
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "network"),
+            "an image with no allowed host is refused"
+        );
+
+        contained.network.allow = vec![
+            "10.0.0.0/24:443".to_string(),
+            "llm-box.lan:8080".to_string(),
+        ];
+        let issues = contained.validate(&dir, None);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.field == "network.allow" && i.message.contains("10.0.0.0/24")),
+            "{issues:?}"
+        );
+        assert!(!issues.iter().any(|i| i.message.contains("llm-box.lan")));
+    }
+
+    #[test]
     fn isolation_names_a_known_backend_and_needs_an_image() {
         let dir = valid_dir("isolation");
         let mut recipe = Recipe::parse(VALID).unwrap();
@@ -1410,6 +1485,7 @@ mod tests {
                 .any(|i| i.field == "isolation")
         );
         recipe.image = Some("fleetify-agent-claude-code".to_string());
+        recipe.network.allow = vec!["api.example.com:443".to_string()];
         assert!(recipe.validate(&dir, None).is_empty());
         recipe.isolation = Some("firecracker".to_string());
         assert!(
@@ -1433,6 +1509,7 @@ mod tests {
 
         let mut contained = Recipe::parse(VALID).unwrap();
         contained.image = Some("fleetify-agent-claude-code".to_string());
+        contained.network.allow = vec!["api.example.com:443".to_string()];
         contained.agent_env = vec!["OPENAI_API_KEY".to_string()];
         assert!(contained.validate(&dir, None).is_empty());
 

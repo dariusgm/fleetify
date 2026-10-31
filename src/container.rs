@@ -11,11 +11,15 @@
 //! The image must carry the label [`LABEL`] naming the agent it runs, so a recipe cannot run
 //! one agent in another agent's image by mistake.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::egress;
+use crate::isolation::Network;
 use crate::runner::{BASE_ENV, EnvPolicy};
 
 /// Image label that names the agent the image runs.
@@ -114,6 +118,8 @@ pub struct Run<'a> {
     pub files: &'a [(PathBuf, String)],
     /// Paths in the container that get a fresh, empty, writable tmpfs.
     pub tmpfs: &'a [String],
+    /// The network the container joins, set up by `set_up_network`. Unset means the default.
+    pub network: Option<&'a str>,
 }
 
 /// The `docker run` command line for `run`. The container is removed when it exits, and it
@@ -154,6 +160,9 @@ pub fn run_argv(run: &Run) -> Result<Vec<String>, String> {
     for path in run.tmpfs {
         argv.extend(["--tmpfs".to_string(), path.clone()]);
     }
+    if let Some(network) = run.network {
+        argv.extend(["--network".to_string(), network.to_string()]);
+    }
     argv.extend(["-w".to_string(), workspace]);
     for name in run.forwarded {
         argv.extend(["-e".to_string(), name.clone()]);
@@ -173,6 +182,166 @@ pub fn stop_argv(name: &str) -> Vec<String> {
         "-f".to_string(),
         name.to_string(),
     ]
+}
+
+/// The image that runs the egress proxy, built from `docker/proxy/`.
+pub const PROXY_IMAGE: &str = "fleetify-proxy:1";
+/// Label on the networks and proxies a run creates, so they can be found after a crash.
+const NETWORK_LABEL: &str = "io.fleetify.network=1";
+/// How long a proxy has to start listening, in tries of 200 ms.
+const PROXY_TRIES: u32 = 50;
+
+/// Sets up the network of one agent run: an internal network the agent joins, and a proxy
+/// that is the agent's only way out. The proxy sits on the default bridge too, so it can reach
+/// the hosts on the allowlist. Cleans up what it started when it fails.
+pub fn set_up_network(allow: &[egress::Entry], base: &Path) -> Result<Network, String> {
+    let name = container_name();
+    let proxy = format!("{name}-proxy");
+    let dir = base.join(&name);
+    match start_network(&name, &proxy, &dir, allow) {
+        Ok(()) => {
+            let url = format!("http://{proxy}:{}", egress::PROXY_PORT);
+            let mut env: Vec<(String, String)> =
+                ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]
+                    .iter()
+                    .map(|key| (key.to_string(), url.clone()))
+                    .collect();
+            // Node 22's fetch ignores the proxy variables unless told to read them (checked
+            // with node 22.23.4: without it a request goes direct, with it through the proxy).
+            env.push(("NODE_USE_ENV_PROXY".to_string(), "1".to_string()));
+            Ok(Network { name, env, dir })
+        }
+        Err(message) => {
+            remove_all(&proxy, &name, &dir);
+            Err(message)
+        }
+    }
+}
+
+fn start_network(
+    name: &str,
+    proxy: &str,
+    dir: &Path,
+    allow: &[egress::Entry],
+) -> Result<(), String> {
+    docker_out(&[
+        "network",
+        "create",
+        "--internal",
+        "--label",
+        NETWORK_LABEL,
+        name,
+    ])?;
+    let subnet = docker_out(&[
+        "network",
+        "inspect",
+        "--format",
+        "{{range .IPAM.Config}}{{.Subnet}}{{end}}",
+        name,
+    ])?;
+    let subnet = subnet.trim();
+    if subnet.is_empty() {
+        return Err(format!(
+            "network {name} has no subnet to match the proxy against"
+        ));
+    }
+    fs::create_dir_all(dir)
+        .map_err(|err| format!("cannot write the proxy configuration: {err}"))?;
+    let conf = dir.join("squid.conf");
+    fs::write(&conf, egress::squid_conf(allow, subnet))
+        .map_err(|err| format!("cannot write the proxy configuration: {err}"))?;
+    let mount = format!(
+        "type=bind,source={},target=/etc/fleetify/squid.conf,readonly",
+        host_path(&conf)?
+    );
+    docker_out(&[
+        "run",
+        "-d",
+        "--pull",
+        "never",
+        "--name",
+        proxy,
+        "--network",
+        "bridge",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--label",
+        NETWORK_LABEL,
+        "--mount",
+        &mount,
+        PROXY_IMAGE,
+    ])?;
+    docker_out(&["network", "connect", name, proxy])?;
+    wait_for_proxy(proxy)
+}
+
+/// Waits until the proxy accepts connections. A proxy that never starts reports its log.
+fn wait_for_proxy(proxy: &str) -> Result<(), String> {
+    for _ in 0..PROXY_TRIES {
+        let ready = Command::new(docker_binary())
+            .env_clear()
+            .envs(client_vars())
+            .args([
+                "exec",
+                proxy,
+                "bash",
+                "-c",
+                "exec 3<>/dev/tcp/127.0.0.1/3128",
+            ])
+            .status()
+            .is_ok_and(|status| status.success());
+        if ready {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    let log = docker_out(&["logs", proxy]).unwrap_or_default();
+    Err(format!(
+        "the proxy {proxy} did not start listening:\n{}",
+        log.trim()
+    ))
+}
+
+/// Tears a run's network down and returns the requests its proxy refused. Each removal runs
+/// even when an earlier one failed, and a failure is reported on stderr, not returned: the run
+/// has already ended.
+pub fn tear_down_network(network: &Network) -> Vec<String> {
+    let proxy = format!("{}-proxy", network.name);
+    let denied = docker_out(&["logs", &proxy])
+        .map(|log| egress::denied(&log))
+        .unwrap_or_default();
+    remove_all(&proxy, &network.name, &network.dir);
+    denied
+}
+
+/// Removes a run's proxy, its network and its configuration directory.
+fn remove_all(proxy: &str, name: &str, dir: &Path) {
+    for args in [vec!["rm", "-f", proxy], vec!["network", "rm", name]] {
+        if let Err(err) = docker_out(&args) {
+            eprintln!("fleetify: {err}");
+        }
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Runs one docker client command and returns its standard output.
+fn docker_out(args: &[&str]) -> Result<String, String> {
+    let output = Command::new(docker_binary())
+        .env_clear()
+        .envs(client_vars())
+        .args(args)
+        .output()
+        .map_err(|err| format!("cannot run docker: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "docker {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// The path as text for a `--mount` value. Docker's option syntax cannot take a comma.
@@ -245,6 +414,7 @@ mod tests {
             forwarded: &["ANTHROPIC_API_KEY".to_string()],
             files: &[],
             tmpfs: &[],
+            network: None,
         })
         .unwrap()
     }
@@ -280,6 +450,26 @@ mod tests {
     }
 
     #[test]
+    fn a_network_is_joined_by_name_and_only_when_one_is_set() {
+        let argv = run_argv(&Run {
+            image: "img",
+            name: "n",
+            program: "claude",
+            args: &[],
+            workspace: Path::new("/ws"),
+            directories: &[],
+            forwarded: &[],
+            files: &[],
+            tmpfs: &[],
+            network: Some("fleetify-net"),
+        })
+        .unwrap();
+        let at = argv.iter().position(|arg| arg == "--network").unwrap();
+        assert_eq!(argv[at + 1], "fleetify-net");
+        assert!(!argv_of(&[], "/ws").contains(&"--network".to_string()));
+    }
+
+    #[test]
     fn granted_directories_are_mounted_too_and_the_workspace_is_not_twice() {
         let dirs = ["/data/out".to_string(), "/ws".to_string()];
         let argv = run_argv(&Run {
@@ -292,6 +482,7 @@ mod tests {
             forwarded: &[],
             files: &[],
             tmpfs: &[],
+            network: None,
         })
         .unwrap();
         let mounts: Vec<&String> = argv

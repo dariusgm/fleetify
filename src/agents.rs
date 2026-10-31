@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::clock::rfc3339_now;
 use crate::container;
-use crate::isolation;
+use crate::isolation::{self, Network};
 use serde_json::json;
 
 use crate::events::EventBus;
@@ -310,6 +310,20 @@ pub fn invocation_with_prompt(
     model: Option<&str>,
     workspace: &Path,
 ) -> Result<Invocation, String> {
+    invocation_in_network(name, prompt, recipe, permissions, model, workspace, None)
+}
+
+/// The invocation for one run with `prompt`, inside `network` when the run has one: the
+/// agent's variables then point its HTTP clients at the run's proxy.
+pub fn invocation_in_network(
+    name: &str,
+    prompt: &str,
+    recipe: &Recipe,
+    permissions: &Permissions,
+    model: Option<&str>,
+    workspace: &Path,
+    network: Option<&Network>,
+) -> Result<Invocation, String> {
     let extra = Extra {
         container_env: &recipe.agent_env,
         config: recipe
@@ -317,6 +331,7 @@ pub fn invocation_with_prompt(
             .get(name)
             .and_then(|settings| settings.config.as_ref()),
         isolation: recipe.isolation.as_deref(),
+        network,
     };
     build(
         name,
@@ -337,6 +352,8 @@ pub struct Extra<'a> {
     pub config: Option<&'a serde_json::Value>,
     /// The isolation backend for a container run. None means docker.
     pub isolation: Option<&'a str>,
+    /// The run's network, when the recipe restricts it. Its variables go to the agent.
+    pub network: Option<&'a Network>,
 }
 
 /// The canary's invocation: the baseline grants only, so it tests what every run gets.
@@ -472,6 +489,10 @@ fn build(
         .copied()
         .filter(|name| !HOST_PATH_ENV.contains(name))
         .collect();
+    let mut set = set;
+    if let Some(network) = extra.network {
+        set.extend(network.env.iter().cloned());
+    }
     let mut forwarded: Vec<String> = names
         .iter()
         .map(|name| name.to_string())
@@ -495,6 +516,7 @@ fn build(
         set: &set,
         files: &files,
         tmpfs: &tmpfs,
+        network: extra.network,
     })?;
     Ok(Invocation {
         argv: launch.argv,

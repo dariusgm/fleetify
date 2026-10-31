@@ -135,6 +135,16 @@ impl Recorder {
             Event::WaveFinished { .. } => {}
             Event::CommandIdle { .. } => {}
             Event::PermissionsEffective { .. } => {}
+            Event::NetworkDenied {
+                repo,
+                agent,
+                target,
+                count,
+            } => {
+                self.touch(repo);
+                self.append_output(repo, &crate::events::denial_text(agent, target, *count));
+                self.save(repo);
+            }
             // The event log keeps retries; the state file only shows the phase and output.
             Event::HostRetry { .. } => {}
             Event::RateLimited { .. } => {}
