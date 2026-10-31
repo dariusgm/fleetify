@@ -120,6 +120,14 @@ impl Backend for Docker {
     }
 
     fn set_up_network(&self, allow: &[egress::Entry], base: &Path) -> Result<Network, String> {
+        // A crashed run leaves its network and proxy behind; clear them before a new run.
+        let orphans = container::sweep_orphans();
+        if !orphans.is_empty() {
+            tracing::warn!(
+                count = orphans.len(),
+                "removed networks left by crashed runs"
+            );
+        }
         container::set_up_network(allow, base)
     }
 

@@ -318,12 +318,67 @@ pub fn tear_down_network(network: &Network) -> Vec<String> {
 
 /// Removes a run's proxy, its network and its configuration directory.
 fn remove_all(proxy: &str, name: &str, dir: &Path) {
+    remove_docker(proxy, name);
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Removes a run's proxy container and its network, reporting failures on stderr.
+fn remove_docker(proxy: &str, name: &str) {
     for args in [vec!["rm", "-f", proxy], vec!["network", "rm", name]] {
         if let Err(err) = docker_out(&args) {
             eprintln!("fleetify: {err}");
         }
     }
-    let _ = fs::remove_dir_all(dir);
+}
+
+/// Removes the networks and proxies that runs left behind when they crashed. A run names its
+/// resources after its process id, so a resource whose process has gone is an orphan. Only
+/// Linux can tell that, so elsewhere nothing is removed: another run's network must not go.
+/// Returns the names of the networks removed.
+pub fn sweep_orphans() -> Vec<String> {
+    if !cfg!(target_os = "linux") {
+        return Vec::new();
+    }
+    let mut orphans = Vec::new();
+    for name in network_names() {
+        if owner_pid(&name).is_some_and(|pid| !process_alive(pid)) {
+            remove_docker(&format!("{name}-proxy"), &name);
+            orphans.push(name);
+        }
+    }
+    orphans
+}
+
+/// The fleetify networks on the daemon, by name.
+fn network_names() -> Vec<String> {
+    let filter = format!("label={NETWORK_LABEL}");
+    docker_out(&[
+        "network",
+        "ls",
+        "--filter",
+        &filter,
+        "--format",
+        "{{.Name}}",
+    ])
+    .unwrap_or_default()
+    .lines()
+    .map(|line| line.trim().to_string())
+    .filter(|name| !name.is_empty())
+    .collect()
+}
+
+/// The process id a run's network was named after, from `fleetify-<pid>-<nanos>-<n>`.
+fn owner_pid(name: &str) -> Option<u32> {
+    name.strip_prefix("fleetify-")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// True when a process with this id exists. Linux only: the caller checks the platform.
+fn process_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
 }
 
 /// Runs one docker client command and returns its standard output.
@@ -553,5 +608,15 @@ mod tests {
         assert!(check_env_name("").is_err());
         assert!(check_env_name("PATH").is_err());
         assert!(check_env_name("DOCKER_HOST").is_err());
+    }
+
+    #[test]
+    fn the_owner_pid_is_read_from_a_run_name() {
+        assert_eq!(
+            owner_pid("fleetify-1574004-1793447494353021326-0"),
+            Some(1_574_004)
+        );
+        assert_eq!(owner_pid("fleetify-x-1-0"), None);
+        assert_eq!(owner_pid("other-1-2-3"), None);
     }
 }

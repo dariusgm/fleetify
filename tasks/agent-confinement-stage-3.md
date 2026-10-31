@@ -1,6 +1,6 @@
 # Stage 3: narrowing what the coding agents may do
 
-**Status:** started 2026-10-28. Two points are built: agents in containers (Claude Code canary passes) and per-recipe network rules through a proxy (built on 2026-10-30; negative test on 2026-10-31). The positive e2e canary through the proxy ran for Claude Code on 2026-10-31. Open: orphan cleanup, the other agents' canaries, file-system profiles, event-stream adapters and a credential-free agent.
+**Status:** started 2026-10-28. Two points are built: agents in containers (Claude Code canary passes) and per-recipe network rules through a proxy (built on 2026-10-30; negative test on 2026-10-31). The positive e2e canary through the proxy ran for Claude Code on 2026-10-31. The orphan sweep is built (2026-10-31). Open: the other agents' canaries, file-system profiles, event-stream adapters and a credential-free agent.
 
 **Scope.**
 
@@ -36,4 +36,4 @@ Decisions are in `DECISIONS.md` ("Stage-3 network design" and the proxy-denials 
 5. **Agent container.** `run_argv` adds `--network <internal>`. The agent's environment gets `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase forms, pointing at the proxy's name. No `NO_PROXY`.
 6. **Pipeline.** Set-up before the agent's run, tear-down after it, whatever the outcome. Each denial becomes an event (`NetworkDenied`) for the repository.
 7. **Tests.** Unit: entry rules, Squid text, denial parsing, the `--network` argument, the proxy variables. Integration (ignored by default, needs the daemon): an upstream container on the bridge, one listed by address and one not. Checks: listed succeeds, unlisted gets 403 and a denial line, the agent container publishes no port, two networks cannot reach each other.
-8. **Not done.** Orphan sweep for crashed runs, denials in `report.json` (they are in the run log and events, not the report), live streaming of denials (they are read when the run ends), and the Copilot and opencode canaries through the proxy. `check-agent` still runs without the network.
+8. **Not done.** Denials in `report.json` (they are in the run log and events, not the report), live streaming of denials (they are read when the run ends), and the Copilot and opencode canaries through the proxy. `check-agent` still runs without the network.

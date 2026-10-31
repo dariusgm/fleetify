@@ -195,3 +195,36 @@ fn two_runs_cannot_reach_each_others_proxy() {
         "the second run must not reach the first run's proxy, got {peer:?}"
     );
 }
+
+/// A network that a crashed run left behind: its owner process (id 99999999) does not exist, so
+/// the sweep removes it. A live run's network would be kept, since its owner still runs.
+#[test]
+#[ignore]
+fn a_crashed_runs_network_is_swept() {
+    let name = "fleetify-99999999-1-0";
+    docker(&[
+        "network",
+        "create",
+        "--internal",
+        "--label",
+        "io.fleetify.network=1",
+        name,
+    ]);
+    let removed = fleetify::container::sweep_orphans();
+    assert!(
+        removed.iter().any(|removed| removed == name),
+        "the sweep must remove the orphaned network, removed {removed:?}"
+    );
+    let left = docker(&[
+        "network",
+        "ls",
+        "--filter",
+        &format!("name={name}"),
+        "--format",
+        "{{.Name}}",
+    ]);
+    assert!(
+        left.is_empty(),
+        "the orphaned network is still there: {left:?}"
+    );
+}
