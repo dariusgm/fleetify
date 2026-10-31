@@ -1,6 +1,6 @@
 # Stage 3: narrowing what the coding agents may do
 
-**Status:** started 2026-10-28. Two points are built: agents in containers (Claude Code canary passes) and per-recipe network rules through a proxy (built on 2026-10-30; negative test on 2026-10-31). Open: a live canary of a listed host through the proxy, orphan cleanup, the other agents' canaries, file-system profiles, event-stream adapters and a credential-free agent.
+**Status:** started 2026-10-28. Two points are built: agents in containers (Claude Code canary passes) and per-recipe network rules through a proxy (built on 2026-10-30; negative test on 2026-10-31). The positive e2e canary through the proxy ran for Claude Code on 2026-10-31. Open: orphan cleanup, the other agents' canaries, file-system profiles, event-stream adapters and a credential-free agent.
 
 **Scope.**
 
@@ -26,7 +26,8 @@ Decisions are in `DECISIONS.md` ("Stage-3 network design" and the proxy-denials 
 **Status: steps 1 to 7 are built and tested against the daemon (2026-10-30). Step 8 is partly open.**
 
 - **Negative test, done (2026-10-31).** `examples/recipes/network-allowlist-denied/` names the model host wrongly (`api.anthropic.co`). The Claude Code agent's model request is refused by the proxy, the run ends with `error`, and nothing is pushed. The refusals are in the run's log with the target, the reason and the count (added 2026-10-31; before that they were only in the live output).
-- **Positive live canary still open.** A listed host reached through the proxy by a real agent has not been run for Claude Code, opencode or Copilot. Claude Code's `check-agent` runs without the recipe's network, so it does not cover this.
+- **Positive e2e canary, done (2026-10-31) for Claude Code.** `examples/recipes/network-allowlist-permitted/` runs the agent in `fleetify-agent-claude-code-py310` with `api.anthropic.com`, `github.com`, `pypi.org` and `files.pythonhosted.org` allowed. Run `positive-canary-py310` ended with `pr_open` (`dariusgm/fleetify-django-hello` PR #2, a `/health` endpoint and test; the Django tests pass). The log shows only Claude Code's own Datadog and `mcp-proxy.anthropic.com` requests as refused. Allowed requests are not logged, so the evidence is the completed run through the proxy. The recipe and image are in fleetify PR #44 (`test/network-positive-canary`).
+- **Not yet covered:** opencode and Copilot through the proxy, and `check-agent` with the recipe's network (it still runs without one).
 
 1. **Recipe.** `[network] allow = ["host:port", ...]`, needs `image`, required when `image` is set. Entries: a DNS name or an IPv4 address, plus a port. No CIDR, wildcard, scheme or path. Refused by entry, with the reason.
 2. **Policy module `src/egress.rs`.** Parses the entries. Writes the Squid configuration for one run (ACL per entry, the agent subnet as the only client, `positive_dns_ttl` short, `via off`, `forwarded_for delete`, deny otherwise). Reads the Squid access log and returns the `TCP_DENIED` targets.
@@ -35,4 +36,4 @@ Decisions are in `DECISIONS.md` ("Stage-3 network design" and the proxy-denials 
 5. **Agent container.** `run_argv` adds `--network <internal>`. The agent's environment gets `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase forms, pointing at the proxy's name. No `NO_PROXY`.
 6. **Pipeline.** Set-up before the agent's run, tear-down after it, whatever the outcome. Each denial becomes an event (`NetworkDenied`) for the repository.
 7. **Tests.** Unit: entry rules, Squid text, denial parsing, the `--network` argument, the proxy variables. Integration (ignored by default, needs the daemon): an upstream container on the bridge, one listed by address and one not. Checks: listed succeeds, unlisted gets 403 and a denial line, the agent container publishes no port, two networks cannot reach each other.
-8. **Not done.** Orphan sweep for crashed runs, denials in `report.json` (they are in the run log and events, not the report), live streaming of denials (they are read when the run ends), the positive live canary through the proxy, and the Copilot and opencode canaries. `check-agent` still runs without the network. That is a gap, and the positive live canary covers it.
+8. **Not done.** Orphan sweep for crashed runs, denials in `report.json` (they are in the run log and events, not the report), live streaming of denials (they are read when the run ends), and the Copilot and opencode canaries through the proxy. `check-agent` still runs without the network.
