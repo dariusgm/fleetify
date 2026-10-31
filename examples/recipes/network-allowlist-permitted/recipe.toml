@@ -1,0 +1,49 @@
+# Positive canary for the container network: the Claude Code agent runs in its container with
+# the model host and GitHub allowed, and the change goes through. The agent adds a /health
+# endpoint and a test; the verifier runs the tests. The agent has no git credentials and does not
+# push: fleetify commits and pushes from the host after the verifier passes. The pull request is
+# opened and not merged.
+schema = 1
+name = "network-allowlist-permitted"
+branch = "chore/health-endpoint"
+pr_title = "feat: add /health endpoint"
+commit_message = "feat: add /health endpoint"
+agent = "claude-code"
+image = "fleetify-agent-claude-code-py310"
+tools = "tools"
+
+[applies_to]
+host_type = ["github"]
+has_file = ["manage.py", "hello_project/settings.py"]
+
+[[instructions]]
+text = "Add a /health endpoint to this Django project. It answers HTTP 200 with the body \"ok\". Add a test for it in hello_project/tests.py, using django.test.SimpleTestCase. Change only files under hello_project/. Do not change pyproject.toml, poetry.lock or the Dockerfile."
+
+[needs]
+# The agent runs the verifier itself, so the command must be granted (in credentials.toml).
+commands = ["sh .agent/tools/verify.sh"]
+
+[network]
+# The model host and GitHub, as the test plan asks. PyPI is needed for the verifier's Django
+# install, which the agent runs inside its container. Nothing else is reachable.
+allow = ["api.anthropic.com:443", "github.com:443", "pypi.org:443", "files.pythonhosted.org:443"]
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 600
+tail_lines = 40
+error_patterns = ['^E ', 'Traceback', 'FAILED', 'Error']
+baseline = false
+
+[guards]
+# Only the project package may change.
+allow_paths = ["hello_project/*"]
+max_files_changed = 3
+max_lines_changed = 200
+deny_added_patterns = ["NOSONAR"]
+
+[ci]
+wait = false
+
+[limits]
+agent_timeout_min = 15
