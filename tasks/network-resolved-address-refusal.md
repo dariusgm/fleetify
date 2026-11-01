@@ -1,6 +1,6 @@
 # Network: refuse names that resolve to private, loopback or gateway addresses
 
-**Status:** open. Security gap, highest priority of the stage-3 network items.
+**Status:** done (2026-11-01, `DECISIONS.md`, "Private addresses refused by default"). Private addresses are refused by default and allowed only when listed by IPv4 address. The IPv6 loopback was found by the test and is covered. The text below is kept for the record.
 
 **Known.** `DECISIONS.md` ("Stage-3 network design") says: a name that resolves to the Docker gateway, loopback, link-local or another private range the recipe did not list is refused. The proxy is on the default bridge, so it can reach the host's gateway and the LAN.
 

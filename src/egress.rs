@@ -97,7 +97,6 @@ pub fn squid_conf(entries: &[Entry], agents: &str) -> String {
          cache deny all\n\
          cache_log /dev/stderr\n\
          access_log stdio:/dev/stdout\n\
-         dns_v4_first on\n\
          positive_dns_ttl {DNS_TTL_S} seconds\n\
          negative_dns_ttl 5 seconds\n\
          forwarded_for delete\n\
@@ -105,19 +104,55 @@ pub fn squid_conf(entries: &[Entry], agents: &str) -> String {
          acl agents src {agents}\n\
          http_access deny !agents\n"
     );
+    // Explicit addresses come first: a listed IP is the one way to reach a private address
+    // (a self-hosted model on the LAN, the host of a rootless network). Then every private,
+    // loopback, link-local and multicast destination is denied, so a listed name that resolves
+    // to one of them is refused too. Names come last, after that deny.
     for (index, entry) in entries.iter().enumerate() {
-        let target = match &entry.target {
-            Target::Name(name) => format!("acl target{index} dstdomain {name}"),
-            Target::Address(address) => format!("acl target{index} dst {address}"),
-        };
-        text.push_str(&format!(
-            "{target}\nacl port{index} port {}\nhttp_access allow agents target{index} port{index}\n",
-            entry.port
-        ));
+        if let Target::Address(address) = &entry.target {
+            text.push_str(&format!(
+                "acl target{index} dst {address}\nacl port{index} port {}\nhttp_access allow agents target{index} port{index}\n",
+                entry.port
+            ));
+        }
+    }
+    text.push_str(&format!(
+        "acl private dst {}\nhttp_access deny private\n",
+        PRIVATE_RANGES.join(" ")
+    ));
+    for (index, entry) in entries.iter().enumerate() {
+        if let Target::Name(name) = &entry.target {
+            text.push_str(&format!(
+                "acl target{index} dstdomain {name}\nacl port{index} port {}\nhttp_access allow agents target{index} port{index}\n",
+                entry.port
+            ));
+        }
     }
     text.push_str("http_access deny all\n");
     text
 }
+
+/// Destination ranges the proxy refuses unless an address is listed explicitly: unspecified,
+/// private (RFC 1918), shared address space (RFC 6598, used by rootless networks), loopback,
+/// link-local (including the cloud metadata address), and multicast and reserved ranges.
+pub const PRIVATE_RANGES: &[&str] = &[
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+    // IPv6 equivalents. A name can resolve to ::1 (localhost does), which the IPv4 ranges above
+    // do not cover.
+    "::/128",
+    "::1/128",
+    "::ffff:0:0/96",
+    "fc00::/7",
+    "fe80::/10",
+];
 
 /// The requests the proxy refused, as `METHOD target`, from its access log. Squid writes one
 /// line per request in its default format: time, elapsed, client, status, size, method, URL.
@@ -205,5 +240,30 @@ mod tests {
             denied(log),
             ["CONNECT evil.example:443", "GET http://10.9.9.9:80/x"]
         );
+    }
+
+    #[test]
+    fn a_private_destination_is_refused_unless_its_address_is_listed() {
+        let entries = [
+            parse_entry("10.0.0.20:8080").unwrap(),
+            parse_entry("llm-box.lan:9931").unwrap(),
+        ];
+        let text = squid_conf(&entries, "172.30.0.0/16");
+        let explicit = text.find("acl target0 dst 10.0.0.20").unwrap();
+        let deny = text.find("http_access deny private").unwrap();
+        let name = text.find("acl target1 dstdomain llm-box.lan").unwrap();
+        let catch_all = text.find("http_access deny all").unwrap();
+        assert!(
+            explicit < deny,
+            "a listed address is allowed before the private deny"
+        );
+        assert!(
+            deny < name,
+            "a listed name is checked after the private deny"
+        );
+        assert!(name < catch_all);
+        assert!(text.contains("acl private dst 0.0.0.0/8 10.0.0.0/8 "));
+        assert!(text.contains("169.254.0.0/16"), "link-local is denied");
+        assert!(text.contains("127.0.0.0/8"), "loopback is denied");
     }
 }

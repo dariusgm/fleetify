@@ -228,3 +228,27 @@ fn a_crashed_runs_network_is_swept() {
         "the orphaned network is still there: {left:?}"
     );
 }
+
+#[test]
+#[ignore = "needs the docker daemon, node:22-bookworm-slim and fleetify-proxy:1"]
+fn a_listed_name_that_resolves_to_a_private_address_is_refused() {
+    // `localhost` is listed by name, and the proxy resolves it to its own loopback address.
+    // The private-range rule must refuse it, since only listed addresses may be private.
+    let allow = [parse_entry("localhost:8080").unwrap()];
+    let backend = isolation::backend(isolation::DOCKER).unwrap();
+    let base = std::env::temp_dir().join("fleetify-net-test");
+    let network = backend
+        .set_up_network(&allow, &base)
+        .expect("the network starts");
+    let fetched = agent(&network, FETCH, "http://localhost:8080/");
+    let refused = backend.tear_down_network(&network);
+
+    assert!(
+        fetched.starts_with("error"),
+        "a name that resolves to loopback is refused, got {fetched:?}"
+    );
+    assert!(
+        refused.iter().any(|line| line.contains("localhost:8080")),
+        "the refusal is logged as a denial: {refused:?}"
+    );
+}
