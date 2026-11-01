@@ -44,6 +44,14 @@ const OPENCODE_OFFLINE_ENV: &[(&str, &str)] = &[
     ("OPENCODE_DISABLE_DEFAULT_PLUGINS", "1"),
     ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
 ];
+/// Claude Code variables set in a network-restricted run: telemetry, error reporting and the
+/// update check. Checked against Claude Code 2.1.312 in the image: its telemetry was refused by
+/// the proxy before these were set (see `tests/claude_network.rs`).
+const CLAUDE_OFFLINE_ENV: &[(&str, &str)] = &[
+    ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+    ("DISABLE_TELEMETRY", "1"),
+    ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
+];
 /// Replaces the `claude` binary. Used by tests and by installs outside PATH.
 pub const BINARY_ENV: &str = "FLEETIFY_CLAUDE_BIN";
 /// Directory in the workspace for the task and attachments. Kept out of commits.
@@ -496,18 +504,31 @@ fn build(
                 Vec::new()
             },
         ),
-        _ => (
-            claude_code_argv(
-                &binary(BINARY_ENV, "claude"),
-                prompt,
-                &claude_tools(grants, workspace),
-                &grants.directories,
-                grants.unrestricted,
-                model,
-            ),
-            AGENT_ENV,
-            Vec::new(),
-        ),
+        _ => {
+            // In a network-restricted container, Claude Code's telemetry and background calls
+            // would go to hosts the recipe did not list. These switches turn them off, and the
+            // model call stays the only request the agent makes.
+            let set = if extra.network.is_some() {
+                CLAUDE_OFFLINE_ENV
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (
+                claude_code_argv(
+                    &binary(BINARY_ENV, "claude"),
+                    prompt,
+                    &claude_tools(grants, workspace),
+                    &grants.directories,
+                    grants.unrestricted,
+                    model,
+                ),
+                AGENT_ENV,
+                set,
+            )
+        }
     };
     let Some(image) = image else {
         return Ok(Invocation {
@@ -1488,6 +1509,50 @@ text = "inline"
         .unwrap();
         assert!(
             set_of(&open).is_empty(),
+            "a run without a network is unchanged"
+        );
+    }
+
+    #[test]
+    fn a_network_restricted_claude_run_switches_off_telemetry_and_connectors() {
+        let recipe = in_image("claude-code");
+        let network = crate::isolation::Network {
+            name: "fleetify-net".to_string(),
+            env: vec![("HTTPS_PROXY".to_string(), "http://proxy:3128".to_string())],
+            dir: std::path::PathBuf::from("/tmp/fleetify-net"),
+        };
+        let set_of = |invocation: &Invocation| match &invocation.env {
+            EnvPolicy::Allowlist { set, .. } => set.clone(),
+            _ => panic!("the docker client gets an allowlist"),
+        };
+        let restricted = invocation_in_network(
+            "claude-code",
+            "prompt",
+            &recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+            Some(&network),
+        )
+        .unwrap();
+        let set = set_of(&restricted);
+        assert!(set.contains(&(
+            "ENABLE_CLAUDEAI_MCP_SERVERS".to_string(),
+            "false".to_string()
+        )));
+        assert!(set.contains(&("DISABLE_TELEMETRY".to_string(), "1".to_string())));
+        let open = invocation(
+            "claude-code",
+            &recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        assert!(
+            !set_of(&open)
+                .iter()
+                .any(|(key, _)| key == "DISABLE_TELEMETRY"),
             "a run without a network is unchanged"
         );
     }
