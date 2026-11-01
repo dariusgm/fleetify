@@ -72,7 +72,7 @@ agent_env = ["GH_TOKEN"]
 text = "Reply with the single word pong. Do not use any tool."
 
 [network]
-allow = ["api.individual.githubcopilot.com:443", "api.github.com:443", "github.com:443"]
+allow = ["api.individual.githubcopilot.com:443", "telemetry.individual.githubcopilot.com:443", "api.github.com:443", "github.com:443"]
 "#;
     let recipe = Recipe::parse(text).unwrap();
     let backend = isolation::backend(isolation::DOCKER).unwrap();
@@ -117,12 +117,9 @@ allow = ["api.individual.githubcopilot.com:443", "api.github.com:443", "github.c
             .any(|line| line.to_lowercase().contains("pong")),
         "the model answered: {output:?}"
     );
-    // Copilot's telemetry host is the one known refusal: it is not listed, and the run goes on
-    // without it. Any other refused host is a new request the recipe must account for.
+    // Every request is to a listed host: the model, the telemetry endpoint and GitHub.
     assert!(
-        refused
-            .iter()
-            .all(|line| line.contains("telemetry.individual.githubcopilot.com")),
-        "a request outside the known exception was refused: {refused:?}"
+        refused.is_empty(),
+        "a request outside the allow list was refused: {refused:?}"
     );
 }
