@@ -23,7 +23,7 @@ Known limits: Windows is not verified yet, self-hosted GitLab has not run agains
 The open work is one file per item in [`tasks/`](tasks/README.md). The first two:
 
 1. [Real trial](tasks/m17-real-trial.md) on three to five private repositories, once the repositories and the task are given.
-2. [Stage 3 network isolation](tasks/network-resolved-address-refusal.md): refuse names that resolve to private addresses.
+2. [Stage 3 network isolation](tasks/network-canary-coverage.md): the remaining network canaries.
 
 ## What can go
 
@@ -208,7 +208,7 @@ With `image = "..."`, the agent runs in a container from that image. Containers 
 
 #### Network
 
-A container run has a network of its own, and the agent reaches only the hosts the recipe lists in `[network]`. Each entry is `host:port`, where the host is a DNS name (looked up again for each connection, so a changed record is followed) or an IPv4 address for a host configured by address. Ranges, wildcards and schemes are refused. The agent's HTTP clients get the proxy through their environment, and a request to any other host is refused by the proxy. Refusals are reported with the run's events, and the agent only sees a failed connection. `[network]` is required with `image`, and the list must name the model's host.
+A container run has a network of its own, and the agent reaches only the hosts the recipe lists in `[network]`. Each entry is `host:port`, where the host is a DNS name (looked up again for each connection, so a changed record is followed) or an IPv4 address. Private, loopback and link-local addresses are refused by default: a self-hosted model on the LAN must be listed by its IPv4 address, because a name that resolves to a private address is refused even when it is listed. Ranges, wildcards and schemes are refused. The agent's HTTP clients get the proxy through their environment, and a request to any other host is refused by the proxy. Refusals are reported with the run's events, and the agent only sees a failed connection. `[network]` is required with `image`, and the list must name the model's host.
 
 ```toml
 [network]
@@ -288,7 +288,7 @@ context = 32768
 output = 8192
 
 [network]
-allow = ["192.168.178.151:9931"]        # the llama.cpp host and port; a DNS name works too
+allow = ["192.168.178.151:9931"]        # the llama.cpp host and port, by IPv4 address (a private address must be listed by address)
 ```
 
 Before a run, export the variable in the shell that starts fleetify, for example `export OPENAI_API_KEY=...`. A llama.cpp server accepts any value there, so a placeholder works. The recipe holds no secret values. A run refuses to start if a listed variable is not set, and its value is redacted from logs and reports.

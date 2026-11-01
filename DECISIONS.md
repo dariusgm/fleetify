@@ -1056,3 +1056,13 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **Background calls switched off in network runs.** Before the switches, the proxy refused two background calls per run: telemetry to Datadog, and `mcp-proxy.anthropic.com` (the hosted connector list, retried several times). `CLAUDE_OFFLINE_ENV` in `src/agents.rs` sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `DISABLE_TELEMETRY=1` and `ENABLE_CLAUDEAI_MCP_SERVERS=false`. The first two remove the telemetry, the third removes the connector fetch. Runs without a network are unchanged.
 - **Image.** Built on 2026-11-01 under rootless docker with `--network host` (build-time only, as for the other images).
 - **Not covered.** The Claude positive and negative canaries of PR #44 (the Django change through GitHub and PyPI) were not re-run here. They need the Python image and a GitHub login on the recipe's hosts.
+
+## Private addresses refused by default (2026-11-01)
+
+- **Rule.** The proxy refuses every destination in a private, loopback, link-local, shared, multicast or reserved range (`PRIVATE_RANGES` in `src/egress.rs`, IPv4 and IPv6) unless the address is listed explicitly by IPv4 address in `[network] allow`. A listed name is refused when it resolves into those ranges. Self-hosted models on the LAN are listed by address, for example `192.168.178.151:9931`.
+- **Why.** The agent should reach only what the recipe names. A name that resolves to the Docker gateway, the rootless host, or a LAN service is an unlisted destination, even when its name looks harmless.
+- **Order in the Squid configuration.** Explicit addresses are allowed first, then the private deny, then names. A listed address is the one way into a private range.
+- **IPv6 found by the test.** `localhost` resolves to `::1`. The IPv4 ranges did not catch it, and the request reached the connect step (`NONE_NONE/503`) instead of being denied. The IPv6 loopback, unspecified, unique-local, link-local and IPv4-mapped ranges are now in the same rule.
+- **Obsolete directive removed.** `dns_v4_first` is obsolete in the pinned Squid 5.7 and logged an error. It is removed; the private rule does not depend on it.
+- **Tests.** Unit: the order in the generated configuration, and the listed ranges. `tests/network.rs`: a listed name that resolves to loopback is refused and logged as a denial (new). All 15 Docker-backed tests pass under rootless Docker: opencode (2 network, 1 container), Claude Code (2 network, 6 container tests), Copilot (1 network), proxy (4).
+- **Limit.** The check is on the address the proxy resolves. Squid's own name resolution is what is checked; a DNS record that changes during a connection is not re-checked within that connection.

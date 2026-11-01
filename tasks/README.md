@@ -12,7 +12,7 @@ Open work of fleetify, one file per item. Each file says what is known, what is 
 
 ## Stage 3, network isolation (open items)
 
-- [Refuse names that resolve to private, loopback or gateway addresses](network-resolved-address-refusal.md)
+- [Refuse names that resolve to private, loopback or gateway addresses (done)](network-resolved-address-refusal.md)
 - [Network canaries not yet covered](network-canary-coverage.md)
 - [Proxy denials in the report](network-denials-in-report.md)
 - [Network canaries for each agent (opencode, Copilot)](network-agent-canaries.md)
