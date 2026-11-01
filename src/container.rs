@@ -411,10 +411,35 @@ fn host_path(path: &Path) -> Result<String, String> {
     }
 }
 
-/// Refuses an image that is not available locally or was built for another agent.
-/// Read-only: it only inspects the image.
+/// Refuses a daemon that is not rootless, then an image that is not available locally or was
+/// built for another agent. Read-only: it only inspects the daemon and the image.
 pub fn check_image(image: &str, agent: &str) -> Result<(), String> {
+    check_rootless_with(&docker_binary())?;
     check_image_with(&docker_binary(), image, agent)
+}
+
+/// Refuses a rootful daemon. Agent containers rely on rootless Docker: container root is the
+/// host user there, so the workspace is writable without extra capabilities, and the daemon
+/// is not root-equivalent for the user. See DECISIONS.md, "Rootless Docker".
+fn check_rootless_with(docker: &str) -> Result<(), String> {
+    let output = Command::new(docker)
+        .env_clear()
+        .envs(client_vars())
+        .args(["info", "--format", "{{json .SecurityOptions}}"])
+        .output()
+        .map_err(|err| format!("cannot run docker: {err}"))?;
+    if !output.status.success() {
+        return Err("cannot reach the docker daemon: start rootless Docker first".into());
+    }
+    if String::from_utf8_lossy(&output.stdout).contains("name=rootless") {
+        Ok(())
+    } else {
+        Err(
+            "the docker daemon is rootful; agent containers need rootless Docker \
+             (see DECISIONS.md, \"Rootless Docker\")"
+                .into(),
+        )
+    }
 }
 
 fn check_image_with(docker: &str, image: &str, agent: &str) -> Result<(), String> {
@@ -578,6 +603,18 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rootful_daemon_is_refused_before_any_image_check() {
+        let rootless = fake_docker("rootless", r#"echo '["name=seccomp","name=rootless"]'"#);
+        let rootful = fake_docker("rootful", r#"echo '["name=seccomp","name=apparmor"]'"#);
+        let down = fake_docker("down", "exit 1");
+        assert!(check_rootless_with(rootless.to_str().unwrap()).is_ok());
+        let err = check_rootless_with(rootful.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("rootful"), "{err}");
+        assert!(check_rootless_with(down.to_str().unwrap()).is_err());
     }
 
     #[cfg(unix)]

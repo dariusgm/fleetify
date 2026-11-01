@@ -20,7 +20,7 @@
 
 **Done when.** `TRIAL.md` has the numbers per repository and a conclusion, and the open items the trial exposed are filed as tasks.
 
-**Reference.** A reference run on a public fork ended in `error` (HTTP 404 on the CI dispatch). Resolve that first or record it as a known limit, see `fork-ci-triggers.md` and `bug-host-error-endpoint.md`.
+**Reference.** A reference run on a public fork ended in `error` (HTTP 404 on the CI dispatch). The fork CI question is closed (see DECISIONS.md, the fork entry of 2026-10-23), and the host error now names the endpoint (#41). Record a repeat of the 404 as a known limit.
 
 ## Decision after the trial
 
