@@ -16,6 +16,7 @@ Open work of fleetify, one file per item. Each file says what is known, what is 
 - [Network canaries not yet covered](network-canary-coverage.md)
 - [Proxy denials in the report](network-denials-in-report.md)
 - [Network canaries for each agent (opencode, Copilot)](network-agent-canaries.md)
+- [Network: ignored hosts (rejected, not logged, not shown)](network-ignored-hosts.md)
 - [check-agent runs without the recipe's network](network-check-agent.md)
 - [Pin the Squid version of the proxy image](proxy-squid-version-pin.md)
 - [Containers: run the agent as the host user (closed by rootless Docker)](container-agent-user.md)

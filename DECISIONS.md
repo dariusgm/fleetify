@@ -1042,6 +1042,14 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **Limits.** Rootless networking is slirp4netns, which is slower than the bridge and has no `docker0`. The proxy's gateway refusal (`network-resolved-address-refusal.md`) is still open, and the rule must be written for the rootless network layout.
 - **Superseded.** The "Opencode through the proxy" entry above describes `DAC_OVERRIDE` as the fix. That fix is replaced by this decision.
 
+## Copilot CLI through the proxy, on rootless docker (2026-11-01)
+
+- **Result.** Copilot CLI 1.0.101 in `fleetify-agent-copilot`, on an internal network with `api.individual.githubcopilot.com:443`, `api.github.com:443` and `github.com:443` listed, answers `pong`. Tests: `tests/copilot_network.rs` (1, pass, needs `GH_TOKEN`), `tests/copilot_live.rs` (host check, pass).
+- **Login in the container.** Copilot's token is not in `~/.copilot/config.json` (the file holds account metadata only), so a container cannot reuse the host login. The container gets a token by name: the recipe lists `agent_env = ["GH_TOKEN"]` and the value comes from the orchestrator's environment, as for the other agents. The test uses `gh auth token`. Copilot accepted the token. This is a token in the container's reach, the same limit as Claude Code's login file.
+- **Self-update switched off in network runs.** `COPILOT_AUTO_UPDATE=false` (`COPILOT_OFFLINE_ENV`). Before this, the proxy refused `release-assets.githubusercontent.com`.
+- **Telemetry host listed.** `telemetry.individual.githubcopilot.com:443` is in the recipe's `[network] allow`, as an allowed host. The Copilot package has no telemetry switch (searched 1.0.101), so it is listed rather than refused on every run. The test asserts that nothing is refused. Ignoring a host silently (not logged, not shown, but still rejected) is a separate task: `tasks/network-ignored-hosts.md`.
+- **Individual account endpoint.** The recipe lists `api.individual.githubcopilot.com`, the endpoint this account uses. Company accounts may use a different endpoint; check on the company machine.
+
 ## Claude Code through the proxy, on rootless docker (2026-11-01)
 
 - **Result.** Claude Code 2.1.312 in `fleetify-agent-claude-code`, on an internal network with only `api.anthropic.com:443` listed, answers `pong` with the login from `~/.claude/.credentials.json`. A direct socket from the container to the model host fails. `https://example.com/` through the proxy is refused. No other request is refused in the answer run. Tests: `tests/claude_network.rs` (2, pass), `tests/container.rs` (6, pass).
