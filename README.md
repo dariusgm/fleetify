@@ -227,6 +227,8 @@ docker build -t fleetify-agent-opencode docker/agents/opencode
 docker build -t fleetify-agent-copilot docker/agents/copilot
 ```
 
+The Claude Code image for Python recipes, `docker/agents/claude-code-python`, adds `uv` and Python 3.10 on top of the Claude Code image, so the verifier can run inside the agent's container. Build it after `fleetify-agent-claude-code`: `docker build -t fleetify-agent-claude-code-py310 docker/agents/claude-code-python`.
+
 `fleetify check-agent claude-code --image fleetify-agent-claude-code` runs the canary inside the container. A pass counts for that image only, and a recipe with `image` is refused until it has passed.
 
 #### Run the orchestrator in docker (also optional)
