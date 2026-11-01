@@ -1,10 +1,10 @@
 # Network: canaries for each agent through the proxy
 
-**Status:** in progress. Claude Code: positive and negative canaries done. opencode: done (2026-11-01, see below), also under rootless. Copilot: not started.
+**Status:** in progress. Claude Code: done (2026-11-01, rootless: answer through the proxy with no refused request; the Django canaries of PR #44 not re-run). opencode: done (2026-11-01, rootless). Copilot: not started, see below.
 
 **Per agent.** The canary runs the agent's real model call through the proxy with the recipe's allowlist, and checks that a request to an unlisted target is refused.
 
-- **Claude Code:** done (2026-10-31): positive run through the proxy (PR #44), negative run with a wrong model host (`examples/recipes/network-allowlist-denied/`).
+- **Claude Code:** done. 2026-10-31: positive and negative runs of the Django recipes (PR #44). 2026-11-01 under rootless: `tests/claude_network.rs`, a node probe and a live answer through the proxy with no refused request.
 - **opencode:** done (2026-11-01), against the local llama.cpp server on `192.168.178.151:9931`. Tests in `tests/opencode_network.rs` and `tests/container.rs` (`opencode_in_its_container_answers_from_the_recipe_provider`). Details in `DECISIONS.md`, "Opencode through the proxy".
 - **Copilot:** not started. Needs its login passed into the container first (`tests/copilot_live.rs` shows how the login is found). Add a node-level probe like `tests/opencode_network.rs` once the image exists.
 
