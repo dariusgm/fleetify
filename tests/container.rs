@@ -181,6 +181,30 @@ fn opencode_in_its_container_answers_from_the_recipe_provider() {
         return;
     };
     let (root, workspace, _) = fixture("opencode-recipe");
+    // A real run's workspace is a git worktree with a commit. Without a commit opencode finds
+    // no project root, and its external-directory rule refuses every write.
+    fs::write(workspace.join("README.md"), "scratch repository\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "README.md"],
+        vec![
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ],
+    ] {
+        let status = Command::new("git")
+            .args(&args)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
     // The provider key is a placeholder in the recipe. The value reaches the container
     // through `agent_env`, and opencode fills the placeholder from its environment.
     // SAFETY: this test is the only one that sets this variable.
@@ -252,14 +276,25 @@ allow = ["{target}"]
     for denied in backend.tear_down_network(&network) {
         eprintln!("refused by the proxy: {denied}");
     }
+    // On failure, show the agent's last output lines, so the cause is visible without a rerun.
+    let tail: Vec<String> = result
+        .lines
+        .iter()
+        .rev()
+        .take(15)
+        .rev()
+        .map(|line| line.text.clone())
+        .collect();
     assert!(
         matches!(result.outcome, Outcome::Exited { code: Some(0) }),
-        "{:?}",
-        result.outcome
+        "{:?}\nlast output:\n{}",
+        result.outcome,
+        tail.join("\n")
     );
     assert!(
         workspace.join("inside.txt").is_file(),
-        "the agent wrote nothing"
+        "the agent wrote nothing; last output:\n{}",
+        tail.join("\n")
     );
 
     let _ = fs::remove_dir_all(&root);

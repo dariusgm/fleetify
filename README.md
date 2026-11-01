@@ -22,8 +22,8 @@ Known limits: Windows is not verified yet, self-hosted GitLab has not run agains
 
 The open work is one file per item in [`tasks/`](tasks/README.md). The first two:
 
-1. [Bug: host errors without an endpoint](tasks/bug-host-error-endpoint.md).
-2. [Real trial](tasks/m17-real-trial.md) on three to five private repositories, once the repositories and the task are given.
+1. [Real trial](tasks/m17-real-trial.md) on three to five private repositories, once the repositories and the task are given.
+2. [Stage 3 network isolation](tasks/network-resolved-address-refusal.md): refuse names that resolve to private addresses.
 
 ## What can go
 
@@ -204,7 +204,7 @@ in `authoring/` generates recipes against that schema.
 
 Running in docker is optional. Without `image` in a recipe, the agent runs on the host, as before, and nothing else in this section applies. Add `image` to run the agent in a container instead.
 
-With `image = "..."`, the agent runs in a container from that image. The workspace and every granted directory are mounted at the paths they have on the host. The agent's own variables and the ones the recipe lists are passed in by name, and nothing else from the host is visible. The image must carry the label `io.fleetify.agent` with the agent's name, so one agent cannot run in another's image by mistake.
+With `image = "..."`, the agent runs in a container from that image. Containers need **rootless Docker**: fleetify refuses to start a container run on a rootful daemon. In rootless mode the daemon runs as your user, container root is your user, and the daemon is not root-equivalent, so a container escape lands as an unprivileged user. Setup: `dockerd-rootless-setuptool.sh install`, then `systemctl --user enable --now docker` and `sudo loginctl enable-linger $USER`. See `DECISIONS.md`, "Rootless Docker". The workspace and every granted directory are mounted at the paths they have on the host. The agent's own variables and the ones the recipe lists are passed in by name, and nothing else from the host is visible. The image must carry the label `io.fleetify.agent` with the agent's name, so one agent cannot run in another's image by mistake.
 
 #### Network
 
@@ -219,7 +219,7 @@ The proxy image is built once from `docker/proxy/`: `docker build -t fleetify-pr
 
 #### Build the agent images
 
-Images for the three agents are in `docker/agents/`. Build the ones you use, on a Linux host with rootless docker:
+Images for the three agents are in `docker/agents/`. Build the ones you use, with rootless docker (see above). Builds need `--network host`, because build containers do not resolve names on the default network here (see `DECISIONS.md`):
 
 ```sh
 docker build -t fleetify-agent-claude-code docker/agents/claude-code

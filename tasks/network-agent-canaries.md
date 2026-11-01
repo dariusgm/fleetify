@@ -1,0 +1,15 @@
+# Network: canaries for each agent through the proxy
+
+**Status:** in progress. Claude Code: positive and negative canaries done. opencode: done (2026-11-01, see below), also under rootless. Copilot: not started.
+
+**Per agent.** The canary runs the agent's real model call through the proxy with the recipe's allowlist, and checks that a request to an unlisted target is refused.
+
+- **Claude Code:** done (2026-10-31): positive run through the proxy (PR #44), negative run with a wrong model host (`examples/recipes/network-allowlist-denied/`).
+- **opencode:** done (2026-11-01), against the local llama.cpp server on `192.168.178.151:9931`. Tests in `tests/opencode_network.rs` and `tests/container.rs` (`opencode_in_its_container_answers_from_the_recipe_provider`). Details in `DECISIONS.md`, "Opencode through the proxy".
+- **Copilot:** not started. Needs its login passed into the container first (`tests/copilot_live.rs` shows how the login is found). Add a node-level probe like `tests/opencode_network.rs` once the image exists.
+
+**Node note.** Node's `fetch` ignores proxy variables unless `NODE_USE_ENV_PROXY=1` is set. The network sets it. Any new Node-based agent needs the same probe, because a missing variable means direct access, and the probe is what catches it.
+
+**Claude Code image.** Built on 2026-11-01. All six tests in `tests/container.rs` pass under rootless.
+
+**Done when.** Each agent in `docker/agents/` has a passing live canary with its allowlist, a refused request is shown, and the result is in `DECISIONS.md`.

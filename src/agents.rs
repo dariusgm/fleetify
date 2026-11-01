@@ -30,6 +30,17 @@ pub const COPILOT: &str = "copilot";
 pub const COPILOT_BINARY_ENV: &str = "FLEETIFY_COPILOT_BIN";
 /// Replaces the `opencode` binary, the same way `FLEETIFY_CLAUDE_BIN` does for claude.
 pub const OPENCODE_BINARY_ENV: &str = "FLEETIFY_OPENCODE_BIN";
+/// opencode variables set in a network-restricted run, so that opencode's start-up does not
+/// call hosts outside the model. The model catalogue (models.opencode.ai) was refused by the
+/// proxy before these were set and is not refused after (opencode 1.19.3). The other three
+/// are set with it and are not tested one by one. The plugin SDK install from the npm registry
+/// is not handled here: the opencode image installs it at build time (docker/agents/opencode).
+const OPENCODE_OFFLINE_ENV: &[(&str, &str)] = &[
+    ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
+    ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+    ("OPENCODE_DISABLE_DEFAULT_PLUGINS", "1"),
+    ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
+];
 /// Replaces the `claude` binary. Used by tests and by installs outside PATH.
 pub const BINARY_ENV: &str = "FLEETIFY_CLAUDE_BIN";
 /// Directory in the workspace for the task and attachments. Kept out of commits.
@@ -439,7 +450,7 @@ fn build(
             let mut argv = vec![binary(OPENCODE_BINARY_ENV, "opencode"), "run".to_string()];
             argv.extend(model_flag(model));
             argv.push(prompt.to_string());
-            let set = vec![
+            let mut set = vec![
                 ("OPENCODE_CONFIG_CONTENT".to_string(), config.to_string()),
                 // A repository's own opencode.json must not widen the grants.
                 (
@@ -447,6 +458,17 @@ fn build(
                     "1".to_string(),
                 ),
             ];
+            // In a network-restricted container, opencode's own start-up calls (the model
+            // catalogue, the update check, default plugins, LSP downloads) would go to hosts
+            // the recipe did not list. These switches turn them off; the model call is the
+            // only request the agent makes.
+            if extra.network.is_some() {
+                set.extend(
+                    OPENCODE_OFFLINE_ENV
+                        .iter()
+                        .map(|(key, value)| (key.to_string(), value.to_string())),
+                );
+            }
             (argv, AGENT_ENV, set)
         }
         // Copilot keeps its own login in its own configuration. No host token and no
@@ -1417,6 +1439,43 @@ text = "inline"
             panic!("the docker client gets an allowlist");
         };
         assert!(set.iter().any(|(key, _)| key == "OPENCODE_CONFIG_CONTENT"));
+    }
+
+    #[test]
+    fn a_network_restricted_opencode_run_switches_off_its_start_up_calls() {
+        let recipe = in_image("opencode");
+        let network = crate::isolation::Network {
+            name: "fleetify-net".to_string(),
+            env: vec![("HTTPS_PROXY".to_string(), "http://proxy:3128".to_string())],
+            dir: std::path::PathBuf::from("/tmp/fleetify-net"),
+        };
+        let offline = |set: &EnvPolicy| {
+            let EnvPolicy::Allowlist { set, .. } = set else {
+                panic!("the docker client gets an allowlist");
+            };
+            set.iter()
+                .any(|(key, value)| key == "OPENCODE_DISABLE_MODELS_FETCH" && value == "1")
+        };
+        let restricted = invocation_in_network(
+            "opencode",
+            "prompt",
+            &recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+            Some(&network),
+        )
+        .unwrap();
+        assert!(offline(&restricted.env));
+        let open = invocation(
+            "opencode",
+            &recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        assert!(!offline(&open.env), "a run without a network is unchanged");
     }
 
     #[test]

@@ -2,11 +2,6 @@
 
 Open work of fleetify, one file per item. Each file says what is known, what is open and when it is done, so it can be worked on alone. Status words: **open** (to be worked on), **needs input** (waiting for the user), **postponed**, **idea** (not decided).
 
-## Bugs
-
-- [Bug: host errors do not name the endpoint](bug-host-error-endpoint.md)
-- [Open question: no workflow runs on a fork for push or pull request](fork-ci-triggers.md)
-
 ## Stage 1, still open
 
 - [M14: full level-5 lint test and rate-limit behaviour](m14-level5-lint-test.md)
@@ -14,6 +9,17 @@ Open work of fleetify, one file per item. Each file says what is known, what is 
 - [M17: real trial on three to five private repositories](m17-real-trial.md)
 - [Windows support](windows-support.md)
 - [Self-hosted GitLab: first real test](self-hosted-gitlab-test.md)
+
+## Stage 3, network isolation (open items)
+
+- [Refuse names that resolve to private, loopback or gateway addresses](network-resolved-address-refusal.md)
+- [Network canaries not yet covered](network-canary-coverage.md)
+- [Proxy denials in the report](network-denials-in-report.md)
+- [Network canaries for each agent (opencode, Copilot)](network-agent-canaries.md)
+- [check-agent runs without the recipe's network](network-check-agent.md)
+- [Pin the Squid version of the proxy image](proxy-squid-version-pin.md)
+- [Containers: run the agent as the host user (closed by rootless Docker)](container-agent-user.md)
+- [Docker: rootful, rootless, or both (decided: rootless)](docker-rootless-support.md)
 
 ## Postponed
 
