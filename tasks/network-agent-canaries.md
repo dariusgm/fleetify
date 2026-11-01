@@ -6,7 +6,7 @@
 
 - **Claude Code:** done (2026-10-31): positive run through the proxy (PR #44), negative run with a wrong model host (`examples/recipes/network-allowlist-denied/`).
 - **opencode:** done (2026-11-01), against the local llama.cpp server on `192.168.178.151:9931`. Tests in `tests/opencode_network.rs` and `tests/container.rs` (`opencode_in_its_container_answers_from_the_recipe_provider`). Details in `DECISIONS.md`, "Opencode through the proxy".
-- **Copilot:** not started. Needs its login passed into the container first (`tests/copilot_live.rs` shows how the login is found). Add a node-level probe like `tests/opencode_network.rs` once the image exists.
+- **Copilot:** done (2026-11-01, rootless): `tests/copilot_network.rs`, a live answer through the proxy, with the token passed by name (`agent_env = ["GH_TOKEN"]`). The only refused request is the telemetry host, which has no switch in the package. Open: a node-level probe like `tests/opencode_network.rs`, and a decision on the telemetry host (`DECISIONS.md`, Copilot entry).
 
 **Node note.** Node's `fetch` ignores proxy variables unless `NODE_USE_ENV_PROXY=1` is set. The network sets it. Any new Node-based agent needs the same probe, because a missing variable means direct access, and the probe is what catches it.
 

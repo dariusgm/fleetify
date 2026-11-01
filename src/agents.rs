@@ -26,6 +26,9 @@ use crate::runner::{BASE_ENV, EnvPolicy, RunRequest, Runner};
 pub const CLAUDE_CODE: &str = "claude-code";
 pub const OPENCODE: &str = "opencode";
 pub const COPILOT: &str = "copilot";
+/// Copilot variables set in a network-restricted run. The self-update check downloads from
+/// release-assets.githubusercontent.com, which is not listed (checked with Copilot 1.0.101).
+const COPILOT_OFFLINE_ENV: &[(&str, &str)] = &[("COPILOT_AUTO_UPDATE", "false")];
 /// Replaces the `copilot` binary, the same way `FLEETIFY_CLAUDE_BIN` does for claude.
 pub const COPILOT_BINARY_ENV: &str = "FLEETIFY_COPILOT_BIN";
 /// Replaces the `opencode` binary, the same way `FLEETIFY_CLAUDE_BIN` does for claude.
@@ -482,7 +485,16 @@ fn build(
                 model,
             ),
             &[][..],
-            Vec::new(),
+            // In a network-restricted container, Copilot's self-update check is switched off.
+            // Its telemetry host is not listed and stays refused (see tests/copilot_network.rs).
+            if extra.network.is_some() {
+                COPILOT_OFFLINE_ENV
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect()
+            } else {
+                Vec::new()
+            },
         ),
         _ => (
             claude_code_argv(
@@ -1439,6 +1451,45 @@ text = "inline"
             panic!("the docker client gets an allowlist");
         };
         assert!(set.iter().any(|(key, _)| key == "OPENCODE_CONFIG_CONTENT"));
+    }
+
+    #[test]
+    fn a_network_restricted_copilot_run_switches_off_its_self_update() {
+        let recipe = in_image("copilot");
+        let network = crate::isolation::Network {
+            name: "fleetify-net".to_string(),
+            env: vec![("HTTPS_PROXY".to_string(), "http://proxy:3128".to_string())],
+            dir: std::path::PathBuf::from("/tmp/fleetify-net"),
+        };
+        let set_of = |invocation: &Invocation| match &invocation.env {
+            EnvPolicy::Allowlist { set, .. } => set.clone(),
+            _ => panic!("the docker client gets an allowlist"),
+        };
+        let restricted = invocation_in_network(
+            "copilot",
+            "prompt",
+            &recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+            Some(&network),
+        )
+        .unwrap();
+        assert!(
+            set_of(&restricted).contains(&("COPILOT_AUTO_UPDATE".to_string(), "false".to_string()))
+        );
+        let open = invocation(
+            "copilot",
+            &recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        assert!(
+            set_of(&open).is_empty(),
+            "a run without a network is unchanged"
+        );
     }
 
     #[test]
