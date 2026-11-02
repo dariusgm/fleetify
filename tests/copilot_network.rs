@@ -1,8 +1,11 @@
 //! Network isolation of a Copilot CLI agent container, against the real docker daemon and the
 //! real Copilot endpoints. Ignored by default: it makes model calls with the GitHub login.
-//! Needs docker, `fleetify-agent-copilot` and a GitHub token in `GH_TOKEN`:
+//! Needs docker, `fleetify-agent-copilot` and a Copilot-only token in `COPILOT_GITHUB_TOKEN`
+//! (a fine-grained token with the Copilot Requests permission and nothing else). Do not use the
+//! broad `gh` token here:
 //!
-//!     GH_TOKEN="$(gh auth token)" cargo test --test copilot_network -- --ignored --nocapture
+//!     COPILOT_GITHUB_TOKEN="$(cat ~/.config/fleetify/copilot-test-token)" \
+//!         cargo test --test copilot_network -- --ignored --nocapture
 //!
 //! The token reaches the container by name only (`agent_env`), as a recipe passes it.
 
@@ -54,10 +57,10 @@ fn workspace(name: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "needs docker, fleetify-agent-copilot, GH_TOKEN and a Copilot account"]
+#[ignore = "needs docker, fleetify-agent-copilot, COPILOT_GITHUB_TOKEN and a Copilot account"]
 fn copilot_answers_through_the_proxy() {
-    if std::env::var("GH_TOKEN").is_err() {
-        eprintln!("skipped: GH_TOKEN is not set");
+    if std::env::var("COPILOT_GITHUB_TOKEN").is_err() {
+        eprintln!("skipped: COPILOT_GITHUB_TOKEN is not set");
         return;
     }
     let text = r#"schema = 1
@@ -66,7 +69,7 @@ branch = "chore/copilot-network"
 pr_title = "chore: copilot network"
 agent = "copilot"
 image = "fleetify-agent-copilot"
-agent_env = ["GH_TOKEN"]
+agent_env = ["COPILOT_GITHUB_TOKEN"]
 
 [[instructions]]
 text = "Reply with the single word pong. Do not use any tool."
