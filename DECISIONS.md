@@ -1074,3 +1074,11 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **Test change.** `tests/copilot_network.rs` reads `COPILOT_GITHUB_TOKEN` (the variable Copilot checks first) and passes it to the container by name. The broad `gh` token is no longer used by the test.
 - **Rotation.** Revoke and replace the token when it expires, or sooner. The value was pasted into the chat for this step, so it is in the conversation transcript; revoke it after the test window.
 - **Still open.** Passing any token into the agent's container keeps it in the agent's reach. The end state is the broker in `tasks/copilot-scoped-token.md`.
+
+## Copilot token only in a Copilot container (2026-11-02)
+
+- **Rule.** The Copilot token is `COPILOT_GITHUB_TOKEN`. It goes into a Copilot container and nowhere else. A Copilot container without it does not start (`build` in `src/agents.rs`). A recipe for another agent that lists it is refused (`validate_agent_env` in `src/recipe.rs`). A host Copilot run never receives it, even when it is set in the environment.
+- **Required before any task.** The run refuses to start when a listed variable is unset (existing check in `src/run.rs`), so the token is needed before the first task. The value is added to the redactor.
+- **check-agent.** `check-agent copilot --image ...` passes the token by name too. Without the variable it says so before any container starts.
+- **Verified.** Unit tests cover the rule in both directions and the host run. Rootless Docker: `tests/copilot_network.rs` passes with the token from the file. `check-agent copilot --image fleetify-agent-copilot` passes with the token and fails with the message without it.
+- **Token.** The value is in `~/.config/fleetify/copilot-test-token` (mode 600). It was pasted into the chat once for this step and is in the conversation transcript: revoke it when the test window closes, and renew it every three days.

@@ -29,6 +29,9 @@ pub const COPILOT: &str = "copilot";
 /// Copilot variables set in a network-restricted run. The self-update check downloads from
 /// release-assets.githubusercontent.com, which is not listed (checked with Copilot 1.0.101).
 const COPILOT_OFFLINE_ENV: &[(&str, &str)] = &[("COPILOT_AUTO_UPDATE", "false")];
+/// The variable that carries the Copilot token. Copilot checks it first. It is passed only into
+/// a Copilot container, and a run cannot start without it (see `build`).
+pub const COPILOT_TOKEN_ENV: &str = "COPILOT_GITHUB_TOKEN";
 /// Replaces the `copilot` binary, the same way `FLEETIFY_CLAUDE_BIN` does for claude.
 pub const COPILOT_BINARY_ENV: &str = "FLEETIFY_COPILOT_BIN";
 /// Replaces the `opencode` binary, the same way `FLEETIFY_CLAUDE_BIN` does for claude.
@@ -386,6 +389,19 @@ fn canary_invocation(
     model: Option<&str>,
     image: Option<&str>,
 ) -> Result<Invocation, String> {
+    // A Copilot container gets its token by name, as a recipe passes it. Without the variable
+    // in the environment the check cannot run, and it says so before any container starts.
+    let token = [COPILOT_TOKEN_ENV.to_string()];
+    let copilot_container = name == COPILOT && image.is_some();
+    if copilot_container && std::env::var_os(COPILOT_TOKEN_ENV).is_none() {
+        return Err(format!(
+            "set {COPILOT_TOKEN_ENV} in the environment: the Copilot container needs it"
+        ));
+    }
+    let extra = Extra {
+        container_env: if copilot_container { &token } else { &[] },
+        ..Extra::default()
+    };
     build(
         name,
         prompt,
@@ -393,7 +409,7 @@ fn canary_invocation(
         model,
         workspace,
         image,
-        &Extra::default(),
+        &extra,
     )
 }
 
@@ -447,6 +463,22 @@ fn build(
     extra: &Extra,
 ) -> Result<Invocation, String> {
     check_supported(name)?;
+    // The Copilot token goes into a Copilot container and nowhere else: not to another agent,
+    // not to a host run, and a Copilot container does not start without it.
+    let names_token = extra
+        .container_env
+        .iter()
+        .any(|var| var == COPILOT_TOKEN_ENV);
+    if name == COPILOT && image.is_some() && !names_token {
+        return Err(format!(
+            "a Copilot container needs {COPILOT_TOKEN_ENV} in agent_env; the token is passed to it by name"
+        ));
+    }
+    if names_token && (name != COPILOT || image.is_none()) {
+        return Err(format!(
+            "{COPILOT_TOKEN_ENV} is for a Copilot container only, not for {name} or a host run"
+        ));
+    }
     let (mut argv, names, set) = match name {
         OPENCODE => {
             // The recipe's table first; fleetify's permissions are written over it.
@@ -1475,8 +1507,96 @@ text = "inline"
     }
 
     #[test]
+    fn the_copilot_token_goes_into_a_copilot_container_only() {
+        let names_of = |invocation: &Invocation| match &invocation.env {
+            EnvPolicy::Allowlist { names, .. } => names.clone(),
+            _ => panic!("the docker client gets an allowlist"),
+        };
+        let token = [COPILOT_TOKEN_ENV.to_string()];
+        let mut copilot = in_image("copilot");
+        copilot.agent_env = token.to_vec();
+        let forwarded = invocation_in_network(
+            "copilot",
+            "prompt",
+            &copilot,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+            None,
+        )
+        .unwrap();
+        assert!(names_of(&forwarded).contains(&COPILOT_TOKEN_ENV.to_string()));
+
+        // A Copilot container without the token does not start.
+        let bare = in_image("copilot");
+        assert!(
+            invocation_in_network(
+                "copilot",
+                "p",
+                &bare,
+                &permissions(&[], false),
+                None,
+                Path::new("/ws/run"),
+                None
+            )
+            .unwrap_err()
+            .contains("needs COPILOT_GITHUB_TOKEN")
+        );
+
+        // Another agent's container never gets it, and neither does a host run.
+        let mut claude = in_image("claude-code");
+        claude.agent_env = token.to_vec();
+        assert!(
+            invocation_in_network(
+                "claude-code",
+                "p",
+                &claude,
+                &permissions(&[], false),
+                None,
+                Path::new("/ws/run"),
+                None
+            )
+            .unwrap_err()
+            .contains("for a Copilot container only")
+        );
+        // A host Copilot run keeps its own login and never forwards the token name.
+        let mut host_recipe = in_image("copilot");
+        host_recipe.image = None;
+        let host_run = invocation(
+            "copilot",
+            &host_recipe,
+            &permissions(&[], false),
+            None,
+            Path::new("/ws/run"),
+        )
+        .unwrap();
+        assert!(!names_of(&host_run).contains(&COPILOT_TOKEN_ENV.to_string()));
+        let mut host = in_image("copilot");
+        host.image = None;
+        host.agent_env = Vec::new();
+        let host_with_token = Extra {
+            container_env: &token,
+            ..Extra::default()
+        };
+        assert!(
+            build(
+                "copilot",
+                "p",
+                &Grants::default(),
+                None,
+                Path::new("/ws/run"),
+                None,
+                &host_with_token
+            )
+            .unwrap_err()
+            .contains("for a Copilot container only")
+        );
+    }
+
+    #[test]
     fn a_network_restricted_copilot_run_switches_off_its_self_update() {
-        let recipe = in_image("copilot");
+        let mut recipe = in_image("copilot");
+        recipe.agent_env = vec![COPILOT_TOKEN_ENV.to_string()];
         let network = crate::isolation::Network {
             name: "fleetify-net".to_string(),
             env: vec![("HTTPS_PROXY".to_string(), "http://proxy:3128".to_string())],
