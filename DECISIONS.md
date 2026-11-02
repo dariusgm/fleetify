@@ -1066,3 +1066,11 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **Obsolete directive removed.** `dns_v4_first` is obsolete in the pinned Squid 5.7 and logged an error. It is removed; the private rule does not depend on it.
 - **Tests.** Unit: the order in the generated configuration, and the listed ranges. `tests/network.rs`: a listed name that resolves to loopback is refused and logged as a denial (new). All 15 Docker-backed tests pass under rootless Docker: opencode (2 network, 1 container), Claude Code (2 network, 6 container tests), Copilot (1 network), proxy (4).
 - **Limit.** The check is on the address the proxy resolves. Squid's own name resolution is what is checked; a DNS record that changes during a connection is not re-checked within that connection.
+
+## Copilot container test with a Copilot-only token (2026-11-02)
+
+- **Token.** A fine-grained personal access token, owned by the personal account, with the account permission Copilot Requests (read-only) and no other permission. Public repositories only. Expires after three days. The value is kept outside the repository in `~/.config/fleetify/copilot-test-token` (mode 600). The value is not recorded here or in any commit.
+- **Narrowing checked.** A private repository of the account returns 404 with this token, so it cannot read private repositories. Public repositories are readable without any token, so a read of `fleetify` proves nothing. Copilot answers `pong` with this token alone.
+- **Test change.** `tests/copilot_network.rs` reads `COPILOT_GITHUB_TOKEN` (the variable Copilot checks first) and passes it to the container by name. The broad `gh` token is no longer used by the test.
+- **Rotation.** Revoke and replace the token when it expires, or sooner. The value was pasted into the chat for this step, so it is in the conversation transcript; revoke it after the test window.
+- **Still open.** Passing any token into the agent's container keeps it in the agent's reach. The end state is the broker in `tasks/copilot-scoped-token.md`.
