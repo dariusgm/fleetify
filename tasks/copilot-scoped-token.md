@@ -1,19 +1,14 @@
 # Copilot in containers: a token that can only call Copilot
 
-**Status:** partly done (2026-11-02). A Copilot-only token is in use for the test: a fine-grained token with Copilot Requests (read-only) only, verified: private repositories return 404. The test uses `COPILOT_GITHUB_TOKEN`. Open: rotation (3-day token), and the broker (step 5). See `DECISIONS.md`.
+**Status:** done (2026-11-02). The Copilot container gets a token that can only call Copilot, and nothing else in fleetify uses the broad `gh` token. The decision and the checks are in `DECISIONS.md`.
 
-**Status:** done for the test and for fleetify (2026-11-02). The token is a fine-grained token with Copilot Requests (read-only) only: private repositories return 404 and Copilot answers. It is named `COPILOT_GITHUB_TOKEN`, goes into a Copilot container only, and a Copilot container does not start without it. README, `DECISIONS.md` and the code are updated. The three-day expiry needs renewing. The broker, which would keep the token out of the container entirely, is in `tasks/copilot-broker.md`.
+**What was done.**
 
-**Known.** The Copilot container test (`tests/copilot_network.rs`) passes the `gh` token into the container as `GH_TOKEN`. Copilot accepts it and answers. The `gh` token belongs to the account `dariusgm` and has the scopes `gist`, `read:org`, `repo` and `workflow`. Inside the container the agent could use it against every repository of the account. That is far more than Copilot needs, and the test must not be copied into a real recipe with this token.
+- The token is a fine-grained personal access token with the account permission Copilot Requests (read-only) and no other permission. Private repositories return 404 with it, and Copilot answers.
+- It is named `COPILOT_GITHUB_TOKEN`, the variable Copilot checks first. It is passed into a Copilot container by name (`agent_env`) and nowhere else. A Copilot container does not start without it, and check-agent needs it too.
+- `tests/copilot_network.rs` reads that variable. No test, recipe or example uses the `gh` token.
+- The README documents the name, how to create the token, the three-day renewal, and the export.
 
-Copilot's own login on the host is separate (kept in its keyring, not in `~/.copilot/config.json`). The container cannot reach it.
+**Still operational.** The token expires after three days. Renewing it, and revoking the old one, is the owner's step. The value was pasted into a chat during the work, so it is in that transcript: revoke it when the test window closes.
 
-**Open.**
-
-1. Check whether GitHub offers a fine-grained personal access token with a Copilot permission (for example "Copilot Requests") that works without any repository access, and whether this account and plan allow it.
-2. Create such a token and check it: Copilot answers `pong` in the container with the token; the same token is refused by the GitHub API for a repository (`gh api repos/<owner>/<repo>` with that token must fail).
-3. Document the token's name and expiry in the recipe guidance, and pass it through `agent_env = ["GH_TOKEN"]` only. The value stays in the orchestrator's environment, never in the recipe.
-4. Decide whether the test uses the scoped token by default (`COPILOT_TEST_TOKEN`, separate from `GH_TOKEN`), so the broad token is not used by accident.
-5. Long term: a broker that keeps the Copilot login outside the container (`DECISIONS.md`, the agent-login entries).
-
-**Done when.** A scoped token is documented and tested, `tests/copilot_network.rs` runs with it, and the broad `gh` token is no longer used by any test or recipe example. The result goes into `DECISIONS.md`.
+**Not part of this task.** Keeping the token out of the container entirely is the broker, in `tasks/copilot-broker.md`.
