@@ -1082,3 +1082,9 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **check-agent.** `check-agent copilot --image ...` passes the token by name too. Without the variable it says so before any container starts.
 - **Verified.** Unit tests cover the rule in both directions and the host run. Rootless Docker: `tests/copilot_network.rs` passes with the token from the file. `check-agent copilot --image fleetify-agent-copilot` passes with the token and fails with the message without it.
 - **Token.** The value is in `~/.config/fleetify/copilot-test-token` (mode 600). It was pasted into the chat once for this step and is in the conversation transcript: revoke it when the test window closes, and renew it every three days.
+
+## Network canaries: ports, the proxy's own address and the gateway (2026-11-02)
+
+- **Added.** `an_unlisted_port_on_a_listed_address_is_refused_and_logged`: an address listed for port 8080 refuses port 9090, and the refusal is logged. `a_request_to_the_proxy_itself_is_refused`: requests from the agent to the proxy's own address, to 127.0.0.1 and to the bridge gateway are refused and logged. Both pass under rootless Docker.
+- **Scope.** The gateway check covers the agent's requests. The proxy's own outgoing requests are not tested here.
+- **Found.** Squid resolves names through DNS, not through `/etc/hosts`. A name written there is not resolved (the request returns `NONE_NONE/500`). This matters for any test that needs a controlled name. The DNS-change check stays open (`tasks/network-canary-coverage.md`).

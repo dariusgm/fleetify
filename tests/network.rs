@@ -252,3 +252,85 @@ fn a_listed_name_that_resolves_to_a_private_address_is_refused() {
         "the refusal is logged as a denial: {refused:?}"
     );
 }
+
+#[test]
+#[ignore = "needs the docker daemon, node:22-bookworm-slim and fleetify-proxy:1"]
+fn an_unlisted_port_on_a_listed_address_is_refused_and_logged() {
+    let allowed = upstream("fleetify-net-test-port");
+    let allow = [parse_entry(&format!("{allowed}:8080")).unwrap()];
+    let backend = isolation::backend(isolation::DOCKER).unwrap();
+    let base = std::env::temp_dir().join("fleetify-net-test");
+    let network = backend
+        .set_up_network(&allow, &base)
+        .expect("the network starts");
+
+    let listed_port = agent(&network, VIA_PROXY, &format!("http://{allowed}:8080/"));
+    let other_port = agent(&network, VIA_PROXY, &format!("http://{allowed}:9090/"));
+    let refused = backend.tear_down_network(&network);
+    docker(&["rm", "-f", "fleetify-net-test-port"]);
+
+    assert_eq!(listed_port, "HTTP/1.1 200 OK", "the listed port answers");
+    assert_eq!(
+        other_port, "HTTP/1.1 403 Forbidden",
+        "the same address on another port is refused"
+    );
+    assert!(
+        refused
+            .iter()
+            .any(|line| line.contains(&format!("{allowed}:9090"))),
+        "the refused port is logged: {refused:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs the docker daemon, node:22-bookworm-slim and fleetify-proxy:1"]
+fn a_request_to_the_proxy_itself_is_refused() {
+    let allowed = upstream("fleetify-net-test-self");
+    let allow = [parse_entry(&format!("{allowed}:8080")).unwrap()];
+    let backend = isolation::backend(isolation::DOCKER).unwrap();
+    let base = std::env::temp_dir().join("fleetify-net-test");
+    let network = backend
+        .set_up_network(&allow, &base)
+        .expect("the network starts");
+    let proxy_ip = docker(&[
+        "inspect",
+        "-f",
+        &format!(
+            "{{{{with index .NetworkSettings.Networks \"{}\"}}}}{{{{.IPAddress}}}}{{{{end}}}}",
+            network.name
+        ),
+        &format!("{}-proxy", network.name),
+    ]);
+
+    // The gateway of the default bridge, where the proxy also sits: the host side of its route out.
+    let gateway = docker(&[
+        "network",
+        "inspect",
+        "bridge",
+        "-f",
+        "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+    ]);
+    let own_address = agent(&network, VIA_PROXY, &format!("http://{proxy_ip}:3128/"));
+    let loopback = agent(&network, VIA_PROXY, "http://127.0.0.1:3128/");
+    let host_gateway = agent(&network, VIA_PROXY, &format!("http://{gateway}:80/"));
+    let refused = backend.tear_down_network(&network);
+    docker(&["rm", "-f", "fleetify-net-test-self"]);
+
+    assert_eq!(
+        own_address, "HTTP/1.1 403 Forbidden",
+        "the proxy's own address is refused"
+    );
+    assert_eq!(loopback, "HTTP/1.1 403 Forbidden", "loopback is refused");
+    assert_eq!(
+        host_gateway, "HTTP/1.1 403 Forbidden",
+        "the gateway of the default bridge is refused"
+    );
+    assert!(
+        refused.iter().any(|line| line.contains(&proxy_ip)),
+        "the refusal of the proxy's own address is logged: {refused:?}"
+    );
+    assert!(
+        refused.iter().any(|line| line.contains(&gateway)),
+        "the refusal of the gateway is logged: {refused:?}"
+    );
+}
