@@ -788,6 +788,25 @@ impl Recipe {
                 push("agent_env", format!("{name} is listed twice"));
             }
         }
+        // The Copilot token goes into a Copilot container and nowhere else, and that container
+        // needs it.
+        let token = crate::agents::COPILOT_TOKEN_ENV;
+        let lists_token = self.agent_env.iter().any(|name| name == token);
+        if lists_token && self.agent.as_deref() != Some(crate::agents::COPILOT) {
+            push(
+                "agent_env",
+                format!("{token} is for a Copilot container only"),
+            );
+        }
+        if self.agent.as_deref() == Some(crate::agents::COPILOT)
+            && self.image.is_some()
+            && !lists_token
+        {
+            push(
+                "agent_env",
+                format!("a Copilot container needs {token} in agent_env"),
+            );
+        }
     }
 
     fn validate_applies_to(&self, push: &mut impl FnMut(&str, String)) {
@@ -1493,6 +1512,35 @@ mod tests {
                 .validate(&dir, None)
                 .iter()
                 .any(|i| i.field == "isolation")
+        );
+    }
+
+    #[test]
+    fn the_copilot_token_is_listed_for_a_copilot_container_and_no_other() {
+        let mut copilot = Recipe::parse(VALID).unwrap();
+        copilot.agent = Some("copilot".to_string());
+        copilot.image = Some("fleetify-agent-copilot".to_string());
+        let issues = |recipe: &Recipe| {
+            let mut found = Vec::new();
+            recipe.validate_agent_env(&mut |field: &str, message: String| {
+                found.push((field.to_string(), message))
+            });
+            found
+        };
+        assert!(
+            issues(&copilot)
+                .iter()
+                .any(|(_, m)| m.contains("needs COPILOT_GITHUB_TOKEN")),
+            "a Copilot container must list the token"
+        );
+        copilot.agent_env = vec!["COPILOT_GITHUB_TOKEN".to_string()];
+        assert!(issues(&copilot).is_empty());
+        copilot.agent = Some("claude-code".to_string());
+        assert!(
+            issues(&copilot)
+                .iter()
+                .any(|(_, m)| m.contains("for a Copilot container only")),
+            "another agent must not list the token"
         );
     }
 

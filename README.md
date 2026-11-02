@@ -217,6 +217,29 @@ allow = ["api.anthropic.com:443", "llm-box.lan:9931"]
 
 The proxy image is built once from `docker/proxy/`: `docker build -t fleetify-proxy:1 docker/proxy`.
 
+#### Copilot token
+
+A Copilot container needs a GitHub token. It is passed by name as `COPILOT_GITHUB_TOKEN`, and Copilot checks that variable first. The token is for Copilot only and goes into a Copilot container only:
+
+- The recipe lists the name: `agent_env = ["COPILOT_GITHUB_TOKEN"]`. A Copilot container without it is refused, and a recipe for another agent that lists it is refused.
+- The value comes from the environment that starts fleetify. A run refuses to start before any task if the variable is not set, and `check-agent copilot --image ...` needs it too. The value is redacted from logs and reports.
+- Host runs of Copilot keep their own login and never receive the token.
+
+Create the token on github.com, from any device: **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
+
+- **Resource owner:** your personal account. Organizations are not supported for this permission.
+- **Repository access:** Public repositories. This grants no private repository access.
+- **Permissions → Account permissions:** add **Copilot Requests**, read-only. Add nothing else.
+- **Expiration:** three days is enough for a test window; renew it before it expires.
+
+Classic tokens (`ghp_`) are not supported by Copilot CLI. Do not use the token of the `gh` command for this: it has repository scopes, which the agent would then hold inside its container.
+
+Keep the token in a file readable by you only, and export it in the shell that starts fleetify:
+
+```sh
+export COPILOT_GITHUB_TOKEN="$(cat ~/.config/fleetify/copilot-token)"
+```
+
 #### Build the agent images
 
 Images for the three agents are in `docker/agents/`. Build the ones you use, with rootless docker (see above). Builds need `--network host`, because build containers do not resolve names on the default network here (see `DECISIONS.md`):
