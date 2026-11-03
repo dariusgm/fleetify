@@ -1,0 +1,43 @@
+# Example for `[network] ignore`. The model host is allowed. The telemetry host is ignored: a
+# request to it is rejected by the proxy like any refused request, but it is not logged and does
+# not show in the run's events or report. Expected behaviour, tested in tests/network.rs and
+# tests/validate_cli.rs; see README.md in this folder.
+schema = 1
+name = "network-ignored-hosts"
+branch = "chore/network-ignored-hosts"
+pr_title = "chore: ignored hosts example"
+commit_message = "chore: ignored hosts example"
+agent = "claude-code"
+image = "fleetify-agent-claude-code"
+tools = "tools"
+
+[applies_to]
+host_type = ["github"]
+has_file = ["pyproject.toml", "poetry.lock"]
+
+[[instructions]]
+text = "Update the dependencies in this repository to the newest versions and keep the build green."
+
+[network]
+# The model host (and GitHub) are needed; the telemetry host is not, so it is ignored.
+allow = ["api.anthropic.com:443", "github.com:443"]
+ignore = ["telemetry.example.com:443"]
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 60
+tail_lines = 20
+error_patterns = ['^E ', 'error:']
+baseline = false
+
+[guards]
+allow_paths = ["pyproject.toml", "poetry.lock"]
+max_files_changed = 2
+max_lines_changed = 20
+deny_added_patterns = ["NOSONAR"]
+
+[ci]
+wait = false
+
+[limits]
+agent_timeout_min = 10
