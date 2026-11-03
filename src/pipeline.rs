@@ -913,8 +913,9 @@ fn run_agent(
     let backend = isolation::backend(ctx.recipe.isolation.as_deref().unwrap_or(isolation::DOCKER))?;
     let network = match &ctx.recipe.image {
         Some(_) => {
-            let allow = egress::parse_entries(&ctx.recipe.network.allow)?;
-            Some(backend.set_up_network(&allow, &ctx.layout.root.join("networks"))?)
+            let policy =
+                egress::parse_policy(&ctx.recipe.network.allow, &ctx.recipe.network.ignore)?;
+            Some(backend.set_up_network(&policy, &ctx.layout.root.join("networks"))?)
         }
         None => None,
     };

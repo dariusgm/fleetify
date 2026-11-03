@@ -144,6 +144,11 @@ pub struct Network {
     /// again when a connection opens. No ranges, wildcards or schemes.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// `host:port` entries the proxy rejects without logging or showing them, for traffic the
+    /// recipe does not need (a vendor's telemetry). The same entry rules as `allow`; an entry
+    /// may not be in both lists.
+    #[serde(default)]
+    pub ignore: Vec<String>,
 }
 
 /// `[agents.<name>]`: settings for one agent, used when the recipe names no model.
@@ -770,6 +775,15 @@ impl Recipe {
             if let Err(message) = crate::egress::parse_entry(entry) {
                 push("network.allow", message);
             }
+        }
+        if !self.network.ignore.is_empty() && self.image.is_none() {
+            push(
+                "network",
+                "ignore needs image: only a container has a network to restrict".into(),
+            );
+        }
+        if let Err(message) = crate::egress::parse_policy(allow, &self.network.ignore) {
+            push("network.ignore", message);
         }
     }
 
@@ -1512,6 +1526,36 @@ mod tests {
                 .validate(&dir, None)
                 .iter()
                 .any(|i| i.field == "isolation")
+        );
+    }
+
+    #[test]
+    fn ignored_hosts_need_a_container_and_are_not_also_allowed() {
+        let mut bare = Recipe::parse(VALID).unwrap();
+        bare.network.ignore = vec!["telemetry.example.com:443".to_string()];
+        let dir = valid_dir("ignore-bare");
+        assert!(
+            bare.validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "network" && i.message.contains("ignore needs image"))
+        );
+        let mut contained = Recipe::parse(VALID).unwrap();
+        contained.image = Some("fleetify-agent-opencode".to_string());
+        contained.network.allow = vec!["api.example.com:443".to_string()];
+        contained.network.ignore = vec!["api.example.com:443".to_string()];
+        let dir = valid_dir("ignore-both");
+        assert!(
+            contained
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "network.ignore" && i.message.contains("both allow and ignore"))
+        );
+        contained.network.ignore = vec!["telemetry.example.com:443".to_string()];
+        assert!(
+            !contained
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field.starts_with("network"))
         );
     }
 

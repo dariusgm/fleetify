@@ -1,6 +1,6 @@
 # Network: ignored hosts (rejected, not logged, not shown)
 
-**Status:** open, idea agreed, not built.
+**Status:** done (2026-11-03, `DECISIONS.md`, "Ignored hosts"). `[network] ignore` is in place: rejected by the proxy, not logged, not in events or the report. The port limit of the logging filter is documented in the README. The first use (Copilot telemetry) is not switched yet: the Copilot recipe still allows that host.
 
 **Idea.** Some hosts an agent contacts are not needed for its work and should not be allowed, for example a vendor's telemetry server. Listing them in `[network] allow` would allow them, which is the wrong meaning. Leaving them out makes every run show a refusal, which is noise in the events and the log. A third list, `ignore`, solves both: a request to an ignored host is rejected by the proxy, and nothing is logged or shown for it.
 

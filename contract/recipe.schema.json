@@ -539,6 +539,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "ignore": {
+          "description": "`host:port` entries the proxy rejects without logging or showing them, for traffic the\nrecipe does not need (a vendor's telemetry). The same entry rules as `allow`; an entry\nmay not be in both lists.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
