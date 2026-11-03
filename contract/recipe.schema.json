@@ -152,6 +152,17 @@
       "format": "uint32",
       "minimum": 0
     },
+    "script": {
+      "description": "A scripted change without an agent: one script file per OS, run with bash (posix) or\nPowerShell (windows) with the repository as its argument. Same as `prepare`, with the\ninterpreter chosen for the user. Do not set both.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ScriptTable"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "tools": {
       "description": "Directory with verifier and prepare scripts, relative to the recipe directory.",
       "type": [
@@ -322,7 +333,6 @@
       "additionalProperties": false
     },
     "CommandTable": {
-      "description": "A command table: one argument list for both OSes, or one per OS.",
       "type": "object",
       "properties": {
         "argv": {
@@ -576,6 +586,39 @@
           "format": "uint32",
           "default": null,
           "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ScriptTable": {
+      "description": "A command table: one argument list for both OSes, or one per OS.\n`[script]`: the file names of a scripted change, inside the `tools` directory.",
+      "type": "object",
+      "properties": {
+        "posix": {
+          "description": "A file in the `tools` directory, run with `bash`. Give this or `windows`, or both.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "timeout_s": {
+          "description": "Default 120.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
+        },
+        "windows": {
+          "description": "A file in the `tools` directory, run with `pwsh` (PowerShell 7). Give this or `posix`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false

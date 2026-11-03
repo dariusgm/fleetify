@@ -190,6 +190,21 @@ merge_without_ci = true
 `fleetify validate` prints the effective settings of a recipe, what it asks for, and
 whether your grants cover it, with the lines to add when they do not.
 
+### Scripted changes without an agent
+
+A change does not need an agent. A recipe with `[script]` runs a script file instead of a prompt, so no LLM is involved and the change is repeatable:
+
+```toml
+[script]
+posix = "update.sh"      # a file in the tools folder, run with bash
+windows = "update.ps1"   # a file in the tools folder, run with PowerShell 7 (pwsh)
+timeout_s = 600
+```
+
+The script gets the repository path as its only argument, like the verifier. The verifier, the guards and the CI then decide, as for an agent's change, and a pull request opens only when they pass. A failing script ends the run as `error` at the prepare step, before any push. Give one file per OS you run on. Set either `[script]` or `[prepare]`, not both. Add `[[instructions]]` to let an agent work on the prepared tree afterwards.
+
+The example is `examples/recipes/scripted-update`. Check a recipe without running it with `fleetify validate <recipe-dir>`.
+
 ### Sharing a recipe
 
 A recipe is portable: nothing in it refers to your machine, so a copy works for someone

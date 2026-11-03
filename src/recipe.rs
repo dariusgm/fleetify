@@ -114,6 +114,11 @@ pub struct Recipe {
     pub tools: Option<String>,
     #[serde(default)]
     pub prepare: Option<CommandTable>,
+    /// A scripted change without an agent: one script file per OS, run with bash (posix) or
+    /// PowerShell (windows) with the repository as its argument. Same as `prepare`, with the
+    /// interpreter chosen for the user. Do not set both.
+    #[serde(default)]
+    pub script: Option<ScriptTable>,
     #[serde(default)]
     pub needs: Needs,
     #[serde(default)]
@@ -246,6 +251,21 @@ pub struct Instruction {
 }
 
 /// A command table: one argument list for both OSes, or one per OS.
+/// `[script]`: the file names of a scripted change, inside the `tools` directory.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptTable {
+    /// A file in the `tools` directory, run with `bash`. Give this or `windows`, or both.
+    #[serde(default)]
+    pub posix: Option<String>,
+    /// A file in the `tools` directory, run with `pwsh` (PowerShell 7). Give this or `posix`.
+    #[serde(default)]
+    pub windows: Option<String>,
+    /// Default 120.
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CommandTable {
@@ -886,6 +906,39 @@ impl Recipe {
         }
     }
 
+    /// `[script]`: at least one file, each a plain name inside the `tools` directory.
+    fn validate_script(
+        &self,
+        dir: &Path,
+        script: &ScriptTable,
+        push: &mut impl FnMut(&str, String),
+    ) {
+        if script.posix.is_none() && script.windows.is_none() {
+            push(
+                "script",
+                "names no file: give posix, windows or both".into(),
+            );
+        }
+        let Some(tools) = &self.tools else {
+            push(
+                "script",
+                "needs tools: the directory that holds the script".into(),
+            );
+            return;
+        };
+        for (field, file) in [
+            ("script.posix", &script.posix),
+            ("script.windows", &script.windows),
+        ] {
+            if let Some(file) = file {
+                check_file(&dir.join(tools), file, field, push);
+            }
+        }
+        if script.timeout_s == Some(0) {
+            push("script.timeout_s", "must be greater than 0".into());
+        }
+    }
+
     fn validate_commands(&self, dir: &Path, push: &mut impl FnMut(&str, String)) {
         let tools_dir = self
             .tools
@@ -894,7 +947,16 @@ impl Recipe {
         let mut uses_tools = false;
 
         let mut commands: Vec<(&str, Option<CommandSpec>, u64)> = Vec::new();
-        if let Some(prepare) = &self.prepare {
+        if self.prepare.is_some() && self.script.is_some() {
+            push(
+                "script",
+                "set either [prepare] or [script], not both".into(),
+            );
+        }
+        if let Some(script) = &self.script {
+            self.validate_script(dir, script, push);
+        }
+        if let Some(prepare) = self.prepare_table() {
             let spec = command_spec(
                 "prepare",
                 push,
@@ -1071,7 +1133,7 @@ impl Recipe {
         ];
         let mut out = Vec::new();
         let steps = [
-            ("prepare", self.prepare.as_ref().and_then(command_of_table)),
+            ("prepare", self.prepare_spec()),
             ("verify", self.verify.as_ref().and_then(command_of_verify)),
         ];
         for (step, spec) in steps {
@@ -1254,7 +1316,36 @@ impl Recipe {
 
     /// The `prepare` step as a command, if the recipe has one.
     pub fn prepare_spec(&self) -> Option<CommandSpec> {
-        self.prepare.as_ref().and_then(command_of_table)
+        self.prepare_table().as_ref().and_then(command_of_table)
+    }
+
+    /// The `prepare` step as a table: the recipe's `[prepare]`, or the `[script]` turned into
+    /// the same per-OS commands.
+    pub fn prepare_table(&self) -> Option<CommandTable> {
+        if let Some(prepare) = &self.prepare {
+            return Some(prepare.clone());
+        }
+        let script = self.script.as_ref()?;
+        let tool = |file: &String| format!("{{tools}}/{file}");
+        Some(CommandTable {
+            argv: None,
+            posix: script
+                .posix
+                .as_ref()
+                .map(|file| vec!["bash".to_string(), tool(file), "{repo}".to_string()]),
+            windows: script.windows.as_ref().map(|file| {
+                vec![
+                    "pwsh".to_string(),
+                    "-NoProfile".to_string(),
+                    "-ExecutionPolicy".to_string(),
+                    "Bypass".to_string(),
+                    "-File".to_string(),
+                    tool(file),
+                    "{repo}".to_string(),
+                ]
+            }),
+            timeout_s: script.timeout_s,
+        })
     }
 
     /// The verifier as a command, if the recipe has one.
@@ -1556,6 +1647,82 @@ mod tests {
                 .validate(&dir, None)
                 .iter()
                 .any(|i| i.field.starts_with("network"))
+        );
+    }
+
+    #[test]
+    fn a_script_becomes_the_prepare_step_with_the_interpreter_for_each_os() {
+        let mut recipe = Recipe::parse(VALID).unwrap();
+        recipe.prepare = None;
+        recipe.script = Some(ScriptTable {
+            posix: Some("update.sh".to_string()),
+            windows: Some("update.ps1".to_string()),
+            timeout_s: Some(90),
+        });
+        let table = recipe.prepare_table().unwrap();
+        assert_eq!(
+            table.posix.unwrap(),
+            ["bash", "{tools}/update.sh", "{repo}"]
+        );
+        assert_eq!(
+            table.windows.unwrap(),
+            [
+                "pwsh",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "{tools}/update.ps1",
+                "{repo}"
+            ]
+        );
+        assert_eq!(table.timeout_s, Some(90));
+        assert!(table.argv.is_none());
+    }
+
+    #[test]
+    fn a_script_needs_a_file_inside_the_tools_folder_and_not_both_prepare_and_script() {
+        let dir = valid_dir("script-rules");
+        let mut recipe = Recipe::parse(VALID).unwrap();
+        recipe.prepare = None;
+        recipe.script = Some(ScriptTable::default());
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "script" && i.message.contains("names no file"))
+        );
+        recipe.script = Some(ScriptTable {
+            posix: Some("missing.sh".to_string()),
+            ..ScriptTable::default()
+        });
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "script.posix" && i.message.contains("does not exist"))
+        );
+        recipe.script = Some(ScriptTable {
+            posix: Some("prepare.sh".to_string()),
+            windows: Some("prepare.ps1".to_string()),
+            timeout_s: None,
+        });
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .all(|i| !i.field.starts_with("script")),
+            "two files that exist are valid"
+        );
+        recipe.prepare = Some(CommandTable {
+            argv: Some(vec!["sh".to_string(), "{tools}/prepare.sh".to_string()]),
+            ..CommandTable::default()
+        });
+        assert!(
+            recipe
+                .validate(&dir, None)
+                .iter()
+                .any(|i| i.field == "script" && i.message.contains("not both"))
         );
     }
 

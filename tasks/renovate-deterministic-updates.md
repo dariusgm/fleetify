@@ -1,15 +1,14 @@
-# Idea: deterministic dependency updates with Renovate
+# Deterministic updates: scripted changes and the Renovate bot
 
-**Status:** idea, not decided. This file lists what must be settled before any work; the design goes into docs/design/ once decided.
+**Status:** partly done (2026-11-04). Scripted changes without an agent are done: a recipe with `[script]` runs a bash or PowerShell file, and the verifier, the guards and the CI decide (`DECISIONS.md`, "Scripted changes without an agent"). The Renovate bot is still open.
 
-**Idea.** Simple dependency updates are done by a deterministic bot (Renovate). The LLM comes in only when CI fails, through the CI-fix loop, which is bounded by `fix_rounds`.
+**Done.** The `[script]` table, the pipeline tests for a script-only run, the `scripted-update` example, the README section.
 
-**Open points.**
+**Open (Renovate).**
 
 1. **Branch ownership.** Renovate rebases its own branches and stops once a human has pushed to them. A fix pushed by the fix loop onto a Renovate branch may end Renovate's updates for that PR. Decide: fix on a separate branch with its own PR, or change Renovate's rebase setting.
 2. **Who runs Renovate.** Renovate as a scheduled app or self-hosted job, or fleetify starts it per repository. First version proposal: Renovate runs on its own; fleetify observes the PRs and the CI.
-3. **Scope of "simple".** Set by Renovate's own rules (for example patch and minor updates within the declared ranges, with green CI as the test), not by fleetify.
-4. **Reporting.** A Renovate PR that fleetify did not create still needs a row in the report, with the same result names.
-5. **Cost visibility.** The report shows how often a bot run and how often a fix round ran, so trial numbers stay honest.
+3. **Reporting.** A Renovate PR that fleetify did not create still needs a row in the report, with the same result names.
+4. **Cost visibility.** The report shows how often a bot run and how often a fix round ran, so trial numbers stay honest.
 
-**Done when.** The branch question is decided and written into DECISIONS.md, and a trial on one repository with one simple update ends as expected.
+**Open (PowerShell).** Run `examples/recipes/scripted-update` once on a machine with PowerShell 7; the windows path is not run in this repository's tests.

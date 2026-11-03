@@ -645,3 +645,55 @@ fn a_rate_limit_longer_than_the_ceiling_ends_the_repo_as_rate_limited() {
     assert!(failure.message.contains("3600"), "{}", failure.message);
     let _ = fs::remove_dir_all(&s.base);
 }
+
+/// A scenario whose recipe is a scripted change: `[script]` instead of `[prepare]`, no agent.
+/// The script is `script`, the verifier is the same as in the other scenarios.
+fn scripted_scenario(name: &str, script: &str) -> Scenario {
+    let s = scenario(name, PREPARE_OK, VERIFY_OK);
+    let recipe = s.recipe_dir.join("recipe.toml");
+    let text = fs::read_to_string(&recipe).unwrap().replace(
+        "[prepare]\nargv = [\"sh\", \"{tools}/prepare.sh\", \"{repo}\"]\ntimeout_s = 60",
+        "[script]\nposix = \"update.sh\"\ntimeout_s = 60",
+    );
+    assert!(text.contains("[script]"), "the recipe names the script");
+    fs::write(&recipe, text).unwrap();
+    fs::write(s.recipe_dir.join("tools/update.sh"), script).unwrap();
+    s
+}
+
+#[test]
+fn a_scripted_recipe_without_an_agent_opens_a_pull_request() {
+    // The script is the change: no agent runs, and the verifier and the guards judge the result.
+    let s = scripted_scenario("scripted-happy", PREPARE_OK);
+    let result = run(&s, "run-1");
+    assert_eq!(result.result, "pr_open", "{result:?}");
+    let content = git(
+        &s.remote,
+        &["show", "fleetify/chore/bump-python:pyproject.toml"],
+    );
+    assert!(
+        content.contains("3.15"),
+        "the script's change is pushed: {content}"
+    );
+    let _ = fs::remove_dir_all(&s.base);
+}
+
+#[test]
+fn a_failing_script_stops_the_run_before_any_push() {
+    let s = scripted_scenario(
+        "scripted-fails",
+        "#!/bin/sh\necho 'E  no such file' >&2\nexit 3\n",
+    );
+    let result = run(&s, "run-1");
+    assert_eq!(result.result, "error", "{result:?}");
+    assert!(
+        result.detail.contains("prepare"),
+        "the failure names the prepare step: {}",
+        result.detail
+    );
+    assert!(
+        !remote_has_branch(&s),
+        "nothing is pushed when the script fails"
+    );
+    let _ = fs::remove_dir_all(&s.base);
+}

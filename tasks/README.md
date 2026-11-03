@@ -27,7 +27,7 @@ Open work of fleetify, one file per item. Each file says what is known, what is 
 ## Ideas and decisions
 
 - [Model selection: defaults and Anthropic models through opencode](default-models-and-anthropic-via-opencode.md)
-- [Idea: deterministic dependency updates with Renovate](renovate-deterministic-updates.md)
+- [Deterministic updates: scripted changes (done) and the Renovate bot](renovate-deterministic-updates.md)
 - [Idea: tasks from issues (fan-out)](tasks-from-issues.md)
 - [Stage 3: narrowing what the coding agents may do](agent-confinement-stage-3.md)
 - [Not scheduled](not-scheduled.md)

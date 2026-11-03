@@ -1097,3 +1097,11 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **Schema.** `contract/recipe.schema.json` regenerated; the only change is the new field.
 - **Tests.** Unit: the policy parser (both-lists refusal), the Squid text (rules before the catch-all, the access-log line), the recipe rules (needs an image; both lists). `tests/network.rs`: an ignored host is rejected with 403, is absent from the raw proxy log, and the allowed request is present in it. Under rootless docker all Docker-backed tests pass: network 7, opencode 2, Claude Code 2 and 6, Copilot 1, container 6.
 - **Not done.** The Copilot recipe still allows its telemetry host. Moving it to `ignore` is the first use, a one-line change for the user to decide.
+
+## Scripted changes without an agent (2026-11-04)
+
+- **Form.** `[script]` with `posix` and `windows`: each a file name in the `tools` folder. The posix file runs with `bash`, the windows file with `pwsh -NoProfile -ExecutionPolicy Bypass -File`, the repository path as the only argument. The table becomes the `prepare` step (`prepare_table` in `src/recipe.rs`), so validation, timeouts, the guards and the pipeline are the existing ones. Setting both `[script]` and `[prepare]` is refused.
+- **Why not a new step.** A recipe without `[[instructions]]` already runs `prepare` alone, and that path is tested. `[script]` only removes the per-OS argument lists. A separate step would have duplicated the prepare handling.
+- **Checked.** Unit tests: the conversion to bash and pwsh commands, the file rules, the conflict with `[prepare]`. `tests/pipeline.rs`: a script-only recipe opens a pull request; a failing script ends as `error` at prepare, with nothing pushed. `tests/scripted_example.rs`: the example validates, and its script becomes the documented commands.
+- **Not checked here.** The PowerShell scripts were not run: pwsh is not installed on this machine, and a download to install it was refused by the auto mode. The windows path is covered for its command line only. Run the example once on a machine with PowerShell 7 before the first real run.
+- **Renovate.** The Renovate bot itself (its branch ownership, who runs it, reporting) is not part of this step. `tasks/renovate-deterministic-updates.md` keeps those open points.

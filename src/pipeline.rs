@@ -261,8 +261,7 @@ fn process_repo_steps(ctx: &Ctx<'_>, repo: &Repo, agent_ran: &Cell<bool>) -> Rep
     if let Some(spec) = ctx.recipe.prepare_spec() {
         let timeout = ctx
             .recipe
-            .prepare
-            .as_ref()
+            .prepare_table()
             .and_then(|t| t.timeout_s)
             .map_or(DEFAULT_PREPARE_TIMEOUT, Duration::from_secs);
         match run_step(ctx, repo, &spec, &workspace, timeout) {
