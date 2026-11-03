@@ -1,0 +1,39 @@
+# A scripted change without an agent: no LLM runs. The script for each OS is a file in tools/;
+# fleetify runs the posix script with bash and the windows script with PowerShell 7 (pwsh),
+# with the repository path as its argument. The verifier and the guards then judge the result,
+# and a pull request opens only when they pass. See README.md in this folder.
+schema = 1
+name = "scripted-update"
+branch = "chore/scripted-update"
+pr_title = "chore: refresh the uv lock"
+commit_message = "chore: refresh the uv lock"
+tools = "tools"
+
+[applies_to]
+host_type = ["github"]
+has_file = ["pyproject.toml"]
+
+[script]
+posix = "update.sh"
+windows = "update.ps1"
+timeout_s = 600
+
+[verify]
+posix = ["bash", "{tools}/verify.sh", "{repo}"]
+windows = ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{tools}/verify.ps1", "{repo}"]
+timeout_s = 600
+tail_lines = 20
+error_patterns = ['^E ', 'error:']
+baseline = false
+
+[guards]
+allow_paths = ["pyproject.toml", "uv.lock"]
+max_files_changed = 2
+max_lines_changed = 20000
+deny_added_patterns = ["NOSONAR"]
+
+[ci]
+wait = false
+
+[limits]
+agent_timeout_min = 10
