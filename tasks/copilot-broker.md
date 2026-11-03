@@ -1,6 +1,6 @@
 # Copilot in containers: a broker that keeps the token out of the agent
 
-**Status:** open, idea. Follow-up of `tasks/copilot-scoped-token.md`.
+**Status:** open, idea. Follow-up of the Copilot scoped token (done; see `DECISIONS.md`, "Copilot token only in a Copilot container").
 
 **Known.** The Copilot token is in the container's environment, so the agent can read it. The token is narrow (Copilot Requests only), so the damage is limited to the Copilot quota. Still, the agent holds a credential.
 

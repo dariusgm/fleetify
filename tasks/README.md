@@ -12,17 +12,12 @@ Open work of fleetify, one file per item. Each file says what is known, what is 
 
 ## Stage 3, network isolation (open items)
 
-- [Refuse names that resolve to private, loopback or gateway addresses (done)](network-resolved-address-refusal.md)
 - [Network canaries not yet covered](network-canary-coverage.md)
 - [Proxy denials in the report](network-denials-in-report.md)
 - [Network canaries for each agent (opencode, Copilot)](network-agent-canaries.md)
-- [Network: ignored hosts (done)](network-ignored-hosts.md)
-- [Copilot in containers: a token that can only call Copilot (done)](copilot-scoped-token.md)
 - [Copilot in containers: a broker that keeps the token out of the agent](copilot-broker.md)
 - [check-agent runs without the recipe's network](network-check-agent.md)
 - [Pin the Squid version of the proxy image](proxy-squid-version-pin.md)
-- [Containers: run the agent as the host user (closed by rootless Docker)](container-agent-user.md)
-- [Docker: rootful, rootless, or both (decided: rootless)](docker-rootless-support.md)
 
 ## Postponed
 
