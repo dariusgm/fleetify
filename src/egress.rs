@@ -23,11 +23,14 @@ pub enum Target {
     Address(Ipv4Addr),
 }
 
-/// One allowed `host:port`.
+/// One `host:port` the proxy knows about: an allowed one, or an ignored one. An ignored target
+/// is rejected like any refused request, but it is not logged or shown: it is for traffic the
+/// recipe does not need, such as a vendor's telemetry server.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub target: Target,
     pub port: u16,
+    pub ignored: bool,
 }
 
 /// Parses one `host:port` entry. Refuses ranges, wildcards, schemes, paths, IPv6 and a
@@ -58,7 +61,11 @@ pub fn parse_entry(text: &str) -> Result<Entry, String> {
             ));
         }
     };
-    Ok(Entry { target, port })
+    Ok(Entry {
+        target,
+        port,
+        ignored: false,
+    })
 }
 
 /// Whether `name` is a DNS name: dot-separated labels of letters, digits and hyphens, none
@@ -86,6 +93,25 @@ pub fn parse_entries(texts: &[String]) -> Result<Vec<Entry>, String> {
     texts.iter().map(|text| parse_entry(text)).collect()
 }
 
+/// The allowed and the ignored entries of a recipe, as one list. An entry in both lists is
+/// refused, since it cannot be both.
+pub fn parse_policy(allow: &[String], ignore: &[String]) -> Result<Vec<Entry>, String> {
+    let allowed = parse_entries(allow)?;
+    let mut ignored = Vec::new();
+    for text in ignore {
+        let mut entry = parse_entry(text).map_err(|message| format!("ignore: {message}"))?;
+        if allowed
+            .iter()
+            .any(|allowed| allowed.target == entry.target && allowed.port == entry.port)
+        {
+            return Err(format!("{text} is in both allow and ignore"));
+        }
+        entry.ignored = true;
+        ignored.push(entry);
+    }
+    Ok(allowed.into_iter().chain(ignored).collect())
+}
+
 /// The Squid configuration for one run. Only clients in `agents` (the subnet of the agent's
 /// internal network) may use the proxy, and only the listed targets and ports are allowed.
 /// Everything else is denied and logged.
@@ -96,7 +122,7 @@ pub fn squid_conf(entries: &[Entry], agents: &str) -> String {
          pid_filename /tmp/squid.pid\n\
          cache deny all\n\
          cache_log /dev/stderr\n\
-         access_log stdio:/dev/stdout\n\
+\
          positive_dns_ttl {DNS_TTL_S} seconds\n\
          negative_dns_ttl 5 seconds\n\
          forwarded_for delete\n\
@@ -107,13 +133,22 @@ pub fn squid_conf(entries: &[Entry], agents: &str) -> String {
     // Explicit addresses come first: a listed IP is the one way to reach a private address
     // (a self-hosted model on the LAN, the host of a rootless network). Then every private,
     // loopback, link-local and multicast destination is denied, so a listed name that resolves
-    // to one of them is refused too. Names come last, after that deny.
+    // to one of them is refused too. Names come last, after that deny. An ignored target is
+    // denied, and its request is not logged (`log_access`).
+    // The ignored targets whose requests are kept out of the log. Squid filters the log by ACL
+    // on the host only, so an ignored host is silent on every port.
+    let mut hidden = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         if let Target::Address(address) = &entry.target {
             text.push_str(&format!(
-                "acl target{index} dst {address}\nacl port{index} port {}\nhttp_access allow agents target{index} port{index}\n",
+                "acl target{index} dst {address}\nacl port{index} port {}\n",
                 entry.port
             ));
+            text.push_str(&rule(entry.ignored, index));
+            if entry.ignored {
+                text.push_str(&format!("acl hidden{index} dst {address}\n"));
+                hidden.push(index);
+            }
         }
     }
     text.push_str(&format!(
@@ -123,13 +158,41 @@ pub fn squid_conf(entries: &[Entry], agents: &str) -> String {
     for (index, entry) in entries.iter().enumerate() {
         if let Target::Name(name) = &entry.target {
             text.push_str(&format!(
-                "acl target{index} dstdomain {name}\nacl port{index} port {}\nhttp_access allow agents target{index} port{index}\n",
+                "acl target{index} dstdomain {name}\nacl port{index} port {}\n",
                 entry.port
             ));
+            text.push_str(&rule(entry.ignored, index));
+            if entry.ignored {
+                text.push_str(&format!("acl hidden{index} dstdomain {name}\n"));
+                hidden.push(index);
+            }
         }
     }
     text.push_str("http_access deny all\n");
+    // Every request is logged except those to an ignored host: the negated ACLs on one line
+    // must all match, so the line logs a request that matches none of them.
+    text.push_str("access_log stdio:/dev/stdout");
+    for index in hidden {
+        text.push_str(&format!(" !hidden{index}"));
+    }
+    text.push('\n');
     text
+}
+
+/// The rule for one entry: an ignored target is denied (its log line is filtered separately), an
+/// allowed one is allowed. Both match the agents' requests to the entry's target and port.
+fn rule(ignored: bool, index: usize) -> String {
+    if ignored {
+        format!(
+            "http_access deny agents target{index} port{index}
+"
+        )
+    } else {
+        format!(
+            "http_access allow agents target{index} port{index}
+"
+        )
+    }
 }
 
 /// Destination ranges the proxy refuses unless an address is listed explicitly: unspecified,
@@ -181,14 +244,16 @@ mod tests {
             parse_entry("API.Example.com:443").unwrap(),
             Entry {
                 target: Target::Name("api.example.com".to_string()),
-                port: 443
+                port: 443,
+                ignored: false,
             }
         );
         assert_eq!(
             parse_entry("10.0.0.20:8080").unwrap(),
             Entry {
                 target: Target::Address(Ipv4Addr::new(10, 0, 0, 20)),
-                port: 8080
+                port: 8080,
+                ignored: false,
             }
         );
     }
@@ -226,7 +291,8 @@ mod tests {
         assert!(text.contains("acl target1 dst 10.0.0.20\n"));
         assert!(text.contains("http_access allow agents target1 port1\n"));
         assert!(text.contains("positive_dns_ttl 60 seconds\n"));
-        assert!(text.ends_with("http_access deny all\n"));
+        assert!(text.contains("http_access deny all\n"));
+        assert!(text.ends_with("access_log stdio:/dev/stdout\n"));
     }
 
     #[test]
@@ -265,5 +331,38 @@ mod tests {
         assert!(text.contains("acl private dst 0.0.0.0/8 10.0.0.0/8 "));
         assert!(text.contains("169.254.0.0/16"), "link-local is denied");
         assert!(text.contains("127.0.0.0/8"), "loopback is denied");
+    }
+
+    #[test]
+    fn an_ignored_target_is_denied_and_not_logged_and_an_entry_cannot_be_both() {
+        let policy = parse_policy(
+            &["api.example.com:443".to_string()],
+            &["telemetry.example.com:443".to_string()],
+        )
+        .unwrap();
+        assert!(!policy[0].ignored && policy[1].ignored);
+        let text = squid_conf(&policy, "172.30.0.0/16");
+        let deny = text.find("http_access deny agents target1 port1").unwrap();
+        let allow = text.find("http_access allow agents target0 port0").unwrap();
+        assert!(text.contains("http_access deny agents target1 port1\n"));
+        assert!(text.ends_with("access_log stdio:/dev/stdout !hidden1\n"));
+        assert!(!text.contains("log_access"), "Squid 5.7 has no log_access");
+        assert!(
+            text.find("http_access deny agents target1 port1").unwrap()
+                < text.find("http_access deny all").unwrap()
+        );
+        assert!(
+            deny > allow,
+            "the ignored rules come after the allowed ones and before the catch-all"
+        );
+        assert!(!text.contains("!hidden0"), "an allowed target is logged");
+        assert!(
+            parse_policy(
+                &["api.example.com:443".to_string()],
+                &["api.example.com:443".to_string()],
+            )
+            .unwrap_err()
+            .contains("both allow and ignore")
+        );
     }
 }

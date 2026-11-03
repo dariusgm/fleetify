@@ -334,3 +334,68 @@ fn a_request_to_the_proxy_itself_is_refused() {
         "the refusal of the gateway is logged: {refused:?}"
     );
 }
+
+#[test]
+#[ignore = "needs the docker daemon, node:22-bookworm-slim and fleetify-proxy:1"]
+fn an_ignored_host_is_rejected_and_not_logged() {
+    // Leftovers of an earlier failed run would make the names taken.
+    let _ = Command::new("docker")
+        .args([
+            "rm",
+            "-f",
+            "fleetify-net-test-ign-allowed",
+            "fleetify-net-test-ign-ignored",
+        ])
+        .output();
+    let allowed = upstream("fleetify-net-test-ign-allowed");
+    let ignored = upstream("fleetify-net-test-ign-ignored");
+    let policy =
+        fleetify::egress::parse_policy(&[format!("{allowed}:8080")], &[format!("{ignored}:8080")])
+            .unwrap();
+    let backend = isolation::backend(isolation::DOCKER).unwrap();
+    let base = std::env::temp_dir().join("fleetify-net-test");
+    let network = backend
+        .set_up_network(&policy, &base)
+        .expect("the network starts");
+    let proxy = format!("{}-proxy", network.name);
+
+    let listed = agent(&network, VIA_PROXY, &format!("http://{allowed}:8080/"));
+    let rejected = agent(&network, VIA_PROXY, &format!("http://{ignored}:8080/"));
+    let rejected_fetch = agent(&network, FETCH, &format!("http://{ignored}:8080/"));
+    // The raw log, before the proxy is removed: an ignored request must not appear in it at all.
+    let log = Command::new("docker")
+        .args(["logs", &proxy])
+        .output()
+        .expect("docker runs");
+    let mut raw = String::from_utf8_lossy(&log.stdout).into_owned();
+    raw.push_str(&String::from_utf8_lossy(&log.stderr));
+    let refused = backend.tear_down_network(&network);
+    docker(&[
+        "rm",
+        "-f",
+        "fleetify-net-test-ign-allowed",
+        "fleetify-net-test-ign-ignored",
+    ]);
+
+    assert_eq!(listed, "HTTP/1.1 200 OK", "the allowed target answers");
+    assert_eq!(
+        rejected, "HTTP/1.1 403 Forbidden",
+        "the ignored target is rejected"
+    );
+    assert!(
+        rejected_fetch.starts_with("error"),
+        "fetch fails too, got {rejected_fetch:?}"
+    );
+    assert!(
+        raw.contains(&allowed),
+        "the allowed request is in the log, so the log is read: {raw}"
+    );
+    assert!(
+        !raw.contains(&ignored),
+        "the ignored request is not in the log at all: {raw}"
+    );
+    assert!(
+        !refused.iter().any(|line| line.contains(&ignored)),
+        "and not shown as a denial: {refused:?}"
+    );
+}

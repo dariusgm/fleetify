@@ -1088,3 +1088,12 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **Added.** `an_unlisted_port_on_a_listed_address_is_refused_and_logged`: an address listed for port 8080 refuses port 9090, and the refusal is logged. `a_request_to_the_proxy_itself_is_refused`: requests from the agent to the proxy's own address, to 127.0.0.1 and to the bridge gateway are refused and logged. Both pass under rootless Docker.
 - **Scope.** The gateway check covers the agent's requests. The proxy's own outgoing requests are not tested here.
 - **Found.** Squid resolves names through DNS, not through `/etc/hosts`. A name written there is not resolved (the request returns `NONE_NONE/500`). This matters for any test that needs a controlled name. The DNS-change check stays open (`tasks/network-canary-coverage.md`).
+
+## Ignored hosts: rejected, not logged, not shown (2026-11-03)
+
+- **Rule.** `[network] ignore = ["host:port", ...]`: the same entry rules as `allow`, and an entry may not be in both lists (`parse_policy` in `src/egress.rs`). The proxy rejects an ignored request with 403, like a refused one, and the log line is suppressed. The events and the report do not show it.
+- **Squid 5.7.** `log_access` does not exist in this version (`Bungled`). The suppression uses `access_log stdio:/dev/stdout !hidden<i> ...`: a negated ACL per ignored host on one line, and a request is logged only if it matches none of them. Squid ANDs the negations on one line, which gives "log unless an ignored host".
+- **Limit, documented in the README.** Squid cannot combine a host match and a port match in a logging filter. The suppression is therefore by host, on every port. The rejection is by host and port. A port of an ignored host that is not in `allow` is refused without a log line. This is a visibility trade-off the user should know about, not a bypass: the request is still refused.
+- **Schema.** `contract/recipe.schema.json` regenerated; the only change is the new field.
+- **Tests.** Unit: the policy parser (both-lists refusal), the Squid text (rules before the catch-all, the access-log line), the recipe rules (needs an image; both lists). `tests/network.rs`: an ignored host is rejected with 403, is absent from the raw proxy log, and the allowed request is present in it. Under rootless docker all Docker-backed tests pass: network 7, opencode 2, Claude Code 2 and 6, Copilot 1, container 6.
+- **Not done.** The Copilot recipe still allows its telemetry host. Moving it to `ignore` is the first use, a one-line change for the user to decide.

@@ -215,6 +215,14 @@ A container run has a network of its own, and the agent reaches only the hosts t
 allow = ["api.anthropic.com:443", "llm-box.lan:9931"]
 ```
 
+`ignore` lists hosts the agent may try to reach but that the recipe does not need, such as a vendor's telemetry server. An ignored request is rejected like any other refused request, and it is not logged and not shown in the events or the report. The entry rules are the same as for `allow`, and an entry may not be in both lists. Ignored hosts need an image, like `allow`. Silence is by host: an ignored host is not logged on any port, while the rejection itself applies only to the listed port. A port on an ignored host that the recipe does not allow is therefore refused without a log line.
+
+```toml
+[network]
+allow = ["api.githubcopilot.com:443"]
+ignore = ["telemetry.example.com:443"]
+```
+
 The proxy image is built once from `docker/proxy/`: `docker build -t fleetify-proxy:1 docker/proxy`.
 
 #### Copilot token
