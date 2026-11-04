@@ -289,6 +289,13 @@ fn a_token_in_the_query_never_reaches_an_error() {
     assert!(!err.to_string().contains(TOKEN));
 }
 
+/// Whether the message carries the OS error of a refused connection. The text itself is in the
+/// system language (on a German Windows it is not "refused"), so the test checks the OS error
+/// code: 111 on Linux (ECONNREFUSED), 10061 on Windows (WSAECONNREFUSED).
+fn refused_by_the_os(message: &str) -> bool {
+    message.contains("os error 111") || message.contains("os error 10061")
+}
+
 #[test]
 fn a_transport_error_names_the_endpoint_and_not_the_token() {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -312,7 +319,7 @@ fn a_transport_error_names_the_endpoint_and_not_the_token() {
         "the endpoint is missing: {message}"
     );
     assert!(
-        message.contains("refused"),
+        refused_by_the_os(&message),
         "the cause is missing: {message}"
     );
     assert!(!message.contains(TOKEN), "the token leaked: {message}");
@@ -796,7 +803,7 @@ fn a_transport_error_names_the_cause_below_the_request_error() {
         panic!("a refused connect is a transport error");
     };
     assert!(
-        message.contains("refused"),
+        refused_by_the_os(&message),
         "the cause is missing: {message}"
     );
 }
