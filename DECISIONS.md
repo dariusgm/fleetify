@@ -1105,3 +1105,11 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **Checked.** Unit tests: the conversion to bash and pwsh commands, the file rules, the conflict with `[prepare]`. `tests/pipeline.rs`: a script-only recipe opens a pull request; a failing script ends as `error` at prepare, with nothing pushed. `tests/scripted_example.rs`: the example validates, and its script becomes the documented commands.
 - **Not checked here.** The PowerShell scripts were not run: pwsh is not installed on this machine, and a download to install it was refused by the auto mode. The windows path is covered for its command line only. Run the example once on a machine with PowerShell 7 before the first real run.
 - **Renovate.** The Renovate bot itself (its branch ownership, who runs it, reporting) is not part of this step. `tasks/renovate-deterministic-updates.md` keeps those open points.
+
+## PowerShell on this machine, and the scripted example (2026-11-04)
+
+- **Installed.** PowerShell 7.6.9 from Microsoft's apt repository for Ubuntu 22.04 (`/usr/bin/pwsh`), with sudo.
+- **Checked under pwsh on Linux.** `examples/recipes/scripted-update/tools/update.ps1` runs `uv lock --upgrade` in the given repository and creates `uv.lock`; it exits 0. With a failing `uv`, the exit code 3 comes back unchanged. `verify.ps1` exits 1 with `E  uv.lock does not match pyproject.toml` on a drifted lock, and exits 1 with `E  tests failed` when the tests fail.
+- **Test.** `tests/scripted_example.rs` runs the update script under pwsh with a stub `uv` (Unix only; skipped when pwsh is not installed): the repository path is passed on, uv runs inside the repository, and its exit code is returned.
+- **Not checked.** A Windows host. The fleetify pipeline picks the windows command only on Windows, so the windows path through fleetify itself is still unrun.
+- **Untracked example added.** `examples/recipes/update-cargo-and-python-deps` belongs to scripted changes and validates. It uses `[prepare]` with `sh`, so it needs a POSIX shell on Windows too. `PLAN.md` was removed: it is the stale copy of the plan that was dissolved into `docs/` and `tasks/`.

@@ -11,4 +11,4 @@
 3. **Reporting.** A Renovate PR that fleetify did not create still needs a row in the report, with the same result names.
 4. **Cost visibility.** The report shows how often a bot run and how often a fix round ran, so trial numbers stay honest.
 
-**Open (PowerShell).** Run `examples/recipes/scripted-update` once on a machine with PowerShell 7; the windows path is not run in this repository's tests.
+**Open (PowerShell).** The scripts run under PowerShell 7.6.9 on Linux (checked 2026-11-04, `DECISIONS.md`). Still open: one run on a Windows host through fleetify, since the windows command is picked only on Windows.

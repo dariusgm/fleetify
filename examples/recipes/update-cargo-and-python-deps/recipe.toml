@@ -1,0 +1,34 @@
+# Updates every Cargo dependency (including incompatible major versions) and every
+# Python dependency in uv.lock, then checks the result with the same commands the
+# project's CI runs. Requires a POSIX shell, cargo, uv and git.
+schema = 1
+name = "update-cargo-and-python-deps"
+branch = "chore/update-dependencies"
+pr_title = "chore: update Cargo and Python dependencies"
+commit_message = "chore: update Cargo and Python dependencies"
+tools = "tools"
+
+[applies_to]
+host_type = ["github"]
+has_file_any = ["Cargo.toml", "pyproject.toml"]
+
+[prepare]
+argv = ["sh", "{tools}/prepare.sh", "{repo}"]
+timeout_s = 1200
+
+[verify]
+argv = ["sh", "{tools}/verify.sh", "{repo}"]
+timeout_s = 3600
+tail_lines = 80
+error_patterns = ['^error', '^E ', 'FAILED', 'panicked', 'Traceback']
+
+[guards]
+# Manifests, lock files, and src/lib.rs for the one API migration the prepare step
+# applies (gix 0.89). Workflows and every other source file stay out of scope.
+allow_paths = ["Cargo.toml", "Cargo.lock", "pyproject.toml", "uv.lock", "src/lib.rs"]
+max_files_changed = 4
+max_lines_changed = 20000
+deny_added_patterns = ["NOSONAR", '#\s*nosec']
+
+[ci]
+wait = false
