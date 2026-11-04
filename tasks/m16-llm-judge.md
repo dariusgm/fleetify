@@ -6,43 +6,46 @@
 
 ## Placement
 
-After the agent loop has finished, after the verifier (outer gate, trusted copy) and the layer-1 guards, and before the commit. In the code this is inside `judge_change` (`src/pipeline.rs`), after the guard step. Reason: a change that already fails a deterministic gate is not worth a model call. The judge also runs after every fix round, so fix rounds are judged like the first attempt.
+The judge runs once the agent has finished and the change is about to leave the machine: after the agent loop, after the verifier (outer gate, trusted copy) and the layer-1 guards, and immediately before the commit and push. Nothing is pushed to the remote and no CI is triggered before the verdict. The agent loop itself is not limited by the judge, so it may run as long as it needs.
+
+In the code the judge sits in `judge_change` (`src/pipeline.rs`), which runs before `commit_and_push` in the main flow and in `fix_round`. Every push therefore passes through the judge: the first one and each fix round. A change that already fails a deterministic gate is not sent to the judge.
 
 ## Configuration: explicit per recipe
 
 fleetify has no global settings any more, apart from credentials, so a recipe must be portable on its own. The judge configuration is therefore part of the recipe, and every value that matters is stated there. Nothing is inherited from a config file or from the environment.
 
+**No judge is the default.** A recipe without a `[judge]` section runs no judge. The judge is an opt-in per recipe.
+
 ```toml
 [judge]
-level = "model"                      # off | session | model | provider
+level = "session"                    # session | model | provider
 max_diff_lines = 1000                # over this: verdict unsure
 agent = "opencode"                   # required for model and provider
 model = "openai/gpt-5-nano"          # required for model and provider
 ```
 
-- `level` is required whenever the `[judge]` section is present. Proposed: the section itself is required in every recipe, with `level = "off"` where no judge is wanted, so that "no judge" is a decision and not a missing key. The current example recipes need that line added (open decision 1).
-- `max_diff_lines` is required when `level` is not `off`. Start value: **1000**.
-- `agent` and `model` are rejected for `level = "off"` and `level = "session"`, because those reuse the executor's agent and model.
+- `level` is required whenever the `[judge]` section is present.
+- `max_diff_lines` is required whenever the section is present. Start value: **1000**.
+- `agent` and `model` are rejected for `level = "session"`, because it reuses the executor's agent and model.
 
-### The four levels
+### The three levels
 
 | Level | Session | Model | Provider | Validation |
 |-------|---------|-------|----------|------------|
-| `off` | none | none | none | no judge call; the section says so explicitly |
-| `session` | fresh session, executor's agent and model | same as executor | same as executor | rejects `agent` and `model` |
+| `session` | fresh session, executor's agent and model | same as executor | same as executor | rejects `agent` and `model`; the minimum level |
 | `model` | fresh session, executor's agent or another one | different model | may be the same | `model` must differ from the executor's model |
 | `provider` | fresh session | model from a different provider | different | the provider of `model` must differ from the executor's provider |
 
-Level `session` is the weakest independence: same model, new context. Level `model` tests a different model, which may come from the same provider. Level `provider` is the strongest: a different model from a different provider, which means a different vendor's blind spots, and a different approval for company code (see "Provider" below).
+`session` is the minimum: same model, clean context, nothing from the agent's run. `model` tests a different model, which may come from the same provider. `provider` is the strongest: a different model from a different provider, with different blind spots, and a different approval for company code (see "Provider" below).
 
 **Validation rules:**
 
-- `model` and `provider` require the executor's model to be named explicitly. If the executor uses the agent default (no `model` in the recipe), fleetify cannot tell the provider, so `model` and `provider` are refused at validation. Proposed rule; see open decision 5.
+- `model` and `provider` require the executor's model to be named explicitly. If the executor uses the agent default (no `model` in the recipe), fleetify cannot tell the provider, so `model` and `provider` are refused at validation. Proposed rule; see open decision 4.
 - The provider of a model is read from the `provider/model` form that opencode uses. For claude-code and copilot, the provider is fixed by the agent (Anthropic and GitHub). The mapping has to be written down per agent, not inferred.
 
 ## Fresh session, not self-review
 
-The judge must never see the executing agent's session. It runs as a new one-shot process (`Agent::judge_command()`), with no resume or continue flag and no session id from the executor, at every level except `off`. Its input is only:
+The judge must never see the executing agent's session. It runs as a new one-shot process (`Agent::judge_command()`), with no resume or continue flag and no session id from the executor, at every level. Its input is only:
 
 - the task text,
 - the diff (see "Input size"),
@@ -50,7 +53,7 @@ The judge must never see the executing agent's session. It runs as a new one-sho
 
 It does not get the agent's transcript, its reasoning, its final message or its own summary of the change. Those would carry the agent's framing into the judgment.
 
-Still to verify: that the agent adapters never resume a previous session for a one-shot call. If a CLI continues the last session by default, "fresh" is not guaranteed (open decision 6).
+Still to verify: that the agent adapters never resume a previous session for a one-shot call. If a CLI continues the last session by default, "fresh" is not guaranteed (open decision 5).
 
 ## What it judges
 
@@ -130,8 +133,7 @@ Good (must `pass`):
 
 ## Activation and measurement
 
-- `level = "off"` in every recipe until a fixture set is passed at the level the recipe will use.
-- A recipe may move to a level only after the fixtures pass there: all bad fixtures `fail` or `unsure`, all good fixtures `pass`.
+- No recipe gets a `[judge]` section until the fixture set passes at the level that recipe will use: all bad fixtures `fail` or `unsure`, all good fixtures `pass`.
 - Fixtures: pairs of task and diff, labelled good or bad, under `tests/`. The CI run uses a fake judge (like `tests/copilot_fake.rs`). Live runs against a real model are manual, because they cost money.
 - Record per call: level, verdict, reasons, input size, cost, latency. Put them in a `judge_verdict` event and in `report.json`.
 
@@ -145,25 +147,23 @@ M16 says "only if M17 shows the guards are not enough". The integration runs abo
 
 ## Open decisions
 
-1. **Explicit section.** Is the `[judge]` section required in every recipe, with `level = "off"` where no judge is wanted (proposed), or is a missing section equal to `off`? The proposal makes "no judge" a visible decision, at the cost of one line in each example recipe.
-2. **Build now or after M17?** The configuration and fake-judge parts are cheap; live use needs a provider.
-3. **Context size**: start at 1000 lines and `-U3`, then measure. The result sets the default `max_diff_lines`.
-4. **Lock files**: excluded from size and input, with the deterministic summary as proposed. Confirm the list of patterns and the summary format.
-5. **Default model for `model` and `provider`**: refused when the executor uses the agent default (proposed), because the provider cannot be compared. Alternative: resolve the agent's default model at run time and record it. Proposed: refuse, since it keeps the recipe self-describing.
-6. **Fresh session check**: confirm that each agent's one-shot call (`judge_command`) never resumes a session. This is a precondition for `session`.
-7. **Fix rounds**: judge every round (proposed), or only the final change? Each round costs one call.
-8. **`unsure` handling**: `needs_review` with the workspace kept (proposed, as in the design). No automatic retry: a parse error is a signal, not noise.
-9. **Labels for real runs**: who labels a real change as good or bad when the judge disagrees with the outcome? Proposed: the user, once per disagreement, recorded in the run folder.
-10. **Provider and model approved for company diffs** (`work-environment-questions.md`, question 8). Blocks level `provider` on company code.
+1. **Build now or after M17?** The configuration and fake-judge parts are cheap; live use needs a provider.
+2. **Context size**: start at 1000 lines and `-U3`, then measure. The result sets the default `max_diff_lines`.
+3. **Lock files**: excluded from size and input, with the deterministic summary as proposed. Confirm the list of patterns and the summary format.
+4. **Default model for `model` and `provider`**: refused when the executor uses the agent default (proposed), because the provider cannot be compared. Alternative: resolve the agent's default model at run time and record it. Proposed: refuse, since it keeps the recipe self-describing.
+5. **Fresh session check**: confirm that each agent's one-shot call (`judge_command`) never resumes a session. This is a precondition for every level.
+6. **`unsure` handling**: `needs_review` with the workspace kept (proposed, as in the design). No automatic retry: a parse error is a signal, not noise.
+7. **Labels for real runs**: who labels a real change as good or bad when the judge disagrees with the outcome? Proposed: the user, once per disagreement, recorded in the run folder.
+8. **Provider and model approved for company diffs** (`work-environment-questions.md`, question 8). Blocks level `provider` on company code.
 
 ## Follow-up outside this file
 
-- `docs/design/guards.md` still shows `[judge]` as optional with a global-looking example and recommends a different model by default. It has to be updated to the four levels and the explicit section.
+- `docs/design/guards.md` still shows a `[judge]` example with `max_diff_lines = 1500`, recommends a different model by default and places the judge before the commit without naming the push. It has to be updated to the three levels, the no-judge default and the push boundary.
 - `docs/design/basic-questions.md` shows `max_diff_lines = 1500` and a commented-out section. Update to the explicit form with 1000.
 
 ## Done when
 
-- The configuration above is implemented: explicit `[judge]` with `level`, validation of each level, `off` as the explicit default in example recipes.
+- The configuration above is implemented: optional `[judge]` section with `level` (`session`, `model`, `provider`), validation of each level, no judge when the section is absent.
 - The lock summary and the size rule are implemented and tested.
 - The fixture set (real and hand-made) runs in CI with the fake judge.
 - The context experiment has numbers for the sizes and context windows above, and `max_diff_lines` is set from them.
