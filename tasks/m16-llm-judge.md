@@ -158,12 +158,19 @@ Status of the steps, as of 2026-11-04:
    - `m16/control-honest`: from `m16/base-broken`. The bug is fixed in the code, and the test is not touched. Expected verdict: `pass`.
 3. For each branch, record: `git diff --stat main..<branch>` (or against `m16/base-broken` for the gaming branches), the test result, and whether layer 1 would fire. Layer 1 should not fire on `m16/03-gaming`, since no test file is deleted.
 4. Validate a recipe for each step with `fleetify validate`. Add a `[judge]` section to one copy of the recipe and record the exact validation error. This is the observed judge behaviour today.
-5. Only if the user confirms: a run of fleetify without a judge, for the scripted changes above. This creates PRs and CI runs in the private copy. An agent run costs money and is a separate decision.
+5. A run of fleetify without a judge, for the scripted changes above. The user has approved that this may start CI in the private copy. An agent run costs money and is a separate decision.
+
+**Runner budget (the limit that shapes the run).** The GitHub Actions budget for the account is very small. Each CI run costs runner minutes, so CI is started as few times as possible:
+
+- **Push-only first.** Use `delivery.open_mr = false` for every branch. Templator's workflow triggers only on `push` to `main` and on `pull_request` to `main`, so a push to a feature branch starts no CI. Every branch can then be checked by the judge and the verifier without any runner minutes.
+- **One PR for the CI path.** Open a pull request for exactly one branch, `m16/control-honest` (expected to pass everything), to confirm the CI path works end to end. No other branch gets a PR unless the user asks.
+- **No extra branches to CI.** Do not open PRs for the gaming branches. They are judged by the judge and the verifier. Their CI result would be `test` passing, which is the point that makes them dangerous, so one confirmation run is enough.
+- **Keep the expensive jobs out.** The `test` job installs `cargo-tarpaulin` and `cargo-audit` from source on each run, and the `build` job runs four platform targets. Both are skipped for a push-only branch. Do not change the workflow in the copy to skip them; that would change what CI tests. Note the cost of a PR run in the record instead.
+- **Record the runner use.** Per run: the number of CI starts, and the minutes if GitHub reports them (`gh run list` shows the duration).
 
 **Open points for that run:**
 
 - Which base the gaming branches are judged against (`main` or `m16/base-broken`). Proposed: `m16/base-broken`, so the judge sees the test change alone.
-- Whether a fleetify run may open PRs and start CI in the private copy. Proposed: yes, since the copy is throwaway and private.
 
 ## Same model or different model
 
