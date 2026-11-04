@@ -14,7 +14,7 @@ In the code the judge sits in `judge_change` (`src/pipeline.rs`), which runs bef
 
 fleetify has no global settings any more, apart from credentials, so a recipe must be portable on its own. The judge configuration is therefore part of the recipe, and every value that matters is stated there. Nothing is inherited from a config file or from the environment.
 
-**No judge is the default.** A recipe without a `[judge]` section runs no judge. The judge is an opt-in per recipe.
+**No judge is the default.** A recipe without a `[judge]` section runs no judge. The judge is an opt-in per recipe. The reason is a working assumption, not measured data: fleetify is built for small changes, so a judge is not needed by default. The default may change in a later release once the fixture and real-test data says so.
 
 ```toml
 [judge]
@@ -53,7 +53,16 @@ The judge must never see the executing agent's session. It runs as a new one-sho
 
 It does not get the agent's transcript, its reasoning, its final message or its own summary of the change. Those would carry the agent's framing into the judgment.
 
-Still to verify: that the agent adapters never resume a previous session for a one-shot call. If a CLI continues the last session by default, "fresh" is not guaranteed (open decision 5).
+A judge call is always fresh, and fleetify enforces that as far as it can:
+
+1. **Argv from the judge builder only.** `Agent::judge_command()` is the only way to build the judge call. It contains no resume, continue, session or conversation flag, for every agent. A test asserts this for each adapter, with the flags listed explicitly.
+2. **No session identifier passed.** The executor's session id, transcript path and state directory are never handed to the judge. The judge's environment has the executor's session and state variables removed.
+3. **Own working directory.** The judge runs in an empty temporary directory, not in the workspace. Agent files (`.agent/`, `.claude/`, `.opencode/`, transcripts) are therefore not readable by the judge, and the judge cannot write into the repository.
+4. **Own state per call.** Each call gets its own config and cache location under the temporary directory and a new random run id. Nothing persists between two judge calls, so one verdict cannot influence the next.
+5. **Input as a file.** The judge input (task text, diff summary, verifier summary) is written to a file in the temporary directory and passed by path. It is not appended to any executor prompt.
+6. **Test with a fake agent.** A fake agent records argv, cwd and environment of every call. The test fails if a judge call carries a resume flag, runs in the workspace, or sees an executor variable.
+
+**Limit, stated plainly:** these checks cover what fleetify controls, the local process and its files. A remote model provider may keep server-side state (for example a conversation id if the CLI uses one). fleetify cannot remove that; it can only ensure the CLI is not asked to continue anything. The open check (decision 5) is therefore to confirm for each agent that its one-shot mode has no server-side continuation either.
 
 ## What it judges
 
@@ -86,6 +95,27 @@ The working assumption is that the bigger the change, the more context the judge
 - **Measure per variant:** agreement with the fixture label, `unsure` rate, false `fail` on good changes, input tokens, latency.
 
 Question to answer: at which size does the verdict start to fail on bad changes, and does more context help or only add cost? The 1000-line start is a hypothesis. Changes above it are judged `unsure` until the experiment says otherwise.
+
+**Default size: 1000 lines, decided.** It stays the default until data from the bigger-change test below says otherwise. The bigger-change test is run to see what a change above 1000 lines triggers in practice: an `unsure` verdict, a `needs_review` end, and the cost and latency of the run.
+
+## Real test case for a bigger change
+
+None of the existing runs exceeds 1000 lines (see the evidence table). A test case has to produce a real change above 1000 lines, with a real task, on a repository the user can accept as a throwaway. It must not be lock-file churn only, because lock files are excluded from the count (see "Input and size"). The change must be source code, so that the judge has something to judge.
+
+Candidates from the user's own repositories (checked with `gh`, 2026-11-04):
+
+| Repository | Visibility | Language | Size on disk | Note |
+|------------|-----------|----------|--------------|------|
+| `templator` | public | Rust | 162 KB | template engine, a task touching many modules would give a large diff |
+| `git2duck` | public | Rust | 147 KB | DuckDB extension; used as baseline before |
+| `csvtojson` | public | Rust | 59 KB | small, a cross-module change is unlikely to reach 1000 lines |
+| `glowing-happiness` | public | Rust | 37 KB | small |
+| `kipper` | private | Rust | 5 MB | large on disk, not checked for source size |
+| `blog` | private | HTML | 23 MB | mostly content; not a good source-change test |
+
+Open choice for the user (open decision 1): use an existing repository, or create a new throwaway repository for this test, for example a fleetify-e2e style repository with a rename or a language migration across many files, so the diff size is known in advance.
+
+The test itself: one recipe, `level = "session"`, `max_diff_lines = 1000`, a task that produces a source change above 1000 lines. Expected: the judge is not called for the change, or it returns `unsure` at once because of the size rule. Recorded: the diff size, the verdict and the end result. Then the same change with `max_diff_lines` raised, to see how the judge does with the full diff.
 
 ## Same model or different model
 
@@ -147,14 +177,15 @@ M16 says "only if M17 shows the guards are not enough". The integration runs abo
 
 ## Open decisions
 
-1. **Build now or after M17?** The configuration and fake-judge parts are cheap; live use needs a provider.
-2. **Context size**: start at 1000 lines and `-U3`, then measure. The result sets the default `max_diff_lines`.
-3. **Lock files**: excluded from size and input, with the deterministic summary as proposed. Confirm the list of patterns and the summary format.
-4. **Default model for `model` and `provider`**: refused when the executor uses the agent default (proposed), because the provider cannot be compared. Alternative: resolve the agent's default model at run time and record it. Proposed: refuse, since it keeps the recipe self-describing.
-5. **Fresh session check**: confirm that each agent's one-shot call (`judge_command`) never resumes a session. This is a precondition for every level.
-6. **`unsure` handling**: `needs_review` with the workspace kept (proposed, as in the design). No automatic retry: a parse error is a signal, not noise.
-7. **Labels for real runs**: who labels a real change as good or bad when the judge disagrees with the outcome? Proposed: the user, once per disagreement, recorded in the run folder.
-8. **Provider and model approved for company diffs** (`work-environment-questions.md`, question 8). Blocks level `provider` on company code.
+1. **Real test case for the bigger change**: an existing repository (which one?) or a new throwaway repository with a known large source diff. See "Real test case for a bigger change".
+2. **Build now or after M17?** The configuration, the fresh-call enforcement and the fake-judge tests are cheap; live use needs a provider.
+3. **Context window**: `-U3` as the start, measured against `-U0` and `-U10` (see "Context size").
+4. **Lock files**: excluded from size and input, with the deterministic summary as proposed. Confirm the list of patterns and the summary format.
+5. **One-shot check per agent**: confirm for claude-code, copilot and opencode that the one-shot mode has no resume, continue or server-side conversation continuation. Until this is confirmed, the judge is not enabled for that agent.
+6. **Default model for `model` and `provider`**: refused when the executor uses the agent default (proposed), because the provider cannot be compared. Alternative: resolve the agent's default model at run time and record it. Proposed: refuse, since it keeps the recipe self-describing.
+7. **`unsure` handling**: `needs_review` with the workspace kept (proposed, as in the design). No automatic retry: a parse error is a signal, not noise.
+8. **Labels for real runs**: who labels a real change as good or bad when the judge disagrees with the outcome? Proposed: the user, once per disagreement, recorded in the run folder.
+9. **Provider and model approved for company diffs** (`work-environment-questions.md`, question 8). Blocks level `provider` on company code.
 
 ## Follow-up outside this file
 
@@ -166,5 +197,7 @@ M16 says "only if M17 shows the guards are not enough". The integration runs abo
 - The configuration above is implemented: optional `[judge]` section with `level` (`session`, `model`, `provider`), validation of each level, no judge when the section is absent.
 - The lock summary and the size rule are implemented and tested.
 - The fixture set (real and hand-made) runs in CI with the fake judge.
-- The context experiment has numbers for the sizes and context windows above, and `max_diff_lines` is set from them.
+- The fresh-call enforcement is in place, with the fake-agent test for each adapter.
+- The bigger-change test has been run on the chosen repository, and its numbers are recorded.
+- The context experiment has numbers for the sizes and context windows above. `max_diff_lines` stays at 1000 unless these numbers say otherwise.
 - The level recommendation per kind of task has a written answer based on fixture results.
