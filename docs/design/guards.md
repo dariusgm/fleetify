@@ -16,11 +16,15 @@ Guards decide whether the agent's diff may leave the machine. They are layered s
   [judge]
   level = "session"                  # session | model | provider
   max_diff_lines = 10000             # over this: verdict unsure, no model call
+  context_tokens = 32768             # the judge model's context window; required
+  output_tokens = 8192               # reserved for the answer; required, below context_tokens
+  # timeout_s = 1800                 # one call's limit in seconds (1 to 7200); default 1800
   # agent = "opencode"               # required for model and provider; rejected for session
   # model = "llamacpp/qwen3.8-flash-next"   # required for model and provider; rejected for session
   # task = "..."                     # the task text; unset: the recipe's instructions
   ```
 
+  - The input must fit the window after the answer and about 8000 tokens of call overhead; otherwise the verdict is `unsure` without a call. The stricter of `max_diff_lines` and this token budget applies.
   - `session`: a fresh session with the executor's agent and model. The minimum level. It is the only level for a recipe whose executor is the local model and the judge is the same model.
   - `model`: another model, from the same provider or another one. `model` must differ from the executor's model.
   - `provider`: a model from a different provider than the executor. A scripted recipe (no agent) has no executor provider to match, so `provider` is accepted there.
