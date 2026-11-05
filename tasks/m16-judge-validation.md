@@ -148,3 +148,22 @@ Run each once. A miss (a bad change judged `pass`) is a result, not a reason to 
 - Items 9 and 10 have the user's decision recorded.
 - The design doc `docs/design/guards.md` matches what was tested. Anything that was not tested says so.
 - `m16-llm-judge.md` open decisions 1 to 9 are updated from these results.
+
+## Item 1 result (2026-11-05): judge timeout as a recipe value
+
+Code: `[judge] timeout_s` added, optional, default 1800, valid 1 to 7200. Commit `41dd9e9`. The suite passes (340 tests); clippy is clean.
+
+Validation (CLI): unset and 1800 accepted; 7200 accepted; 0 and 7201 refused with "out of range: use 1 to 7200 seconds".
+
+Live reruns of the 03b recipe with the same settings (50k context, 10000 lines, `timeout_s = 1800`), three times:
+
+| Run | Result | Verdict | Judge time |
+|---|---|---|---|
+| s1 | guard_violation (judge) | fail | 1232 s |
+| s2 | guard_violation (judge) | fail | 1449 s |
+| s3 | needs_review | unsure, "the judge call ended without an answer: TimedOut" | 1800 s (limit) |
+
+- The verdicts agree when the call finishes: fail, with the same reasons (formatting sweep, one-line test change).
+- Judge time on the same input ranges from about 20 to over 30 minutes. This is the local model's variance, not a code effect. The timeout is a real limit, not a safety margin.
+- The timeout behaved as designed: the run ended as `needs_review`, nothing was pushed, and no `opencode` process was left running.
+- Consequence: the 03b case needs a longer timeout to be judged reliably. Raise `timeout_s` in that recipe (up to 7200) rather than the default; the other recipes keep 1800.
