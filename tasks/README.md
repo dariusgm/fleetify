@@ -23,6 +23,7 @@ Open work of fleetify, one file per item. Each file says what is known, what is 
 
 - [M12: publish the authoring package (postponed)](m12-authoring-publication.md)
 - [M16: LLM judge (postponed)](m16-llm-judge.md)
+- [M16 follow-up: validating the judge (open)](m16-judge-validation.md)
 
 ## Ideas and decisions
 

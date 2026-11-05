@@ -1,5 +1,7 @@
 # M16: LLM judge (scope agreed, postponed until enabled by data)
 
+**Follow-up:** the validation work is in [m16-judge-validation.md](m16-judge-validation.md).
+
 **Status:** postponed. The scope and the configuration below are agreed. Building the live path is still gated on evidence (see "When to build"). Open decisions are listed at the end.
 
 **Goal.** A judge reviews the diff of a change that passed the agent loop and the deterministic gates, and returns `pass`, `fail` or `unsure`. It answers what the layer-1 rules cannot: did the agent do what the task asked, and nothing more; did it weaken a check to get green. `fail` ends the repository as `guard_violation`, `unsure` as `needs_review`. Nothing is committed or pushed on either. Design: `docs/design/guards.md`, layer 2.
