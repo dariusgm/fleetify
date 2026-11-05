@@ -63,6 +63,7 @@ fn the_judge_is_one_fresh_call_in_an_empty_directory_and_reads_the_verdict() {
         "opencode",
         "llamacpp/qwen3.8-flash-next",
         &input,
+        std::time::Duration::from_secs(60),
     );
     let review = call.review.expect("the fake answers with a verdict");
     assert_eq!(review.verdict, Verdict::Fail);
@@ -115,6 +116,7 @@ fn an_answer_without_a_verdict_is_an_error_the_pipeline_turns_into_unsure() {
         "opencode",
         "llamacpp/x",
         "# Task\n",
+        std::time::Duration::from_secs(60),
     );
     assert!(call.review.is_err(), "no verdict object: {:?}", call.review);
     let _ = fs::remove_dir_all(&dir);

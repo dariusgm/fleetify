@@ -177,7 +177,16 @@ pub struct Judge {
     /// `context_tokens`.
     #[serde(default)]
     pub output_tokens: Option<u32>,
+    /// Seconds one judge call may run before it is stopped; a stopped call ends as `unsure`.
+    /// Unset means the default, 1800. Must be between 1 and 7200.
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
 }
+
+/// The judge call's timeout when `[judge] timeout_s` is unset.
+pub const JUDGE_DEFAULT_TIMEOUT_S: u64 = 1800;
+/// The largest value `[judge] timeout_s` accepts.
+pub const JUDGE_MAX_TIMEOUT_S: u64 = 7200;
 
 /// The levels `[judge] level` accepts.
 pub const JUDGE_LEVELS: &[&str] = &["session", "model", "provider"];
@@ -869,6 +878,14 @@ impl Recipe {
             push(
                 "judge.output_tokens",
                 format!("must be greater than 0 and below context_tokens ({context})"),
+            );
+        }
+        if let Some(timeout) = judge.timeout_s
+            && (timeout == 0 || timeout > JUDGE_MAX_TIMEOUT_S)
+        {
+            push(
+                "judge.timeout_s",
+                format!("{timeout} is out of range: use 1 to {JUDGE_MAX_TIMEOUT_S} seconds"),
             );
         }
         if judge.task.is_none() && self.instructions.is_empty() {
@@ -2614,6 +2631,25 @@ mod judge_tests {
                 .iter()
                 .any(|l| l.starts_with("judge.output_tokens"))
         );
+    }
+
+    #[test]
+    fn the_judge_timeout_is_optional_and_bounded() {
+        let base = "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 10000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\ntask = \"x\"\n";
+        assert!(fields(&recipe(None, None, base)).is_empty());
+        assert!(fields(&recipe(None, None, &format!("{base}timeout_s = 3600\n"))).is_empty());
+        assert!(fields(&recipe(None, None, &format!("{base}timeout_s = 7200\n"))).is_empty());
+        assert!(
+            fields(&recipe(None, None, &format!("{base}timeout_s = 0\n")))
+                .iter()
+                .any(|l| l.starts_with("judge.timeout_s"))
+        );
+        assert!(
+            fields(&recipe(None, None, &format!("{base}timeout_s = 7201\n")))
+                .iter()
+                .any(|l| l.starts_with("judge.timeout_s"))
+        );
+        assert_eq!(recipe(None, None, base).judge.unwrap().timeout_s, None);
     }
 
     #[test]

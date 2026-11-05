@@ -18,8 +18,6 @@ use serde::{Deserialize, Serialize};
 use crate::agents;
 use crate::runner::{CommandResult, RunRequest, Runner};
 
-/// The longest one judge call may run. A local model on a small GPU can take minutes.
-pub const JUDGE_TIMEOUT: Duration = Duration::from_secs(1800);
 /// Name of the input file inside the judge's own directory.
 pub const INPUT_FILE: &str = "input.md";
 /// Conservative bytes per token for code and diffs: the estimate errs on the side of more tokens,
@@ -284,11 +282,18 @@ pub struct Call {
 /// One fresh judge call on `input`. The call runs in its own empty directory, which holds only
 /// the input file and no repository, through the agent adapter's judge builder. The directory
 /// is removed afterwards. Any failure is reported in `Call::review` and means `unsure`.
-pub fn run_judge(runner: &Runner, label: &str, agent: &str, model: &str, input: &str) -> Call {
+pub fn run_judge(
+    runner: &Runner,
+    label: &str,
+    agent: &str,
+    model: &str,
+    input: &str,
+    timeout: Duration,
+) -> Call {
     let started = std::time::Instant::now();
     let review = (|| {
         let dir = fresh_dir()?;
-        let result = run_in(runner, label, agent, model, &dir, input);
+        let result = run_in(runner, label, agent, model, &dir, input, timeout);
         let _ = fs::remove_dir_all(&dir);
         result
     })();
@@ -305,6 +310,7 @@ fn run_in(
     model: &str,
     dir: &Path,
     input: &str,
+    timeout: Duration,
 ) -> Result<Review, String> {
     // A git repository, so the agent sees this directory as its project root and nothing above it.
     let init = Command::new("git")
@@ -321,7 +327,7 @@ fn run_in(
     let invocation = agents::judge_command(agent, model, &prompt())?;
     let mut request = RunRequest::new(label, invocation.argv);
     request.cwd = Some(dir.to_path_buf());
-    request.timeout = Some(JUDGE_TIMEOUT);
+    request.timeout = Some(timeout);
     request.env = invocation.env;
     let result: CommandResult = runner.run(request);
     if !result.is_success() {

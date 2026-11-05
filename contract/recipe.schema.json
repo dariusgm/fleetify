@@ -565,6 +565,16 @@
             "null"
           ],
           "default": null
+        },
+        "timeout_s": {
+          "description": "Seconds one judge call may run before it is stopped; a stopped call ends as `unsure`.\nUnset means the default, 1800. Must be between 1 and 7200.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "default": null,
+          "minimum": 0
         }
       },
       "additionalProperties": false

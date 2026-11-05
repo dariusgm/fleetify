@@ -1341,7 +1341,13 @@ fn judge_review(
                                 judge::CALL_OVERHEAD_TOKENS
                             ));
                         } else {
-                            let call = judge::run_judge(ctx.runner, &key, &agent, &model, &input);
+                            let timeout = Duration::from_secs(
+                                judge
+                                    .timeout_s
+                                    .unwrap_or(crate::recipe::JUDGE_DEFAULT_TIMEOUT_S),
+                            );
+                            let call =
+                                judge::run_judge(ctx.runner, &key, &agent, &model, &input, timeout);
                             record.called = true;
                             record.duration_ms =
                                 u64::try_from(call.duration.as_millis()).unwrap_or(u64::MAX);
