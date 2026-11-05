@@ -22,6 +22,25 @@ use crate::runner::{CommandResult, RunRequest, Runner};
 pub const JUDGE_TIMEOUT: Duration = Duration::from_secs(1800);
 /// Name of the input file inside the judge's own directory.
 pub const INPUT_FILE: &str = "input.md";
+/// Conservative bytes per token for code and diffs: the estimate errs on the side of more tokens,
+/// so an input that passes the estimate fits the model's context.
+pub const BYTES_PER_TOKEN: u64 = 3;
+/// Tokens that one call adds around the input: the agent CLI's system prompt and tool
+/// definitions, and the judge prompt. Measured on the local model, rounded up.
+pub const CALL_OVERHEAD_TOKENS: u64 = 8000;
+
+/// Estimated tokens of `text`, rounded up.
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.len() as u64).div_ceil(BYTES_PER_TOKEN)
+}
+
+/// Tokens the input may take: the context window minus the answer and the call overhead.
+/// Zero when the answer and the overhead alone fill the window.
+pub fn input_budget(context_tokens: u32, output_tokens: u32) -> u64 {
+    u64::from(context_tokens)
+        .saturating_sub(u64::from(output_tokens))
+        .saturating_sub(CALL_OVERHEAD_TOKENS)
+}
 
 /// The three answers. `Unsure` also stands for every case the judge could not answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -48,10 +67,16 @@ pub struct Record {
     pub agent: String,
     pub model: String,
     pub max_diff_lines: u32,
+    pub context_tokens: u32,
+    pub output_tokens: u32,
     /// Changed lines that the size limit counts (lock files excluded).
     pub diff_lines: u64,
     /// Changed lines in lock files, not counted and not sent in full.
     pub lock_lines: u64,
+    /// Bytes of the judge's input file, and its estimated tokens against the budget.
+    pub input_bytes: u64,
+    pub input_tokens: u64,
+    pub input_budget: u64,
     /// One line per changed lock file: the packages added, removed and changed.
     pub lock_summary: Vec<String>,
     pub verdict: Verdict,
@@ -446,6 +471,15 @@ version = "3.0.9"
         assert!(text.contains("- `Cargo.lock`: added: syn 3.0.9"));
         assert!(text.contains("```diff\n+let x = 1;\n```"));
         assert!(text.contains("data written by the agent"));
+    }
+
+    #[test]
+    fn tokens_are_estimated_conservatively_and_the_budget_leaves_room_for_the_answer() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abcd"), 2);
+        // 32768 context, 8192 answer, 8000 overhead: 16576 tokens for the input.
+        assert_eq!(input_budget(32768, 8192), 16576);
+        assert_eq!(input_budget(1000, 8192), 0);
     }
 
     #[test]

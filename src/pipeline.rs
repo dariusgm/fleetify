@@ -1298,8 +1298,13 @@ fn judge_review(
         agent: String::new(),
         model: String::new(),
         max_diff_lines: limit,
+        context_tokens: judge.context_tokens.unwrap_or(0),
+        output_tokens: judge.output_tokens.unwrap_or(0),
         diff_lines,
         lock_lines,
+        input_bytes: 0,
+        input_tokens: 0,
+        input_budget: 0,
         lock_summary: lock_summary.clone(),
         verdict: judge::Verdict::Unsure,
         reasons: Vec::new(),
@@ -1320,16 +1325,33 @@ fn judge_review(
                 match judge_input(ctx, repo, workspace, local, base, judge, &lock_summary) {
                     Err(message) => record.reasons.push(message),
                     Ok(input) => {
-                        let call = judge::run_judge(ctx.runner, &key, &agent, &model, &input);
-                        record.called = true;
-                        record.duration_ms =
-                            u64::try_from(call.duration.as_millis()).unwrap_or(u64::MAX);
-                        match call.review {
-                            Ok(review) => {
-                                record.verdict = review.verdict;
-                                record.reasons = review.reasons;
+                        // The lower bound wins: the input must fit the model's context as well as
+                        // the line limit. The estimate is conservative (judge::BYTES_PER_TOKEN).
+                        let context = judge.context_tokens.unwrap_or(0);
+                        let output = judge.output_tokens.unwrap_or(0);
+                        let budget = judge::input_budget(context, output);
+                        let tokens = judge::estimate_tokens(&input);
+                        record.input_bytes = input.len() as u64;
+                        record.input_tokens = tokens;
+                        record.input_budget = budget;
+                        if tokens > budget {
+                            record.reasons.push(format!(
+                                "the judge input is about {tokens} tokens, over the budget of {budget} tokens \
+                                 (context {context} minus output {output} minus {} call overhead): not judged",
+                                judge::CALL_OVERHEAD_TOKENS
+                            ));
+                        } else {
+                            let call = judge::run_judge(ctx.runner, &key, &agent, &model, &input);
+                            record.called = true;
+                            record.duration_ms =
+                                u64::try_from(call.duration.as_millis()).unwrap_or(u64::MAX);
+                            match call.review {
+                                Ok(review) => {
+                                    record.verdict = review.verdict;
+                                    record.reasons = review.reasons;
+                                }
+                                Err(message) => record.reasons.push(message),
                             }
-                            Err(message) => record.reasons.push(message),
                         }
                     }
                 }

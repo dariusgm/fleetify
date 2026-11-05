@@ -168,6 +168,15 @@ pub struct Judge {
     /// What the change was asked to do. Unset: the recipe's instructions are the task.
     #[serde(default)]
     pub task: Option<String>,
+    /// The judge model's context window in tokens, as the agent's configuration states it.
+    /// The judge's input must fit in it, after the answer and the call overhead (the lower
+    /// bound wins over `max_diff_lines`). Required when the section is present.
+    #[serde(default)]
+    pub context_tokens: Option<u32>,
+    /// Tokens reserved for the answer. Required when the section is present; must be below
+    /// `context_tokens`.
+    #[serde(default)]
+    pub output_tokens: Option<u32>,
 }
 
 /// The levels `[judge] level` accepts.
@@ -838,6 +847,29 @@ impl Recipe {
                 format!("{level:?} is not a level: use session, model or provider"),
             );
             return;
+        }
+        if judge.context_tokens.is_none() {
+            push(
+                "judge.context_tokens",
+                "required when [judge] is present: the judge model's context window".into(),
+            );
+        }
+        if judge.output_tokens.is_none() {
+            push(
+                "judge.output_tokens",
+                "required when [judge] is present: tokens reserved for the answer".into(),
+            );
+        }
+        if judge.context_tokens == Some(0) {
+            push("judge.context_tokens", "must be greater than 0".into());
+        }
+        if let (Some(context), Some(output)) = (judge.context_tokens, judge.output_tokens)
+            && (output == 0 || output >= context)
+        {
+            push(
+                "judge.output_tokens",
+                format!("must be greater than 0 and below context_tokens ({context})"),
+            );
         }
         if judge.task.is_none() && self.instructions.is_empty() {
             push(
@@ -2396,7 +2428,7 @@ mod judge_tests {
         let r = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"team\"\nmax_diff_lines = 1000\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"team\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\ntask = \"x\"\n",
         );
         assert!(fields(&r).iter().any(|l| l.starts_with("judge.level")));
     }
@@ -2406,7 +2438,7 @@ mod judge_tests {
         let r = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 0\nagent = \"opencode\"\nmodel = \"llamacpp/qwen\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 0\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/qwen\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&r)
@@ -2420,7 +2452,7 @@ mod judge_tests {
         let r = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3.8-flash-next\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3.8-flash-next\"\ntask = \"x\"\n",
         );
         assert!(fields(&r).is_empty(), "{:?}", fields(&r));
     }
@@ -2430,7 +2462,7 @@ mod judge_tests {
         let with_fields = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\ntask = \"x\"\n",
         );
         let out = fields(&with_fields);
         assert!(out.iter().any(|l| l.starts_with("judge.agent")), "{out:?}");
@@ -2440,14 +2472,14 @@ mod judge_tests {
         let bare = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\ntask = \"x\"\n",
         );
         assert!(fields(&bare).iter().any(|l| l.starts_with("judge.level")));
 
         let with_executor = recipe(
             Some("claude-code"),
             None,
-            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\ntask = \"x\"\n",
         );
         assert!(
             fields(&with_executor).is_empty(),
@@ -2461,7 +2493,7 @@ mod judge_tests {
         let no_agent = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\nmodel = \"llamacpp/x\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nmodel = \"llamacpp/x\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&no_agent)
@@ -2472,7 +2504,7 @@ mod judge_tests {
         let bare_model = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"qwen\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"qwen\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&bare_model)
@@ -2486,7 +2518,7 @@ mod judge_tests {
         let r = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\nagent = \"claude-code\"\nmodel = \"sonnet\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"claude-code\"\nmodel = \"sonnet\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&r)
@@ -2500,7 +2532,7 @@ mod judge_tests {
         let same = recipe(
             Some("opencode"),
             Some("llamacpp/qwen3.8-flash-next"),
-            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3.8-flash-next\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3.8-flash-next\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&same)
@@ -2514,7 +2546,7 @@ mod judge_tests {
         let same = recipe(
             Some("opencode"),
             Some("llamacpp/qwen3.8-flash-next"),
-            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3-coder-30b\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3-coder-30b\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&same)
@@ -2525,7 +2557,7 @@ mod judge_tests {
         let other = recipe(
             Some("opencode"),
             Some("llamacpp/qwen3.8-flash-next"),
-            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"openai/gpt-5-nano\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"openai/gpt-5-nano\"\ntask = \"x\"\n",
         );
         assert!(fields(&other).is_empty(), "{:?}", fields(&other));
     }
@@ -2536,7 +2568,7 @@ mod judge_tests {
         let r = recipe(
             Some("opencode"),
             None,
-            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"openai/gpt-5-nano\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"openai/gpt-5-nano\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&r).iter().any(|l| l.starts_with("model:")),
@@ -2550,10 +2582,38 @@ mod judge_tests {
         let r = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\n",
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\n",
         );
         assert!(fields(&r).iter().any(|l| l.starts_with("judge.task")));
         let _ = TASK;
+    }
+
+    #[test]
+    fn the_context_and_the_answer_reserve_are_required_and_the_answer_must_fit() {
+        let missing = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 10000\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\ntask = \"x\"\n",
+        );
+        let out = fields(&missing);
+        assert!(
+            out.iter().any(|l| l.starts_with("judge.context_tokens")),
+            "{out:?}"
+        );
+        assert!(
+            out.iter().any(|l| l.starts_with("judge.output_tokens")),
+            "{out:?}"
+        );
+        let too_big = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 10000\ncontext_tokens = 8192\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&too_big)
+                .iter()
+                .any(|l| l.starts_with("judge.output_tokens"))
+        );
     }
 
     #[test]

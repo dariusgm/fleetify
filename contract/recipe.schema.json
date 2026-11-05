@@ -512,6 +512,16 @@
           ],
           "default": null
         },
+        "context_tokens": {
+          "description": "The judge model's context window in tokens, as the agent's configuration states it.\nThe judge's input must fit in it, after the answer and the call overhead (the lower\nbound wins over `max_diff_lines`). Required when the section is present.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
         "level": {
           "description": "`session` (the executor's agent and model), `model` (another model) or `provider`\n(a model from another provider). Required when the section is present.",
           "type": [
@@ -537,6 +547,16 @@
             "null"
           ],
           "default": null
+        },
+        "output_tokens": {
+          "description": "Tokens reserved for the answer. Required when the section is present; must be below\n`context_tokens`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
         },
         "task": {
           "description": "What the change was asked to do. Unset: the recipe's instructions are the task.",
