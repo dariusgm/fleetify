@@ -104,6 +104,17 @@
       ],
       "default": null
     },
+    "judge": {
+      "description": "`[judge]`: a second opinion on the change, after the guards and before anything is\npushed. Unset means no judge. See tasks/m16-llm-judge.md and docs/design/guards.md.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Judge"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "limits": {
       "$ref": "#/$defs/Limits"
     },
@@ -480,6 +491,55 @@
         },
         "text": {
           "description": "Inline prompt text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Judge": {
+      "description": "`[judge]`: an LLM reviews the diff and answers `pass`, `fail` or `unsure`. `fail` ends the\nrepo as `guard_violation`, `unsure` as `needs_review`; nothing is pushed on either.\nEvery value that matters is stated here: nothing is inherited from a config file.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "description": "The judge's agent. Required for `model` and `provider`; rejected for `session`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "level": {
+          "description": "`session` (the executor's agent and model), `model` (another model) or `provider`\n(a model from another provider). Required when the section is present.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "max_diff_lines": {
+          "description": "Changed lines (added plus deleted, lock files excluded). Above this the verdict is\n`unsure` without a model call. Required when the section is present.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "model": {
+          "description": "The judge's model in `provider/model` form, passed to the agent unchanged. Required for\n`model` and `provider`; rejected for `session`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "task": {
+          "description": "What the change was asked to do. Unset: the recipe's instructions are the task.",
           "type": [
             "string",
             "null"

@@ -138,7 +138,40 @@ pub struct Recipe {
     /// `[network]`: the hosts an agent container may reach through its proxy.
     #[serde(default)]
     pub network: Network,
+    /// `[judge]`: a second opinion on the change, after the guards and before anything is
+    /// pushed. Unset means no judge. See tasks/m16-llm-judge.md and docs/design/guards.md.
+    #[serde(default)]
+    pub judge: Option<Judge>,
 }
+
+/// `[judge]`: an LLM reviews the diff and answers `pass`, `fail` or `unsure`. `fail` ends the
+/// repo as `guard_violation`, `unsure` as `needs_review`; nothing is pushed on either.
+/// Every value that matters is stated here: nothing is inherited from a config file.
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Judge {
+    /// `session` (the executor's agent and model), `model` (another model) or `provider`
+    /// (a model from another provider). Required when the section is present.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Changed lines (added plus deleted, lock files excluded). Above this the verdict is
+    /// `unsure` without a model call. Required when the section is present.
+    #[serde(default)]
+    pub max_diff_lines: Option<u32>,
+    /// The judge's agent. Required for `model` and `provider`; rejected for `session`.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The judge's model in `provider/model` form, passed to the agent unchanged. Required for
+    /// `model` and `provider`; rejected for `session`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// What the change was asked to do. Unset: the recipe's instructions are the task.
+    #[serde(default)]
+    pub task: Option<String>,
+}
+
+/// The levels `[judge] level` accepts.
+pub const JUDGE_LEVELS: &[&str] = &["session", "model", "provider"];
 
 /// `[network]`: the hosts an agent container may reach. Needs `image`, and is required when
 /// `image` is set, since the agent must reach its model.
@@ -687,6 +720,7 @@ impl Recipe {
         self.validate_commands(dir, &mut push);
         self.validate_settings(&mut push);
         self.validate_hosts_and_agents(&mut push);
+        self.validate_judge(agent_override, &mut push);
         // The same problem can be found for both OSes; report it once.
         let mut unique: Vec<Issue> = Vec::with_capacity(issues.len());
         for issue in issues {
@@ -772,6 +806,139 @@ impl Recipe {
                     &field,
                     "permission is set by fleetify, not by the recipe".into(),
                 );
+            }
+        }
+    }
+
+    /// `[judge]`: the level rules (docs/design: tasks/m16-llm-judge.md, "The three levels").
+    /// The executor is the recipe's agent, or the `--agent` value when the recipe names none.
+    /// A recipe without an agent is a scripted change: there is no executor to compare with.
+    fn validate_judge(&self, agent_override: Option<&str>, push: &mut impl FnMut(&str, String)) {
+        let Some(judge) = &self.judge else {
+            return;
+        };
+        match judge.max_diff_lines {
+            None => push(
+                "judge.max_diff_lines",
+                "required when [judge] is present".into(),
+            ),
+            Some(0) => push("judge.max_diff_lines", "must be greater than 0".into()),
+            Some(_) => {}
+        }
+        let Some(level) = judge.level.as_deref() else {
+            push(
+                "judge.level",
+                "required when [judge] is present: session, model or provider".into(),
+            );
+            return;
+        };
+        if !JUDGE_LEVELS.contains(&level) {
+            push(
+                "judge.level",
+                format!("{level:?} is not a level: use session, model or provider"),
+            );
+            return;
+        }
+        if judge.task.is_none() && self.instructions.is_empty() {
+            push(
+                "judge.task",
+                "the judge needs the task: set judge.task, or instructions".into(),
+            );
+        }
+        if let Some(task) = &judge.task
+            && task.trim().is_empty()
+        {
+            push("judge.task", "must not be empty".into());
+        }
+        let executor = self.agent.as_deref().or(agent_override);
+        let executor_model = self.model.as_deref();
+
+        if level == "session" {
+            if judge.agent.is_some() {
+                push(
+                    "judge.agent",
+                    "rejected for level session: the judge reuses the executor's agent".into(),
+                );
+            }
+            if judge.model.is_some() {
+                push(
+                    "judge.model",
+                    "rejected for level session: the judge reuses the executor's model".into(),
+                );
+            }
+            if executor.is_none() {
+                push(
+                    "judge.level",
+                    "session reuses the executor's agent and model, and this recipe has no agent"
+                        .into(),
+                );
+            }
+            return;
+        }
+
+        match judge.agent.as_deref() {
+            None => push("judge.agent", format!("required for level {level}")),
+            Some(agent) if agent != crate::agents::OPENCODE => push(
+                "judge.agent",
+                format!(
+                    "the judge runs on opencode only for now; {agent} needs its one-shot mode confirmed first (tasks/m16-llm-judge.md, decision 5)"
+                ),
+            ),
+            Some(_) => {}
+        }
+        let judge_provider = match judge.model.as_deref() {
+            None => {
+                push("judge.model", format!("required for level {level}"));
+                None
+            }
+            Some(model) => match provider_of(model) {
+                Some(provider) => Some(provider),
+                None => {
+                    push(
+                        "judge.model",
+                        format!(
+                            "{model:?} must be in provider/model form, as opencode names models"
+                        ),
+                    );
+                    None
+                }
+            },
+        };
+        // The executor's model and provider decide what `model` and `provider` mean. Without
+        // an executor there is nothing to compare with, so both levels pass this check.
+        let Some(executor) = executor else {
+            return;
+        };
+        let Some(executor_model) = executor_model else {
+            push(
+                "model",
+                format!(
+                    "level {level} needs the executor's model named in the recipe: an agent default cannot be compared"
+                ),
+            );
+            return;
+        };
+        if level == "model" && judge.model.as_deref() == Some(executor_model) {
+            push(
+                "judge.model",
+                "must differ from the executor's model for level model".into(),
+            );
+        }
+        if level == "provider" {
+            match (judge_provider, executor_provider(executor, executor_model)) {
+                (Some(judge), Some(executor)) if judge == executor => push(
+                    "judge.model",
+                    format!(
+                        "provider {judge} is the executor's provider: level provider needs another one"
+                    ),
+                ),
+                (_, None) => push(
+                    "model",
+                    format!(
+                        "the provider of {executor} with model {executor_model:?} is not known to fleetify"
+                    ),
+                ),
+                _ => {}
             }
         }
     }
@@ -1238,6 +1405,27 @@ pub fn is_safe_relative(path: &str) -> bool {
         && !path.starts_with('\\')
         && p.components()
             .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
+/// The provider of a `provider/model` name: the part before the first slash.
+pub fn provider_of(model: &str) -> Option<&str> {
+    model
+        .split_once('/')
+        .map(|(provider, _)| provider)
+        .filter(|provider| !provider.is_empty())
+}
+
+/// The provider an executor's model comes from. opencode names it in the model; Claude Code
+/// and Copilot have one provider each, fixed by the agent (written down here, not inferred).
+pub fn executor_provider(agent: &str, model: &str) -> Option<String> {
+    if let Some(provider) = provider_of(model) {
+        return Some(provider.to_string());
+    }
+    match agent {
+        "claude-code" => Some("anthropic".to_string()),
+        "copilot" => Some("github".to_string()),
+        _ => None,
+    }
 }
 
 fn is_recipe_name(name: &str) -> bool {
@@ -2150,5 +2338,239 @@ mod tests {
         assert!(is_safe_relative("a/b.txt"));
         assert!(!is_safe_relative("/abs"));
         assert!(!is_safe_relative("a/../b"));
+    }
+}
+
+#[cfg(test)]
+mod judge_tests {
+    use super::*;
+
+    /// A scripted recipe (no instructions, so no agent unless `agent` is given) with `judge`
+    /// appended as its `[judge]` table.
+    fn recipe(agent: Option<&str>, model: Option<&str>, judge: &str) -> Recipe {
+        let mut text = String::from(
+            "schema = 1\nname = \"judge-check\"\nbranch = \"m16/judge\"\npr_title = \"judge check\"\n",
+        );
+        if let Some(agent) = agent {
+            text.push_str(&format!("agent = \"{agent}\"\n"));
+        }
+        if let Some(model) = model {
+            text.push_str(&format!("model = \"{model}\"\n"));
+        }
+        text.push_str(judge);
+        Recipe::parse(&text).unwrap()
+    }
+
+    fn fields(recipe: &Recipe) -> Vec<String> {
+        let dir = std::env::temp_dir();
+        recipe
+            .validate(&dir, None)
+            .into_iter()
+            .map(|issue| format!("{}: {}", issue.field, issue.message))
+            .filter(|line| line.starts_with("judge") || line.starts_with("model"))
+            .collect()
+    }
+
+    const TASK: &str = "\n[judge]\ntask = \"make the test pass\"\n";
+
+    #[test]
+    fn no_judge_section_means_no_judge() {
+        let r = recipe(None, None, "");
+        assert!(r.judge.is_none());
+        assert!(fields(&r).is_empty());
+    }
+
+    #[test]
+    fn level_and_max_diff_lines_are_required_with_the_section() {
+        let r = recipe(None, None, "\n[judge]\ntask = \"x\"\n");
+        let out = fields(&r);
+        assert!(out.iter().any(|l| l.starts_with("judge.level")), "{out:?}");
+        assert!(
+            out.iter().any(|l| l.starts_with("judge.max_diff_lines")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_level_is_refused() {
+        let r = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"team\"\nmax_diff_lines = 1000\ntask = \"x\"\n",
+        );
+        assert!(fields(&r).iter().any(|l| l.starts_with("judge.level")));
+    }
+
+    #[test]
+    fn a_zero_size_limit_is_refused() {
+        let r = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 0\nagent = \"opencode\"\nmodel = \"llamacpp/qwen\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&r)
+                .iter()
+                .any(|l| l.starts_with("judge.max_diff_lines"))
+        );
+    }
+
+    #[test]
+    fn a_scripted_recipe_may_use_provider_with_another_provider_and_a_task() {
+        let r = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3.8-flash-next\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&r).is_empty(), "{:?}", fields(&r));
+    }
+
+    #[test]
+    fn session_rejects_its_own_agent_and_model_and_needs_an_executor() {
+        let with_fields = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\ntask = \"x\"\n",
+        );
+        let out = fields(&with_fields);
+        assert!(out.iter().any(|l| l.starts_with("judge.agent")), "{out:?}");
+        assert!(out.iter().any(|l| l.starts_with("judge.model")), "{out:?}");
+        assert!(out.iter().any(|l| l.starts_with("judge.level")), "{out:?}");
+
+        let bare = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ntask = \"x\"\n",
+        );
+        assert!(fields(&bare).iter().any(|l| l.starts_with("judge.level")));
+
+        let with_executor = recipe(
+            Some("claude-code"),
+            None,
+            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&with_executor).is_empty(),
+            "{:?}",
+            fields(&with_executor)
+        );
+    }
+
+    #[test]
+    fn model_and_provider_need_a_judge_agent_and_a_provider_model() {
+        let no_agent = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\nmodel = \"llamacpp/x\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&no_agent)
+                .iter()
+                .any(|l| l.starts_with("judge.agent"))
+        );
+
+        let bare_model = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"qwen\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&bare_model)
+                .iter()
+                .any(|l| l.starts_with("judge.model"))
+        );
+    }
+
+    #[test]
+    fn only_opencode_judges_for_now() {
+        let r = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\nagent = \"claude-code\"\nmodel = \"sonnet\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&r)
+                .iter()
+                .any(|l| l.starts_with("judge.agent") && l.contains("opencode only"))
+        );
+    }
+
+    #[test]
+    fn model_level_must_differ_from_the_executors_model() {
+        let same = recipe(
+            Some("opencode"),
+            Some("llamacpp/qwen3.8-flash-next"),
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3.8-flash-next\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&same)
+                .iter()
+                .any(|l| l.starts_with("judge.model") && l.contains("differ"))
+        );
+    }
+
+    #[test]
+    fn provider_level_must_come_from_another_provider() {
+        let same = recipe(
+            Some("opencode"),
+            Some("llamacpp/qwen3.8-flash-next"),
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/qwen3-coder-30b\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&same)
+                .iter()
+                .any(|l| l.starts_with("judge.model") && l.contains("another one"))
+        );
+
+        let other = recipe(
+            Some("opencode"),
+            Some("llamacpp/qwen3.8-flash-next"),
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"openai/gpt-5-nano\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&other).is_empty(), "{:?}", fields(&other));
+    }
+
+    #[test]
+    fn the_executors_agent_default_cannot_be_compared() {
+        // The recipe names an agent but no model: the provider is not known, so the level is refused.
+        let r = recipe(
+            Some("opencode"),
+            None,
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"openai/gpt-5-nano\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&r).iter().any(|l| l.starts_with("model:")),
+            "{:?}",
+            fields(&r)
+        );
+    }
+
+    #[test]
+    fn the_judge_needs_a_task_from_judge_or_instructions() {
+        let r = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\n",
+        );
+        assert!(fields(&r).iter().any(|l| l.starts_with("judge.task")));
+        let _ = TASK;
+    }
+
+    #[test]
+    fn providers_are_read_from_the_model_name_or_fixed_by_the_agent() {
+        assert_eq!(
+            executor_provider("opencode", "llamacpp/qwen"),
+            Some("llamacpp".to_string())
+        );
+        assert_eq!(
+            executor_provider("claude-code", "sonnet"),
+            Some("anthropic".to_string())
+        );
+        assert_eq!(
+            executor_provider("copilot", "gpt-5"),
+            Some("github".to_string())
+        );
+        assert_eq!(executor_provider("opencode", "qwen"), None);
+        assert_eq!(provider_of("/x"), None);
     }
 }

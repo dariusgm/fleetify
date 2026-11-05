@@ -15,7 +15,8 @@ use crate::git::{GitContext, git};
 use crate::guards;
 use crate::hosts::{self, ChangeRequest, CiFailure, CrState, MergeOutcome};
 use crate::isolation::{self, Network};
-use crate::recipe::Recipe;
+use crate::judge;
+use crate::recipe::{Judge, Recipe};
 use crate::report::{Failure, RepoResult};
 use crate::repos::Repo;
 use crate::run::{Ctx, artifacts, error_result, git_context, git_failure, probe};
@@ -1212,7 +1213,11 @@ fn judge_change(
     let changes = guards::parse_changes(&numstat, &name_status);
     let violations = guards::check(&changes, &guards::added_lines(&patch), &ctx.recipe.guards);
     if violations.is_empty() {
-        return None;
+        // Step 8, third part: the judge, only on a change that passed the verifier and the guards.
+        return match ctx.recipe.judge.as_ref() {
+            Some(judge) => judge_review(ctx, repo, pattern, workspace, local, base, judge),
+            None => None,
+        };
     }
     let mut result = RepoResult::new(&key, "guard_violation", &violations[0].message);
     result.rule = Some(pattern.to_string());
@@ -1240,6 +1245,204 @@ fn judge_change(
     });
     set_phase(ctx, repo, "finished");
     Some(result)
+}
+
+/// Step 8, third part: the LLM judge (tasks/m16-llm-judge.md). Returns the result to report when
+/// the change must not go on: `fail` is a `guard_violation` with the rule `judge`, and `unsure`
+/// (over the size limit, or no usable answer) is `needs_review`. Nothing is pushed on either.
+/// Writes `judge.json` and the judge's input into the repo folder.
+fn judge_review(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    pattern: &str,
+    workspace: &Path,
+    local: &GitContext<'_>,
+    base: &str,
+    judge: &Judge,
+) -> Option<RepoResult> {
+    set_phase(ctx, repo, "judging");
+    let key = repo.key();
+    let git_text = |args: &[&str]| git(local, Some(workspace), args);
+    let numstat = match git_text(&["diff", "--cached", "--numstat", base]) {
+        Ok(text) => text,
+        Err(err) => {
+            return Some(git_failure(
+                ctx.layout,
+                repo,
+                err,
+                Some(pattern.to_string()),
+            ));
+        }
+    };
+    let names = match git_text(&["diff", "--cached", "--name-only", base]) {
+        Ok(text) => text,
+        Err(err) => {
+            return Some(git_failure(
+                ctx.layout,
+                repo,
+                err,
+                Some(pattern.to_string()),
+            ));
+        }
+    };
+    let (diff_lines, lock_lines) = judge::count_lines(&numstat);
+    let mut lock_summary = Vec::new();
+    for path in names.lines().filter(|path| judge::is_lock_file(path)) {
+        let old = git_text(&["show", &format!("{base}:{path}")]).unwrap_or_default();
+        let new = fs::read_to_string(workspace.join(path)).unwrap_or_default();
+        lock_summary.push(judge::lock_summary(path, &old, &new));
+    }
+    let limit = judge.max_diff_lines.unwrap_or(0);
+    let mut record = judge::Record {
+        level: judge.level.clone().unwrap_or_default(),
+        agent: String::new(),
+        model: String::new(),
+        max_diff_lines: limit,
+        diff_lines,
+        lock_lines,
+        lock_summary: lock_summary.clone(),
+        verdict: judge::Verdict::Unsure,
+        reasons: Vec::new(),
+        called: false,
+        duration_ms: 0,
+    };
+
+    match judge_target(ctx, judge) {
+        Err(message) => record.reasons.push(message),
+        Ok((agent, model)) => {
+            record.agent = agent.clone();
+            record.model = model.clone();
+            if diff_lines > u64::from(limit) {
+                record.reasons.push(format!(
+                    "{diff_lines} changed lines, over the judge's limit of {limit}: not judged"
+                ));
+            } else {
+                match judge_input(ctx, repo, workspace, local, base, judge, &lock_summary) {
+                    Err(message) => record.reasons.push(message),
+                    Ok(input) => {
+                        let call = judge::run_judge(ctx.runner, &key, &agent, &model, &input);
+                        record.called = true;
+                        record.duration_ms =
+                            u64::try_from(call.duration.as_millis()).unwrap_or(u64::MAX);
+                        match call.review {
+                            Ok(review) => {
+                                record.verdict = review.verdict;
+                                record.reasons = review.reasons;
+                            }
+                            Err(message) => record.reasons.push(message),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let folder = ctx.layout.repo_dir(repo);
+    match serde_json::to_vec_pretty(&record) {
+        Ok(bytes) => {
+            if let Err(err) = write_atomic(&folder.join("judge.json"), &bytes) {
+                tracing::warn!(error = %err, "cannot write judge.json");
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "cannot encode judge.json"),
+    }
+    tracing::info!(repo = %key, verdict = ?record.verdict, called = record.called, "judge verdict");
+
+    if record.verdict == judge::Verdict::Pass {
+        return None;
+    }
+    let (result, class) = match record.verdict {
+        judge::Verdict::Fail => ("guard_violation", "guard_violation"),
+        _ => ("needs_review", "needs_review"),
+    };
+    let message = match record.reasons.first() {
+        Some(reason) => reason.clone(),
+        None => format!("the judge answered {:?}", record.verdict).to_lowercase(),
+    };
+    let mut report = RepoResult::new(&key, result, &message);
+    report.rule = Some(pattern.to_string());
+    let mut artifacts = artifacts(ctx.layout, repo);
+    artifacts.insert(
+        "judge".to_string(),
+        folder.join("judge.json").display().to_string(),
+    );
+    artifacts.insert(
+        "judge_input".to_string(),
+        folder.join("judge-input.md").display().to_string(),
+    );
+    report.failure = Some(Failure {
+        class: class.to_string(),
+        message,
+        rule: Some("judge".to_string()),
+        output_tail: record.reasons.iter().take(MAX_TAIL).cloned().collect(),
+        artifacts,
+        next_step: None,
+    });
+    set_phase(ctx, repo, "finished");
+    Some(report)
+}
+
+/// The agent and model that answer the judge: the recipe's judge agent and model, or for
+/// `session` the executor's own. Errors name what is missing.
+fn judge_target(ctx: &Ctx<'_>, judge: &Judge) -> Result<(String, String), String> {
+    if judge.level.as_deref() == Some("session") {
+        let agent = ctx
+            .agent
+            .ok_or_else(|| "level session needs an executor agent".to_string())?;
+        let model = ctx
+            .model
+            .ok_or_else(|| "level session needs the executor's model".to_string())?;
+        return Ok((agent.to_string(), model.to_string()));
+    }
+    match (judge.agent.as_deref(), judge.model.as_deref()) {
+        (Some(agent), Some(model)) => Ok((agent.to_string(), model.to_string())),
+        _ => Err("the judge's agent and model are not set".to_string()),
+    }
+}
+
+/// The judge's input for this change: the task, the verifier summary, the lock summaries and
+/// the diff without lock files. A copy is kept in the repo folder as `judge-input.md`.
+fn judge_input(
+    ctx: &Ctx<'_>,
+    repo: &Repo,
+    workspace: &Path,
+    local: &GitContext<'_>,
+    base: &str,
+    judge: &Judge,
+    lock_summary: &[String],
+) -> Result<String, String> {
+    let task = match judge.task.as_deref() {
+        Some(task) => task.to_string(),
+        None => agents::task_text(ctx.recipe_dir, ctx.recipe)
+            .map_err(|err| format!("cannot read the task text for the judge: {err}"))?,
+    };
+    let verifier = match ctx.recipe.verify.as_ref() {
+        Some(_) => "The verifier passed on this change before the judge ran.".to_string(),
+        None => "No verifier is configured for this recipe.".to_string(),
+    };
+    let diff = git(
+        local,
+        Some(workspace),
+        &[
+            "diff",
+            "--cached",
+            "-U3",
+            base,
+            "--",
+            ".",
+            ":(exclude)*.lock",
+            ":(exclude)package-lock.json",
+        ],
+    )
+    .map_err(|err| format!("cannot read the diff for the judge: {err}"))?;
+    let input = judge::input_text(&task, &verifier, lock_summary, &diff);
+    if let Err(err) = write_atomic(
+        &ctx.layout.repo_dir(repo).join("judge-input.md"),
+        input.as_bytes(),
+    ) {
+        tracing::warn!(error = %err, "cannot write judge-input.md");
+    }
+    Ok(input)
 }
 
 /// Step 9a: one commit on top of the workspace's commit, pushed to `branch`. Returns the pushed

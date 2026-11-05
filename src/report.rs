@@ -81,6 +81,11 @@ pub fn next_step(class: &str) -> Option<&'static str> {
             "The change touches what the guards forbid. Read the rule named in the failure. \
              Tighten the instructions; widen allow_paths only if the change is wanted."
         }
+        "needs_review" => {
+            "The judge could not decide, or the change is over the judge's size limit, so nothing \
+             was pushed. Read judge.json in the repo folder. Review the change by hand, or split it, \
+             then run again."
+        }
         "verify_failed" => {
             "The local verifier rejected the change, so nothing was pushed. Read the output tail, \
              then fix the instructions or the verifier."

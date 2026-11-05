@@ -381,6 +381,57 @@ pub struct Extra<'a> {
     pub network: Option<&'a Network>,
 }
 
+/// The judge's one-shot call (tasks/m16-llm-judge.md, "Fresh session"). It is the only way the
+/// judge is called. Its argument list has no resume, continue or session flag, and its
+/// environment holds only the base allowlist and the judge's own configuration: no executor
+/// variable reaches it. The config allows reading and nothing else; the caller runs it in an
+/// empty directory that holds only the input file.
+pub fn judge_command(name: &str, model: &str, prompt: &str) -> Result<Invocation, String> {
+    match name {
+        OPENCODE => {
+            let config = json!({
+                "permission": {
+                    "read": "allow",
+                    "external_directory": "deny",
+                    "edit": "deny",
+                    "glob": "deny",
+                    "grep": "deny",
+                    "list": "deny",
+                    "bash": "deny",
+                    "webfetch": "deny",
+                    "websearch": "deny",
+                    "task": "deny",
+                    "skill": "deny",
+                    "question": "deny",
+                    "doom_loop": "deny"
+                }
+            });
+            let argv = vec![
+                binary(OPENCODE_BINARY_ENV, "opencode"),
+                "run".to_string(),
+                "--model".to_string(),
+                model.to_string(),
+                prompt.to_string(),
+            ];
+            let set = vec![
+                ("OPENCODE_CONFIG_CONTENT".to_string(), config.to_string()),
+                (
+                    "OPENCODE_DISABLE_PROJECT_CONFIG".to_string(),
+                    "1".to_string(),
+                ),
+            ];
+            Ok(Invocation {
+                argv,
+                env: env_policy(&[], set),
+                stop: None,
+            })
+        }
+        other => Err(format!(
+            "the judge is not implemented for {other}: its one-shot mode is not confirmed (tasks/m16-llm-judge.md, decision 5)"
+        )),
+    }
+}
+
 /// The canary's invocation: the baseline grants only, so it tests what every run gets.
 fn canary_invocation(
     name: &str,
@@ -1415,6 +1466,53 @@ text = "inline"
             checked_marker(dir, "copilot", Some("a/b c"), None),
             Path::new("/w/agents/copilot.a_b_c.checked")
         );
+    }
+
+    #[test]
+    fn the_judge_call_is_one_shot_with_no_session_flag_and_no_executor_variables() {
+        let invocation = judge_command(OPENCODE, "llamacpp/qwen3.8-flash-next", "PROMPT").unwrap();
+        // Every flag that would continue an earlier session, for every adapter, is absent.
+        for forbidden in [
+            "-c",
+            "--continue",
+            "-s",
+            "--session",
+            "-r",
+            "--resume",
+            "--fork",
+            "--share",
+        ] {
+            assert!(
+                !invocation.argv.iter().any(|arg| arg == forbidden),
+                "judge argv must not carry {forbidden}: {:?}",
+                invocation.argv
+            );
+        }
+        assert_eq!(invocation.argv[1], "run");
+        assert_eq!(invocation.argv[2], "--model");
+        assert_eq!(invocation.argv[3], "llamacpp/qwen3.8-flash-next");
+        assert_eq!(invocation.argv[4], "PROMPT");
+        assert!(invocation.stop.is_none());
+        let EnvPolicy::Allowlist { names, set } = invocation.env else {
+            panic!("the judge gets an allowlisted environment, never the orchestrator's");
+        };
+        for name in &names {
+            assert!(
+                BASE_ENV.contains(&name.as_str()),
+                "only the base allowlist reaches the judge, not {name}"
+            );
+        }
+        assert!(set.iter().any(|(key, _)| key == "OPENCODE_CONFIG_CONTENT"));
+        assert!(
+            set.iter()
+                .any(|(key, value)| key == "OPENCODE_DISABLE_PROJECT_CONFIG" && value == "1")
+        );
+    }
+
+    #[test]
+    fn adapters_without_a_confirmed_one_shot_mode_refuse_the_judge() {
+        assert!(judge_command(CLAUDE_CODE, "sonnet", "p").is_err());
+        assert!(judge_command(COPILOT, "gpt-5", "p").is_err());
     }
 
     #[test]
