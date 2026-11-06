@@ -459,6 +459,29 @@ pub fn judge_command(
                 stop: None,
             })
         }
+        COPILOT => {
+            // Copilot in print mode, one turn. The judge has no tools at all: --available-tools
+            // names none, so a read of any file is refused (checked by hand, the answer was
+            // "unsure"). The input is in the prompt. No --continue or session flag exists here.
+            let argv = vec![
+                binary(COPILOT_BINARY_ENV, "copilot"),
+                "-p".to_string(),
+                prompt.to_string(),
+                "-s".to_string(),
+                "--no-ask-user".to_string(),
+                "--model".to_string(),
+                model.to_string(),
+                "--available-tools=__none__".to_string(),
+                "--disable-builtin-mcps".to_string(),
+                "--no-auto-update".to_string(),
+                "--no-color".to_string(),
+            ];
+            Ok(Invocation {
+                argv,
+                env: env_policy(&[], Vec::new()),
+                stop: None,
+            })
+        }
         other => Err(format!(
             "the judge is not implemented for {other}: its one-shot mode is not confirmed (tasks/m16-llm-judge.md, decision 5)"
         )),
@@ -1550,7 +1573,31 @@ text = "inline"
 
     #[test]
     fn adapters_without_a_confirmed_one_shot_mode_refuse_the_judge() {
-        assert!(judge_command(COPILOT, "gpt-5", "p", "input.md").is_err());
+        assert!(judge_command("unknown-agent", "m", "p", "input.md").is_err());
+    }
+
+    #[test]
+    fn the_copilot_judge_has_no_tools_and_no_session() {
+        let invocation = judge_command(COPILOT, "auto", "PROMPT", "input.md").unwrap();
+        for forbidden in ["--continue", "--resume", "-c", "-r"] {
+            assert!(
+                !invocation.argv.iter().any(|a| a == forbidden),
+                "{:?}",
+                invocation.argv
+            );
+        }
+        assert!(
+            invocation
+                .argv
+                .contains(&"--available-tools=__none__".to_string())
+        );
+        assert!(invocation.argv.contains(&"--model".to_string()));
+        assert!(invocation.argv.contains(&"auto".to_string()));
+        let EnvPolicy::Allowlist { names, set } = invocation.env else {
+            panic!("the judge gets an allowlisted environment");
+        };
+        assert!(names.iter().all(|n| BASE_ENV.contains(&n.as_str())));
+        assert!(set.is_empty());
     }
 
     #[test]

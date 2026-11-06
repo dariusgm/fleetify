@@ -928,12 +928,14 @@ impl Recipe {
         match judge.agent.as_deref() {
             None => push("judge.agent", format!("required for level {level}")),
             Some(agent)
-                if agent != crate::agents::OPENCODE && agent != crate::agents::CLAUDE_CODE =>
+                if agent != crate::agents::OPENCODE
+                    && agent != crate::agents::CLAUDE_CODE
+                    && agent != crate::agents::COPILOT =>
             {
                 push(
                     "judge.agent",
                     format!(
-                        "the judge runs on opencode and claude-code; {agent} needs its one-shot mode confirmed first (tasks/m16-llm-judge.md, decision 5)"
+                        "the judge runs on opencode, claude-code and copilot; {agent} needs its one-shot mode confirmed first (tasks/m16-llm-judge.md, decision 5)"
                     ),
                 )
             }
@@ -944,9 +946,11 @@ impl Recipe {
                 push("judge.model", format!("required for level {level}"));
                 None
             }
-            // opencode names the provider in the model; claude-code has one provider, fixed by the agent.
+            // opencode names the provider in the model; claude-code and copilot have one provider each, fixed by the agent.
             Some(model) => match judge.agent.as_deref() {
-                Some(agent) if agent == crate::agents::CLAUDE_CODE => {
+                Some(agent)
+                    if agent == crate::agents::CLAUDE_CODE || agent == crate::agents::COPILOT =>
+                {
                     executor_provider(agent, model)
                 }
                 _ => match provider_of(model) {
@@ -2541,16 +2545,16 @@ mod judge_tests {
     }
 
     #[test]
-    fn only_opencode_and_claude_code_judge_for_now() {
+    fn the_judge_runs_on_opencode_claude_code_and_copilot() {
         let r = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"copilot\"\nmodel = \"gpt-5\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"gemini\"\nmodel = \"x\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&r)
                 .iter()
-                .any(|l| l.starts_with("judge.agent") && l.contains("copilot needs")),
+                .any(|l| l.starts_with("judge.agent") && l.contains("gemini needs")),
             "{:?}",
             fields(&r)
         );
@@ -2560,6 +2564,12 @@ mod judge_tests {
             "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"claude-code\"\nmodel = \"claude-haiku-5-5\"\ntask = \"x\"\n",
         );
         assert!(fields(&ok).is_empty(), "{:?}", fields(&ok));
+        let copilot = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"copilot\"\nmodel = \"auto\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&copilot).is_empty(), "{:?}", fields(&copilot));
     }
 
     #[test]
