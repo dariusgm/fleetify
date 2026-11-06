@@ -386,8 +386,41 @@ pub struct Extra<'a> {
 /// environment holds only the base allowlist and the judge's own configuration: no executor
 /// variable reaches it. The config allows reading and nothing else; the caller runs it in an
 /// empty directory that holds only the input file.
-pub fn judge_command(name: &str, model: &str, prompt: &str) -> Result<Invocation, String> {
+pub fn judge_command(
+    name: &str,
+    model: &str,
+    prompt: &str,
+    input_file: &str,
+) -> Result<Invocation, String> {
     match name {
+        CLAUDE_CODE => {
+            // Claude Code in print mode: one turn, no session kept (--no-session-persistence),
+            // and the only tool is Read, granted for the input file alone. The two deny rules
+            // are a second layer: a read outside the judge's directory is refused. Tested by
+            // hand with the input file and with /etc/hostname (tasks/m16-judge-validation.md).
+            let argv = vec![
+                binary(BINARY_ENV, "claude"),
+                "-p".to_string(),
+                prompt.to_string(),
+                "--model".to_string(),
+                model.to_string(),
+                "--tools".to_string(),
+                "Read".to_string(),
+                "--no-session-persistence".to_string(),
+                "--output-format".to_string(),
+                "text".to_string(),
+                "--disallowedTools".to_string(),
+                "Read(//etc/**)".to_string(),
+                "Read(/home/**)".to_string(),
+                "--allowedTools".to_string(),
+                format!("Read(./{input_file})"),
+            ];
+            Ok(Invocation {
+                argv,
+                env: env_policy(&[], Vec::new()),
+                stop: None,
+            })
+        }
         OPENCODE => {
             let config = json!({
                 "permission": {
@@ -1470,7 +1503,13 @@ text = "inline"
 
     #[test]
     fn the_judge_call_is_one_shot_with_no_session_flag_and_no_executor_variables() {
-        let invocation = judge_command(OPENCODE, "llamacpp/qwen3.8-flash-next", "PROMPT").unwrap();
+        let invocation = judge_command(
+            OPENCODE,
+            "llamacpp/qwen3.8-flash-next",
+            "PROMPT",
+            "input.md",
+        )
+        .unwrap();
         // Every flag that would continue an earlier session, for every adapter, is absent.
         for forbidden in [
             "-c",
@@ -1511,8 +1550,38 @@ text = "inline"
 
     #[test]
     fn adapters_without_a_confirmed_one_shot_mode_refuse_the_judge() {
-        assert!(judge_command(CLAUDE_CODE, "sonnet", "p").is_err());
-        assert!(judge_command(COPILOT, "gpt-5", "p").is_err());
+        assert!(judge_command(COPILOT, "gpt-5", "p", "input.md").is_err());
+    }
+
+    #[test]
+    fn the_claude_judge_is_one_shot_and_reads_only_its_input() {
+        let invocation =
+            judge_command(CLAUDE_CODE, "claude-haiku-5-5", "PROMPT", "input.md").unwrap();
+        for forbidden in [
+            "-c",
+            "--continue",
+            "-r",
+            "--resume",
+            "--fork-session",
+            "--session-id",
+        ] {
+            assert!(
+                !invocation.argv.iter().any(|a| a == forbidden),
+                "{:?}",
+                invocation.argv
+            );
+        }
+        assert!(
+            invocation
+                .argv
+                .contains(&"--no-session-persistence".to_string())
+        );
+        assert_eq!(invocation.argv.last().unwrap(), "Read(./input.md)");
+        let EnvPolicy::Allowlist { names, set } = invocation.env else {
+            panic!("the judge gets an allowlisted environment");
+        };
+        assert!(names.iter().all(|n| BASE_ENV.contains(&n.as_str())));
+        assert!(set.is_empty());
     }
 
     #[test]
