@@ -150,7 +150,15 @@ Run each once. A miss (a bad change judged `pass`) is a result, not a reason to 
 
 ### 12. Support a deciding model for the judge, like "jev" — **needs input**
 
-**Request (as given):** "Adding support a decising model for the judge like 'jev'".
+**Request (as given):** "Adding support a decising model for the judge like 'jev'". Clarified by the user: "jev" is https://jevapi.dev/#primitives.
+
+**What Jev is (from that page, read on 2026-11-06, not checked against TypeSafe's own docs):** a "System One" model from TypeSafe AI, in early access, model ID `jev-latest`. It does not generate text. It returns typed answers to a question about the application state: `noul` (a probability that a yes/no question is true), `choice` (one of a fixed set, with probabilities and confidence), and `score` (an ordered rubric, with per-level probabilities). Endpoint `POST https://api.typesafe.ai/v1/systemone` with a bearer key. Access needs a waitlist; SDKs exist for Python and Node. Price, context (about 64k) and latency are listed on the page. The page says it is an independent reference, not affiliated with TypeSafe.
+
+**Consequence for the judge:** Jev is not a language model, so it does not fit the `agent` + `model` shape. A Jev-backed judge would send the diff to an external API, which is a provider-approval question (M16 decision 9, company code), and it would need a key and early access.
+
+**Open:** (a) does "support" mean a judge backend that calls Jev, or a decision type inside the judge (score the diff on a rubric instead of pass/fail/unsure)? (b) is it allowed to send diffs outside the local machine, and is early access available?
+
+**Done when:** the question in (a) and (b) is answered, and the design is recorded in `m16-llm-judge.md` open decisions.
 
 **Open:** what "jev" refers to. Candidates are a model or provider name, or a second judge whose verdict decides when the first one is unsure. The design question is whether a deciding model is a fourth level beside `session`, `model` and `provider`, or a fallback that runs only on `unsure`. Until this is answered, no design or code work is planned.
 
