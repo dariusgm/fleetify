@@ -927,12 +927,16 @@ impl Recipe {
 
         match judge.agent.as_deref() {
             None => push("judge.agent", format!("required for level {level}")),
-            Some(agent) if agent != crate::agents::OPENCODE => push(
-                "judge.agent",
-                format!(
-                    "the judge runs on opencode only for now; {agent} needs its one-shot mode confirmed first (tasks/m16-llm-judge.md, decision 5)"
-                ),
-            ),
+            Some(agent)
+                if agent != crate::agents::OPENCODE && agent != crate::agents::CLAUDE_CODE =>
+            {
+                push(
+                    "judge.agent",
+                    format!(
+                        "the judge runs on opencode and claude-code; {agent} needs its one-shot mode confirmed first (tasks/m16-llm-judge.md, decision 5)"
+                    ),
+                )
+            }
             Some(_) => {}
         }
         let judge_provider = match judge.model.as_deref() {
@@ -940,17 +944,23 @@ impl Recipe {
                 push("judge.model", format!("required for level {level}"));
                 None
             }
-            Some(model) => match provider_of(model) {
-                Some(provider) => Some(provider),
-                None => {
-                    push(
-                        "judge.model",
-                        format!(
-                            "{model:?} must be in provider/model form, as opencode names models"
-                        ),
-                    );
-                    None
+            // opencode names the provider in the model; claude-code has one provider, fixed by the agent.
+            Some(model) => match judge.agent.as_deref() {
+                Some(agent) if agent == crate::agents::CLAUDE_CODE => {
+                    executor_provider(agent, model)
                 }
+                _ => match provider_of(model) {
+                    Some(provider) => Some(provider.to_string()),
+                    None => {
+                        push(
+                            "judge.model",
+                            format!(
+                                "{model:?} must be in provider/model form, as opencode names models"
+                            ),
+                        );
+                        None
+                    }
+                },
             },
         };
         // The executor's model and provider decide what `model` and `provider` mean. Without
@@ -2531,17 +2541,25 @@ mod judge_tests {
     }
 
     #[test]
-    fn only_opencode_judges_for_now() {
+    fn only_opencode_and_claude_code_judge_for_now() {
         let r = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"claude-code\"\nmodel = \"sonnet\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"copilot\"\nmodel = \"gpt-5\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&r)
                 .iter()
-                .any(|l| l.starts_with("judge.agent") && l.contains("opencode only"))
+                .any(|l| l.starts_with("judge.agent") && l.contains("copilot needs")),
+            "{:?}",
+            fields(&r)
         );
+        let ok = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"claude-code\"\nmodel = \"claude-haiku-5-5\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&ok).is_empty(), "{:?}", fields(&ok));
     }
 
     #[test]

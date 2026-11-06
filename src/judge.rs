@@ -324,7 +324,7 @@ fn run_in(
     }
     fs::write(dir.join(INPUT_FILE), input)
         .map_err(|err| format!("cannot write the judge input: {err}"))?;
-    let invocation = agents::judge_command(agent, model, &prompt())?;
+    let invocation = agents::judge_command(agent, model, &prompt(), INPUT_FILE)?;
     let mut request = RunRequest::new(label, invocation.argv);
     request.cwd = Some(dir.to_path_buf());
     request.timeout = Some(timeout);
