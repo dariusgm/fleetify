@@ -205,6 +205,39 @@ The script gets the repository path as its only argument, like the verifier. The
 
 The example is `examples/recipes/scripted-update`. Check a recipe without running it with `fleetify validate <recipe-dir>`.
 
+### LLM judge with Jev (optional)
+
+A judge reviews the diff of a change that passed the verifier and the guards, and before anything is pushed. It answers `pass`, `fail` or `unsure`: `fail` ends the repository as `guard_violation`, `unsure` as `needs_review`. Jev is TypeSafe's decision model: it is not a chat model and writes no text. fleetify sends it the task, the verifier summary and the diff, with one question: pass, fail or unsure. The design is in `tasks/m16-llm-judge.md`.
+
+**Setup.** Get a key from the TypeSafe console (https://console.typesafe.ai/keys) and put it in a `.env` file in the folder you run fleetify from:
+
+```
+TYPESAFE_API_KEY=your-key-here
+```
+
+`.env` is listed in `.gitignore`, so it is not committed. fleetify reads the key from the environment, not from the file, so load the file into your shell before the run:
+
+```sh
+set -a; . ./.env; set +a
+fleetify run ~/.fleetify/recipes/my-recipe repos.txt
+```
+
+Keep the key out of the recipe and out of the repository. Without a key, the Jev judge cannot answer, so every change ends as `needs_review` and nothing is pushed.
+
+**Recipe.** The judge is a `[judge]` section. Jev takes no `agent`; `model` is a Jev model, and pinning a version keeps the record comparable:
+
+```toml
+[judge]
+level = "jev"
+model = "jev-1.14.0"         # or jev-1.13.0; jev-latest and jev-preview move with new releases
+max_diff_lines = 1000        # over this: unsure, Jev is not called
+context_tokens = 32000       # Jev's context per question; must not be above 32000
+output_tokens = 1000         # reserved for the answer
+task = "Rename the function foo to bar in src/lib.rs"   # or leave unset to use the recipe's instructions
+```
+
+**Privacy and cost.** The task text, the verifier summary and the diff are sent to TypeSafe. Do not use this judge on company code until that is approved (`tasks/m16-judge-validation.md`, decisions 9 and 12). Jev costs $0.042 per million input tokens, and its output is free, so a judge call is a small fraction of a cent.
+
 ### Sharing a recipe
 
 A recipe is portable: nothing in it refers to your machine, so a copy works for someone
