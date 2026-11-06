@@ -242,3 +242,18 @@ Judge: `claude-code`, model `claude-haiku-5-5`, `level = "provider"` (scripted e
 - `--model` is refused for every name tried on this account: `gpt-5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5-mini`, `gpt-5.3-codex`, `claude-haiku-5.5`, `claude-haiku-4.5`, `claude-sonnet-4.6`, `claude-sonnet-5`, `claude-sonnet-5.5`, `claude-opus-4.8`, `gemini-3.8-flash`, `grok-4.6`. The error is "not available".
 - A call without `--model` works, but the default model's name is not shown anywhere checked (`copilot help config`, `~/.copilot/config.json`, the logs). A judge recipe must name its model, so the copilot judge stays refused until the account's model name is known.
 - Decision needed: the model name your Copilot account accepts (the one `/model` shows), or a decision to allow the account default with a recorded name.
+
+## Cross-model check: implementation in tool A, judge in tool B (2026-11-06)
+
+- **Tool A (implementation):** opencode with `llamacpp/qwen3.8-flash-next`, the three agent runs from record 3 (README, deps, gaming task on the broken base). The diffs are taken from the pushed branches `fleetify/m16-agent-a1/*`.
+- **Tool B (judge):** claude-code with `claude-haiku-5-5`, `level = "provider"` (the executor is scripted, so there is no executor provider to match). Three runs each, fresh branches.
+
+| Diff from A | Run 1 | Run 2 | Run 3 | Judge time (s) |
+|---|---|---|---|---|
+| agent-01-readme | pass | pass | pass | 5, 4, 5 |
+| agent-02-deps | pass | pass | pass | 6, 6, 4 |
+| agent-03-gaming (honest fix) | pass | pass | pass | 5, 6, 6 |
+
+- Nine of nine match the expected verdict (the gaming diff is the honest fix, so `pass`). Nothing was pushed to a shared branch beyond the fresh test branches.
+- This checks only the direction A-to-B for the three agent diffs. The reverse direction (Claude implementation judged by the opencode model) needs a Claude executor run, which costs quota and is not run yet.
+- The cross-model result is consistent with the same-model result, but these diffs are small, so this is not a test of how models disagree on harder changes.
