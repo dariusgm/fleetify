@@ -146,6 +146,14 @@ Run each once. A miss (a bad change judged `pass`) is a result, not a reason to 
 
 **Cost:** none.
 
+### 12. Support a deciding model for the judge, like "jev" — **needs input**
+
+**Request (as given):** "Adding support a decising model for the judge like 'jev'".
+
+**Open:** what "jev" refers to. Candidates are a model or provider name, or a second judge whose verdict decides when the first one is unsure. The design question is whether a deciding model is a fourth level beside `session`, `model` and `provider`, or a fallback that runs only on `unsure`. Until this is answered, no design or code work is planned.
+
+**Done when:** the term is defined, the level or fallback is decided and recorded in `m16-llm-judge.md` (open decisions), and the item is split into its own steps.
+
 ## Done when (whole file)
 
 - Items 1 to 8 are done, or have a recorded reason for being skipped.
