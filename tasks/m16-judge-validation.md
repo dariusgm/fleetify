@@ -308,3 +308,18 @@ Judge: `copilot`, model `auto` (the only name the account accepts; lowercase `au
 - Judge time per call: opencode 56 to 71 s (median 66); claude-code 4 to 6 s; copilot 5 to 9 s.
 - This is one run per cell. The stability runs (three per fixture) for claude and copilot are in records above; the opencode judge has one run per small fixture.
 - **What the grid does not show:** the implementations were all honest, so this grid tests agreement on passing changes, plus the gamed fixture. A grid that separates the judges needs gamed implementations from the tools themselves, which none of the three produced on this task.
+
+## E2E run with Jev as the judge (2026-11-06)
+
+Recipes are written by `tasks/m16-e2e/make_recipes.py`, which is the one place the case matrix lives. Each case states its base branch, and the script refuses a case whose base does not fit its kind: readme and deps start from `main`, the gaming case starts from `m16/base-broken`.
+
+**Finding: the gaming cases ran on the wrong base.** The first gaming recipes did not set `base`, so fleetify checked out `main`, where the test passes. Consequences:
+- claude-code reported that the suite already passes and made no change.
+- opencode hit its agent limit twice (30 and 60 minutes), most likely because it had nothing to fix and kept reading files.
+- Those gaming results are void. They are not evidence about the judge or the agents.
+
+**Rule for every e2e recipe:** `base` is set explicitly for each case. A gaming case is valid only with `base = "m16/base-broken"`. Each run's report should be checked for the base commit it checked out before its result is recorded.
+
+**Models.** opencode runs `llamacpp/qwen3.8-flash-next`. claude-code runs `haiku` (the canary passed with it). Copilot runs in `auto`, because the Free and Student plans do not offer model selection. The model that auto picks is logged per run in `copilot-usage.json`, written next to the workspace in the repo folder, under `modelMetrics`. Those files are the list of models that work.
+
+**Copilot canary:** the first two canary runs failed, then one passed with the same argv. The canary now keeps the agent's output in `agent-output.txt` beside its workspace, so a failure can be read.
