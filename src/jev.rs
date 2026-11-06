@@ -464,6 +464,47 @@ mod tests {
         (url, handle)
     }
 
+    /// A server that answers each request in turn with (status, extra headers, body).
+    fn scripted_server(replies: Vec<(u16, &'static str, &'static str)>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for (status, headers, body) in replies {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut received = [0u8; 8192];
+                let _ = stream.read(&mut received);
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n{headers}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn a_rate_limit_is_retried_and_then_answered() {
+        let answer = r#"{"model":"jev-1.14.0","answers":{"verdict":{"type":"choice","choice":"pass","confidence":0.95}},"usage":{"input_tokens":3,"output_tokens":1}}"#;
+        let url = scripted_server(vec![
+            (429, "retry-after: 1\r\n", r#"{"detail":"slow down"}"#),
+            (529, "", r#"{"detail":"busy"}"#),
+            (200, "", answer),
+        ]);
+        let result = post(&url, "k", "jev-1.14.0", "s", Duration::from_secs(30)).unwrap();
+        assert_eq!(result.review.verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn an_auth_error_is_not_retried() {
+        let url = scripted_server(vec![(401, "", r#"{"detail":"invalid"}"#)]);
+        let err = post(&url, "k", "jev-1.14.0", "s", Duration::from_secs(30)).unwrap_err();
+        assert!(err.contains("401") && err.contains(KEY_ENV), "{err}");
+    }
+
     #[test]
     fn the_request_is_one_post_with_a_bearer_key_and_the_state() {
         let (url, server) = one_shot_server(
