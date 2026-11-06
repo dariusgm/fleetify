@@ -36,3 +36,6 @@ Guards decide whether the agent's diff may leave the machine. They are layered s
 - **Record:** every call writes `judge.json` (level, agent, model, sizes, lock summary, verdict, reasons, duration) and `judge-input.md` into the repo folder of the run.
 - **Evaluation:** a fixture set of good and bad diffs. The judge is only enabled for a recipe after it catches the bad ones on that set. Cost and latency are recorded per call.
 
+## Verification results
+
+The grid of implementation tool x judge tool, the stability runs and the positive changes are in `docs/design/judge-verification.md`.
