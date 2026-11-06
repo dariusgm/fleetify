@@ -907,6 +907,13 @@ fn copilot_argv(
     for command in ["git status", "git diff", "git log"] {
         argv.push(format!("--allow-tool=shell({command})"));
     }
+    // The CLI's own usage file, written beside the workspace (not inside it, so the agent cannot
+    // edit it). It names the model that answered: auto mode picks one per run, and the list of
+    // models that work is built from these files.
+    if let Some(folder) = workspace.parent() {
+        argv.push("--usage-output-file".to_string());
+        argv.push(folder.join("copilot-usage.json").display().to_string());
+    }
     // Copilot matches shell grants on the executable only: `shell(sh:*)` allows
     // `sh .agent/tools/verify.sh`, while a grant that names the whole command line is denied
     // (observed 2026-10-21). So a command grants its first word, which is broader than the
@@ -1044,7 +1051,16 @@ fn canary_run(
     request.timeout = Some(CANARY_TIMEOUT);
     request.env = canary.env;
     request.on_stop = canary.stop;
-    runner.run(request);
+    let result = runner.run(request);
+    // Kept beside the canary's workspace, so a failed check can be read: what the agent said
+    // and what it failed on. Not part of the pass criteria.
+    if let Some(root) = workspace.parent() {
+        let mut text = format!("exit: {:?}\n\n== stdout\n", result.outcome);
+        text.push_str(&result.stdout());
+        text.push_str("\n== stderr\n");
+        text.push_str(&result.stderr_tail(200));
+        let _ = fs::write(root.join("agent-output.txt"), text);
+    }
     Ok(())
 }
 
