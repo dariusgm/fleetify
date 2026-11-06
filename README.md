@@ -344,6 +344,16 @@ Nothing from the host reaches the orchestrator container unless it is passed her
 
 You can keep the orchestrator on the host and still run the agents in containers. The agent containers still need the daemon, and the host run reads the keys from your shell and the login file directly. In that setup you need nothing from this section beyond the agent images.
 
+#### Copilot CLI: what fleetify relies on
+
+Copilot is the agent with the most account-side limits. Read this before you choose it (`docs/agents/copilot.md` has the pros and cons):
+
+- **Model.** The Free and Student plans cannot choose a model. Copilot runs in **auto mode**, and auto picks a model per run. Leave `model` unset in the recipe; a pinned name such as `gpt-5.4-mini` is refused as not available on those plans. Each run writes `copilot-usage.json` in its repository folder, and `modelMetrics` names the model that answered. Collect those files to see which models work.
+- **Permissions.** Copilot grants tools by rule, and a non-interactive run denies anything no rule allows. fleetify passes `read`, `write` inside the workspace, and the read-only git commands. A command grant is matched on the **executable** only. So granting the verifier, which runs as `sh .agent/tools/verify.sh .`, grants `sh`, and with it any shell script. Claude Code and opencode match the full command; Copilot cannot. Grant `sh` only where that is acceptable.
+- **Canary.** `check-agent copilot` must pass before a run. It can fail once and pass on the next try with the same flags, so run it again before you judge it broken. The canary keeps the agent's output in `agent-output.txt` beside its workspace.
+- **Judge.** Copilot can judge a change with no tools at all. Its input is then part of the prompt, not a file, and its size is limited.
+- **Login.** Copilot uses its own login in host runs. The token rules for containers are in the section above.
+
 #### Example: opencode against a local llama.cpp server
 
 This recipe runs opencode in its container against a llama.cpp server on the LAN. The provider settings are in the recipe, and the key is a placeholder. Its value comes from the environment that starts fleetify:
