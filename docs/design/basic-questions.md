@@ -99,10 +99,15 @@ forbid_test_deletion = true
 forbid_binary_files = true
 # allow_paths = ["**/*.py", "pyproject.toml"]
 
-# [judge]                        # optional
-# agent = "opencode"
-# profile = "judge"
-# max_diff_lines = 1500
+# [judge]                        # optional: an LLM second opinion before the push
+# level = "provider"             # session | model | provider
+# max_diff_lines = 10000         # over this: unsure, no model call
+# context_tokens = 32768         # the judge model's context window; required
+# output_tokens = 8192           # reserved for the answer; required
+# timeout_s = 1800               # one call's limit, 1 to 7200 seconds
+# agent = "opencode"             # required for model and provider
+# model = "llamacpp/qwen3.8-flash-next"  # required for model and provider
+# task = "..."                   # the task text; unset: the recipe's instructions
 
 [ci]
 provider = "auto"                # auto | gitlab-ci

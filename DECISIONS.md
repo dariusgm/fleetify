@@ -531,7 +531,7 @@ by milestone, so that gaps are visible in the repo and not only in chat.
   true by default. Open: the full level-5 lint test with the complete gate chain; the
   throwaway repo can be deleted when no longer needed.
 - **M15 Copilot CLI adapter: not started.**
-- **M16 LLM judge: not started.** `judge` is accepted by the parser and not used.
+- **M16 LLM judge: implemented, validation in progress.** The `[judge]` section, the levels, the context fit and the timeout are in; see `tasks/m16-llm-judge.md` and `tasks/m16-judge-validation.md`.
 - **M17 real trial: not started.**
 
 Declared but unused: none after the MVP cleanup of 2026-10-22 (see below).
@@ -1113,3 +1113,10 @@ Task `tasks/agent-confinement-stage-3.md`. This entry covers the container part 
 - **Test.** `tests/scripted_example.rs` runs the update script under pwsh with a stub `uv` (Unix only; skipped when pwsh is not installed): the repository path is passed on, uv runs inside the repository, and its exit code is returned.
 - **Not checked.** A Windows host. The fleetify pipeline picks the windows command only on Windows, so the windows path through fleetify itself is still unrun.
 - **Untracked example added.** `examples/recipes/update-cargo-and-python-deps` belongs to scripted changes and validates. It uses `[prepare]` with `sh`, so it needs a POSIX shell on Windows too. `PLAN.md` was removed: it is the stale copy of the plan that was dissolved into `docs/` and `tasks/`.
+
+## LLM judge: implemented and validated in part (2026-11-06)
+
+- **Decision.** The judge is an optional `[judge]` section per recipe, off by default. It runs after the verifier and the guards, before any push. `fail` ends the repo as `guard_violation` (rule `judge`), `unsure` as `needs_review`. Every value is in the recipe; `level`, `max_diff_lines`, `context_tokens`, `output_tokens` and `timeout_s` are required or explicit.
+- **Context.** The judge's input must fit the context window minus the answer and a fixed call overhead. The lower bound wins over `max_diff_lines`. The window is a recipe value, not a default: 32768 in the examples, 50000 for the 1571-line case.
+- **Evidence.** Positive: real correct changes of 43 to 1555 lines passed (`fleetify-m16-positive`). Negative: a weakened test failed, and a 1571-line formatting-plus-fix change failed at 50k. Stability: the 03b case gave the same verdict in every call that finished.
+- **Open.** Model level untested live; company-code approval of a provider; item 12 (a deciding model) waits for a definition. See `tasks/m16-judge-validation.md`.
