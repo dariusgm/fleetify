@@ -9,6 +9,7 @@ pub mod clock;
 pub mod container;
 pub mod credentials;
 pub mod egress;
+pub mod envfile;
 pub mod events;
 pub mod git;
 pub mod grants;

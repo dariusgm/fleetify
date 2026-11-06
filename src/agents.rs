@@ -258,6 +258,8 @@ pub struct Grants {
     pub web: bool,
     pub directories: Vec<String>,
     pub unrestricted: bool,
+    /// Environment variables forwarded to this agent: asked for by the recipe and granted.
+    pub env: Vec<String>,
 }
 
 /// The command line and the environment of one agent run.
@@ -284,7 +286,43 @@ pub fn grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> Grants 
         directories: recipe.needs.extra_directories.clone(),
         unrestricted: recipe.needs.unrestricted
             && permissions.agent.get(name).is_some_and(|p| p.unrestricted),
+        env: recipe
+            .needs
+            .env
+            .iter()
+            .filter(|n| {
+                permissions.env.contains(n)
+                    || permissions
+                        .agent
+                        .get(name)
+                        .is_some_and(|p| p.env.contains(n))
+            })
+            .cloned()
+            .collect(),
     }
+}
+
+/// Environment names the recipe asks for that the user has not granted, or that are not set
+/// in the environment or `.env`. Empty when the run may start. A real run refuses on these.
+pub fn env_refusals(recipe: &Recipe, permissions: &Permissions, name: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for var in &recipe.needs.env {
+        let granted = permissions.env.contains(var)
+            || permissions
+                .agent
+                .get(name)
+                .is_some_and(|p| p.env.contains(var));
+        if !granted {
+            problems.push(format!(
+                "the recipe needs {var} forwarded to the agent, but credentials.toml does not grant it ([permissions] env or [permissions.agent.{name}] env)"
+            ));
+        } else if crate::envfile::var_os(var).is_none() {
+            problems.push(format!(
+                "{var} is granted and needed, but it is not set in the environment or in .env"
+            ));
+        }
+    }
+    problems
 }
 
 /// One line for the run header: what the agent gets for this recipe.
@@ -349,8 +387,16 @@ pub fn invocation_in_network(
     workspace: &Path,
     network: Option<&Network>,
 ) -> Result<Invocation, String> {
+    // A container gets the recipe's agent_env, and the variables the user granted that the
+    // recipe asks for (`needs.env`), once each.
+    let mut container_env = recipe.agent_env.clone();
+    for var in grants(recipe, permissions, name).env {
+        if !container_env.contains(&var) {
+            container_env.push(var);
+        }
+    }
     let extra = Extra {
-        container_env: &recipe.agent_env,
+        container_env: &container_env,
         config: recipe
             .agents
             .get(name)
@@ -500,7 +546,7 @@ fn canary_invocation(
     // in the environment the check cannot run, and it says so before any container starts.
     let token = [COPILOT_TOKEN_ENV.to_string()];
     let copilot_container = name == COPILOT && image.is_some();
-    if copilot_container && std::env::var_os(COPILOT_TOKEN_ENV).is_none() {
+    if copilot_container && crate::envfile::var_os(COPILOT_TOKEN_ENV).is_none() {
         return Err(format!(
             "set {COPILOT_TOKEN_ENV} in the environment: the Copilot container needs it"
         ));
@@ -672,7 +718,7 @@ fn build(
     let Some(image) = image else {
         return Ok(Invocation {
             argv,
-            env: env_policy(names, set),
+            env: env_policy_with(names, &grants.env, set),
             stop: None,
         });
     };
@@ -722,11 +768,21 @@ fn build(
 /// The environment an agent gets: the base allowlist, its own variables, and the
 /// variables fleetify sets for this run.
 fn env_policy(agent_names: &[&str], set: Vec<(String, String)>) -> EnvPolicy {
+    env_policy_with(agent_names, &[], set)
+}
+
+/// As [`env_policy`], with the variables the user granted and the recipe asked for.
+fn env_policy_with(
+    agent_names: &[&str],
+    granted: &[String],
+    set: Vec<(String, String)>,
+) -> EnvPolicy {
     EnvPolicy::Allowlist {
         names: BASE_ENV
             .iter()
-            .chain(agent_names)
             .map(|name| name.to_string())
+            .chain(agent_names.iter().map(|name| name.to_string()))
+            .chain(granted.iter().cloned())
             .collect(),
         set,
     }
@@ -1039,6 +1095,7 @@ mod tests {
             web: false,
             directories: vec!["/data/out".into()],
             unrestricted: false,
+            env: Vec::new(),
         };
         let argv = copilot_argv("copilot", "p", Path::new("/ws"), &grants, None);
         assert!(
@@ -1174,6 +1231,7 @@ text = "Do the thing."
             web,
             extra_directories: Vec::new(),
             unchecked_agents: false,
+            env: Vec::new(),
             agent: BTreeMap::new(),
         }
     }
@@ -1301,7 +1359,10 @@ text = "Do the thing."
         );
         perms.agent.insert(
             "claude-code".to_string(),
-            AgentPermissions { unrestricted: true },
+            AgentPermissions {
+                unrestricted: true,
+                env: Vec::new(),
+            },
         );
         // Granted but not asked for by the recipe: no flag.
         assert!(
@@ -1330,7 +1391,10 @@ text = "Do the thing."
         );
         perms.agent.insert(
             "claude-code".to_string(),
-            AgentPermissions { unrestricted: true },
+            AgentPermissions {
+                unrestricted: true,
+                env: Vec::new(),
+            },
         );
         assert!(missing_permissions(&asks, &perms, "claude-code").is_empty());
 
@@ -1372,6 +1436,7 @@ text = "Do the thing."
             "opencode".to_string(),
             AgentPermissions {
                 unrestricted: false,
+                env: Vec::new(),
             },
         );
         let invocation = invocation("opencode", &recipe, &perms, None, Path::new("/ws")).unwrap();
@@ -1977,5 +2042,83 @@ text = "inline"
         assert!(invocation.argv.iter().any(|a| a == "OPENAI_API_KEY"));
         assert!(!invocation.argv.iter().any(|a| a.contains("lan.example")));
         assert_eq!(invocation.argv[env + 1], "ANTHROPIC_API_KEY");
+    }
+}
+
+#[cfg(test)]
+mod env_forwarding_tests {
+    use super::*;
+    use crate::grants::{AgentPermissions, Permissions};
+
+    fn recipe(needs_env: &str) -> Recipe {
+        Recipe::parse(&format!(
+            "schema = 1\nname = \"env\"\nbranch = \"b\"\npr_title = \"t\"\nagent = \"opencode\"\n[needs]\nenv = {needs_env}\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_name_is_forwarded_only_when_asked_for_and_granted() {
+        let asked = recipe(r#"["TYPESAFE_API_KEY", "OPENAI_API_KEY"]"#);
+        let perms = Permissions {
+            env: vec!["TYPESAFE_API_KEY".to_string()],
+            ..Permissions::default()
+        };
+        let granted = grants(&asked, &perms, "opencode");
+        assert_eq!(granted.env, vec!["TYPESAFE_API_KEY".to_string()]);
+
+        // A per-agent grant reaches that agent only.
+        let mut scoped = Permissions::default();
+        scoped.agent.insert(
+            "opencode".to_string(),
+            AgentPermissions {
+                env: vec!["OPENAI_API_KEY".to_string()],
+                ..AgentPermissions::default()
+            },
+        );
+        assert_eq!(
+            grants(&asked, &scoped, "opencode").env,
+            vec!["OPENAI_API_KEY".to_string()]
+        );
+        assert!(grants(&asked, &scoped, "claude-code").env.is_empty());
+    }
+
+    #[test]
+    fn an_ungranted_name_is_a_refusal_and_a_missing_one_too() {
+        let asked = recipe(r#"["FLEETIFY_TEST_NOT_SET_ANYWHERE_42"]"#);
+        let none = Permissions::default();
+        let problems = env_refusals(&asked, &none, "opencode");
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("does not grant"), "{problems:?}");
+
+        let granted = Permissions {
+            env: vec!["FLEETIFY_TEST_NOT_SET_ANYWHERE_42".to_string()],
+            ..Permissions::default()
+        };
+        let problems = env_refusals(&asked, &granted, "opencode");
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("not set"), "{problems:?}");
+    }
+
+    #[test]
+    fn a_granted_name_that_is_set_is_not_refused() {
+        // PATH is set in every test environment.
+        let asked = recipe(r#"["PATH"]"#);
+        let granted = Permissions {
+            env: vec!["PATH".to_string()],
+            ..Permissions::default()
+        };
+        assert!(env_refusals(&asked, &granted, "opencode").is_empty());
+    }
+
+    #[test]
+    fn the_host_environment_gets_the_granted_names_and_nothing_else() {
+        let granted = vec!["TYPESAFE_API_KEY".to_string()];
+        let EnvPolicy::Allowlist { names, .. } = env_policy_with(&[], &granted, Vec::new()) else {
+            panic!("expected an allowlist");
+        };
+        assert!(names.contains(&"TYPESAFE_API_KEY".to_string()));
+        assert!(names.contains(&"PATH".to_string()));
+        assert!(!names.contains(&"OPENAI_API_KEY".to_string()));
     }
 }

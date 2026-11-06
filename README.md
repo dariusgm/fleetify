@@ -215,14 +215,7 @@ A judge reviews the diff of a change that passed the verifier and the guards, an
 TYPESAFE_API_KEY=your-key-here
 ```
 
-`.env` is listed in `.gitignore`, so it is not committed. fleetify reads the key from the environment, not from the file, so load the file into your shell before the run:
-
-```sh
-set -a; . ./.env; set +a
-fleetify run ~/.fleetify/recipes/my-recipe repos.txt
-```
-
-Keep the key out of the recipe and out of the repository. Without a key, the Jev judge cannot answer, so every change ends as `needs_review` and nothing is pushed.
+fleetify reads `.env` itself at startup. A variable already set in your shell wins over the file. `.env` is listed in `.gitignore`, so it is not committed. The judge needs no grant in `credentials.toml`: the Jev key is read by fleetify directly, and it is redacted from logs and reports. A run with a Jev judge refuses to start when the key is missing. Without a key, a dry run warns and nothing else changes.
 
 **Recipe.** The judge is a `[judge]` section. Jev takes no `agent`; `model` is a Jev model, and pinning a version keeps the record comparable:
 
@@ -236,7 +229,24 @@ output_tokens = 1000         # reserved for the answer
 task = "Rename the function foo to bar in src/lib.rs"   # or leave unset to use the recipe's instructions
 ```
 
-**Privacy and cost.** The task text, the verifier summary and the diff are sent to TypeSafe. Do not use this judge on company code until that is approved (`tasks/m16-judge-validation.md`, decisions 9 and 12). Jev costs $0.042 per million input tokens, and its output is free, so a judge call is a small fraction of a cent.
+**Privacy and cost.** The task text, the verifier summary and the diff are sent to TypeSafe. On your own test repositories this is your own risk. On company code it is not allowed yet: the company network needs a firewall change for `api.typesafe.ai` that cannot be made from the company side yet (`tasks/m16-judge-validation.md`, decisions 9 and 12). Jev costs $0.042 per million input tokens, and its output is free, so a judge call is a small fraction of a cent.
+
+### Environment variables for agents and endpoints
+
+An agent often needs a key that is not its own login: a model endpoint, or a second provider. fleetify forwards such variables to the agent only when both sides agree:
+
+- the recipe asks, in `[needs]`: `env = ["OPENAI_API_KEY"]` (names only, never values);
+- the user grants, in `credentials.toml`, for all agents or for one agent:
+
+```toml
+[permissions]
+env = ["OPENAI_API_KEY"]                 # forwarded to every agent that the recipe asks for it
+
+[permissions.agent.opencode]
+env = ["OPENAI_API_KEY"]                 # or for opencode only
+```
+
+The value comes from the shell or from `.env`. A run refuses to start when a name is asked for but not granted, or not set. The value is redacted from logs and reports. Variables fleetify passes to agents by default (the agent's own login, such as `ANTHROPIC_API_KEY`) are unchanged.
 
 ### Sharing a recipe
 

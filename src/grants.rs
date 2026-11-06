@@ -26,6 +26,11 @@ pub struct Permissions {
     /// Lets a recipe set `policy.require_checked_agent = false`.
     #[serde(default)]
     pub unchecked_agents: bool,
+    /// Environment variables forwarded to every agent, as `needs.env` asks for them. Values come
+    /// from the process environment or `.env` in the working directory; they are never written
+    /// to a file by fleetify.
+    #[serde(default)]
+    pub env: Vec<String>,
     /// Per agent, keyed by agent name.
     #[serde(default)]
     pub agent: BTreeMap<String, AgentPermissions>,
@@ -35,6 +40,9 @@ pub struct Permissions {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentPermissions {
+    /// Environment variables forwarded to this agent only, as `needs.env` asks for them.
+    #[serde(default)]
+    pub env: Vec<String>,
     /// Use the agent CLI's blanket "allow everything" option, for a recipe that asks for
     /// `needs.unrestricted`. At the user's own risk.
     #[serde(default)]
@@ -66,6 +74,16 @@ pub struct Grants {
 }
 
 impl Grants {
+    /// Forwarding is granted to this agent: `[permissions] env` or `[permissions.agent.<name>] env`.
+    pub fn env_granted(&self, agent: &str, name: &str) -> bool {
+        self.permissions.env.iter().any(|n| n == name)
+            || self
+                .permissions
+                .agent
+                .get(agent)
+                .is_some_and(|p| p.env.iter().any(|n| n == name))
+    }
+
     /// The first merge rule whose pattern matches `key` (`<host>/<path>`).
     pub fn merge_rule(&self, key: &str) -> Option<&MergeRule> {
         self.merge_policy
