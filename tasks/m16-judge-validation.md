@@ -235,3 +235,10 @@ Judge: `claude-code`, model `claude-haiku-5-5`, `level = "provider"` (scripted e
 - The 03b reasons name the scope creep (the `rustfmt.toml` reformat) and the test change. The claude judge flagged the same things as the opencode judge.
 - Item 4 is now complete for the Claude judge. The opencode judge has one run per small fixture; the 03b case has four consistent results from opencode.
 - Containment: the Claude judge is limited to reading its input file (`--allowedTools Read(./input.md)`). The probe with `/etc/hostname` was denied when run by hand (before the adapter was committed); see `531bb58`.
+
+## Copilot as judge: blocked on the model name (2026-11-06)
+
+- Copilot CLI 1.0.105. One-shot mode works with `-p`, `-s`, `--no-ask-user`, `--available-tools read`, `--allow-tool=read`, no `--continue`.
+- `--model` is refused for every name tried on this account: `gpt-5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5-mini`, `gpt-5.3-codex`, `claude-haiku-5.5`, `claude-haiku-4.5`, `claude-sonnet-4.6`, `claude-sonnet-5`, `claude-sonnet-5.5`, `claude-opus-4.8`, `gemini-3.8-flash`, `grok-4.6`. The error is "not available".
+- A call without `--model` works, but the default model's name is not shown anywhere checked (`copilot help config`, `~/.copilot/config.json`, the logs). A judge recipe must name its model, so the copilot judge stays refused until the account's model name is known.
+- Decision needed: the model name your Copilot account accepts (the one `/model` shows), or a decision to allow the account default with a recorded name.
