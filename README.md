@@ -229,7 +229,7 @@ output_tokens = 1000         # reserved for the answer
 task = "Rename the function foo to bar in src/lib.rs"   # or leave unset to use the recipe's instructions
 ```
 
-**Privacy and cost.** The task text, the verifier summary and the diff are sent to TypeSafe. On your own test repositories this is your own risk. On company code it is not allowed yet: the company network needs a firewall change for `api.typesafe.ai` that cannot be made from the company side yet (`tasks/m16-judge-validation.md`, decisions 9 and 12). Jev costs $0.042 per million input tokens, and its output is free, so a judge call is a small fraction of a cent.
+**Privacy and cost.** The task text, the verifier summary and the diff are sent to TypeSafe. Use this judge on your own test repositories only, and do not send code you are not allowed to share. Jev costs $0.042 per million input tokens, and its output is free, so a judge call is a small fraction of a cent.
 
 ### Environment variables for agents and endpoints
 
