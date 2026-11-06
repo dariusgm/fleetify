@@ -167,3 +167,15 @@ Live reruns of the 03b recipe with the same settings (50k context, 10000 lines, 
 - Judge time on the same input ranges from about 20 to over 30 minutes. This is the local model's variance, not a code effect. The timeout is a real limit, not a safety margin.
 - The timeout behaved as designed: the run ended as `needs_review`, nothing was pushed, and no `opencode` process was left running.
 - Consequence: the 03b case needs a longer timeout to be judged reliably. Raise `timeout_s` in that recipe (up to 7200) rather than the default; the other recipes keep 1800.
+
+## Item 1 follow-up: 03b with a 7200 s timeout
+
+Recipe: the 03b recipe with `timeout_s = 7200` (50k context, 10000 lines). The design doc example now shows the context, answer reserve and timeout fields (`825f03c`).
+
+| Run | Result | Verdict | Judge time |
+|---|---|---|---|
+| t2 | guard_violation (judge) | fail | 2312 s |
+
+- The verdict matches all four completed calls on this input (1774 s, 1232 s, 1449 s, 2312 s): fail, with the same reasons.
+- Judge time ranged from about 20 to 38 minutes across the runs, and one run at 1800 s timed out. At 7200 s this run finished with about three times the margin. One sample at 7200 s is not enough to say how far the tail goes.
+- Nothing was pushed.
