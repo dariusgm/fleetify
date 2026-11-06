@@ -117,8 +117,8 @@ pub fn parse_response(body: &Value) -> Result<Answer, String> {
 /// `Call::review` and means `unsure`. The key never appears in the error text.
 pub fn judge_call(url: &str, model: &str, state: &str, timeout: Duration) -> Call {
     let started = Instant::now();
-    let review = std::env::var(KEY_ENV)
-        .map_err(|_| format!("{KEY_ENV} is not set: the jev judge needs the TypeSafe API key"))
+    let review = crate::envfile::var(KEY_ENV)
+        .ok_or_else(|| format!("{KEY_ENV} is not set: the jev judge needs the TypeSafe API key"))
         .and_then(|key| post(url, &key, model, state, timeout))
         .map(|answer| answer.review);
     Call {

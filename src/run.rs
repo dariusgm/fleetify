@@ -322,13 +322,19 @@ fn refuse_leftover_files(input: &RunInput<'_>) -> Result<(), Refused> {
     Ok(())
 }
 
-/// The values of the variables the recipe passes into the agent's container, for redaction.
-fn container_env_values(recipe: &Recipe) -> Vec<String> {
-    recipe
+/// The values that must never reach a log or a report: every variable the recipe passes into
+/// an agent (container or host), the Jev key, and everything read from `.env`.
+fn forwarded_env_values(recipe: &Recipe) -> Vec<String> {
+    let mut names: Vec<&str> = recipe
         .agent_env
         .iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .collect()
+        .chain(recipe.needs.env.iter())
+        .map(String::as_str)
+        .collect();
+    names.push(crate::jev::KEY_ENV);
+    let mut values: Vec<String> = names.into_iter().filter_map(crate::envfile::var).collect();
+    values.extend(crate::envfile::file_values());
+    values
 }
 
 /// Loads what a run needs. A dry run reports missing grants and keeps going; a real
@@ -343,11 +349,26 @@ fn load_for(input: &RunInput<'_>, dry_run: bool) -> Result<Loaded, Refused> {
     }
     crate::logging::set_redactor(Redactor::new(
         credentials.secrets().chain(
-            container_env_values(input.recipe)
+            forwarded_env_values(input.recipe)
                 .iter()
                 .map(String::as_str),
         ),
     ));
+    let jev_judge = input
+        .recipe
+        .judge
+        .as_ref()
+        .is_some_and(|judge| judge.level.as_deref() == Some(crate::jev::LEVEL));
+    if jev_judge && crate::envfile::var_os(crate::jev::KEY_ENV).is_none() {
+        let message = format!(
+            "{} is not set in the environment or in .env: the recipe's Jev judge needs it",
+            crate::jev::KEY_ENV
+        );
+        if !dry_run {
+            return Err(Refused(message));
+        }
+        eprintln!("dry run: a real run would refuse: {message}");
+    }
     let (agent, model) = match check_agent(input, &credentials.grants, dry_run)? {
         Some((name, model)) => (Some(name), model),
         None => (None, None),
@@ -439,8 +460,14 @@ fn check_agent(
         }
         eprintln!("dry run: a real run would refuse: {message}");
     }
+    for problem in agents::env_refusals(input.recipe, &grants.permissions, name) {
+        if !dry_run {
+            return Err(Refused(problem));
+        }
+        eprintln!("dry run: a real run would refuse: {problem}");
+    }
     for name in &input.recipe.agent_env {
-        if std::env::var_os(name).is_none() {
+        if crate::envfile::var_os(name).is_none() {
             let message = format!(
                 "environment variable {name} is not set; the recipe passes it to the agent container"
             );
@@ -539,7 +566,7 @@ fn execute_loaded_with_view(
         loaded
             .credentials
             .secrets()
-            .chain(container_env_values(recipe).iter().map(String::as_str)),
+            .chain(forwarded_env_values(recipe).iter().map(String::as_str)),
     );
     let bus = EventBus::new();
     // Rate-limit waits of the host clients go to the same event stream as everything else.

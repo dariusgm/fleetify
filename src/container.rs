@@ -471,11 +471,7 @@ fn client_vars() -> Vec<(String, String)> {
     BASE_ENV
         .iter()
         .chain(CLIENT_ENV)
-        .filter_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| (name.to_string(), value))
-        })
+        .filter_map(|name| crate::envfile::var(name).map(|value| (name.to_string(), value)))
         .collect()
 }
 

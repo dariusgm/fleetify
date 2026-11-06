@@ -609,6 +609,14 @@
             "type": "string"
           }
         },
+        "env": {
+          "description": "Environment variables to forward to the agent, by name. The value comes from the\nenvironment or `.env`; the user must grant each name in `credentials.toml`\n(`[permissions] env` or `[permissions.agent.<name>] env`), or the run is refused.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "extra_directories": {
           "type": "array",
           "default": [],

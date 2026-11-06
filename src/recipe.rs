@@ -374,6 +374,11 @@ pub struct Needs {
     /// unrestricted = true` in credentials.toml. Not confined by fleetify's grants.
     #[serde(default)]
     pub unrestricted: bool,
+    /// Environment variables to forward to the agent, by name. The value comes from the
+    /// environment or `.env`; the user must grant each name in `credentials.toml`
+    /// (`[permissions] env` or `[permissions.agent.<name>] env`), or the run is refused.
+    #[serde(default)]
+    pub env: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -810,6 +815,7 @@ impl Recipe {
             }
         }
         self.validate_agent_env(push);
+        self.validate_needs_env(push);
         self.validate_network(push);
         for (agent, settings) in &self.agents {
             let Some(config) = &settings.config else {
@@ -1075,6 +1081,34 @@ impl Recipe {
         }
         if let Err(message) = crate::egress::parse_policy(allow, &self.network.ignore) {
             push("network.ignore", message);
+        }
+    }
+
+    /// `needs.env`: variable names, each once. Whether the user grants and sets them is checked
+    /// at run start (`agents::env_refusals`).
+    fn validate_needs_env(&self, push: &mut impl FnMut(&str, String)) {
+        let mut seen = std::collections::BTreeSet::new();
+        for name in &self.needs.env {
+            let shaped = name
+                .chars()
+                .enumerate()
+                .all(|(i, c)| c == '_' || c.is_ascii_uppercase() || (i > 0 && c.is_ascii_digit()));
+            if !shaped || name.is_empty() {
+                push(
+                    "needs.env",
+                    format!(
+                        "{name:?} is not an environment variable name (upper case letters, digits and _)"
+                    ),
+                );
+            } else if crate::runner::BASE_ENV.contains(&name.as_str()) {
+                push(
+                    "needs.env",
+                    format!("{name} is already passed to every agent"),
+                );
+            }
+            if !seen.insert(name.as_str()) {
+                push("needs.env", format!("{name} is listed twice"));
+            }
         }
     }
 

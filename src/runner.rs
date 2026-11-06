@@ -582,7 +582,7 @@ fn apply_env(command: &mut Command, policy: &EnvPolicy) {
     if let EnvPolicy::Allowlist { names, set } = policy {
         command.env_clear();
         for name in names {
-            if let Some(value) = std::env::var_os(name) {
+            if let Some(value) = crate::envfile::var_os(name) {
                 command.env(name, value);
             }
         }
