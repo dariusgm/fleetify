@@ -15,6 +15,7 @@ pub mod grants;
 pub mod guards;
 pub mod hosts;
 pub mod isolation;
+pub mod jev;
 pub mod judge;
 pub mod live;
 pub mod logging;

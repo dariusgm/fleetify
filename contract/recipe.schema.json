@@ -523,7 +523,7 @@
           "minimum": 0
         },
         "level": {
-          "description": "`session` (the executor's agent and model), `model` (another model) or `provider`\n(a model from another provider). Required when the section is present.",
+          "description": "`session` (the executor's agent and model), `model` (another model), `provider`\n(a model from another provider) or `jev` (TypeSafe's Jev decision model, no agent).\nRequired when the section is present.",
           "type": [
             "string",
             "null"
