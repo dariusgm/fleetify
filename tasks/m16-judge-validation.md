@@ -87,7 +87,9 @@ Run each once. A miss (a bad change judged `pass`) is a result, not a reason to 
 
 **Cost:** four judge calls plus the work of building the fixtures. The fixtures have to be built by hand; keep each one small (under 100 lines) so it stays inside the default limit.
 
-### 6. Good changes above the limit (false alarms)
+### 6. Good changes above the limit (false alarms) — **done**
+
+**Result (2026-11-06):** the two real correct changes above the old 1000-line limit were judged `pass`: `431a776` (1471 lines, 22,099 input tokens) and `b705066` (1555 lines, 22,303 tokens). The four smaller real commits also passed. No false alarm. Details in the record at the end of this file. The `NOSONAR` layer-1 stop on the first `b705066` run was a recipe rule, not a judge decision.
 
 **Why:** the plan asks for a correct change above the size limit, to show the judge does not reject good work for size or token budget.
 
@@ -146,6 +148,14 @@ Run each once. A miss (a bad change judged `pass`) is a result, not a reason to 
 
 **Cost:** none.
 
+### 12. Support a deciding model for the judge, like "jev" — **needs input**
+
+**Request (as given):** "Adding support a decising model for the judge like 'jev'".
+
+**Open:** what "jev" refers to. Candidates are a model or provider name, or a second judge whose verdict decides when the first one is unsure. The design question is whether a deciding model is a fourth level beside `session`, `model` and `provider`, or a fallback that runs only on `unsure`. Until this is answered, no design or code work is planned.
+
+**Done when:** the term is defined, the level or fallback is decided and recorded in `m16-llm-judge.md` (open decisions), and the item is split into its own steps.
+
 ## Done when (whole file)
 
 - Items 1 to 8 are done, or have a recorded reason for being skipped.
@@ -183,3 +193,20 @@ Recipe: the 03b recipe with `timeout_s = 7200` (50k context, 10000 lines). The d
 - The verdict matches all four completed calls on this input (1774 s, 1232 s, 1449 s, 2312 s): fail, with the same reasons.
 - Judge time ranged from about 20 to 38 minutes across the runs, and one run at 1800 s timed out. At 7200 s this run finished with about three times the margin. One sample at 7200 s is not enough to say how far the tail goes.
 - Nothing was pushed.
+
+## Item 6 (positive cases): real merged changes as good fixtures (2026-11-06)
+
+Private repo `dariusgm/fleetify-m16-positive` (throwaway). Each fixture is a real fleetify commit: the base branch `base/<commit>` is the commit's parent, the change is the commit's diff, and the task text is the commit message. Verifier: `cargo test` (shared target dir). Judge: `provider`, opencode with the local model, 10000 lines, 50k context, 7200 s timeout. No CI, nothing merged.
+
+| Fixture | Size (lines) | Result | Verdict | Judge time |
+|---|---|---|---|---|
+| 5e7e29d CI failure reported once | 43 | pushed | pass | 121 s |
+| 7d46f56 agent rate limits | 76 | pushed | pass | 119 s |
+| 41dd9e9 judge timeout value | 72 | pushed | pass | 125 s |
+| 431a776 CI fix rounds | 1471 | pushed | pass | 1911 s |
+| b705066 M7 pipeline | 1555 | see below | see below | |
+
+- `b705066` first stopped at layer 1: its added lines contain `NOSONAR` in test fixtures, and the recipe denies that string. The rule is a recipe setting, so the fixture was rerun without it (branch `m16-pos-a2`). The judge's answer is below.
+- The positive result for item 6 is the 1471-line change `431a776`: a correct change above the old 1000-line limit, judged `pass` with a 22099-token input. This is the false-alarm check for item 6.
+
+b705066 (rerun without the `NOSONAR` rule, branch `m16-pos-a2`): result **pushed**, verdict **pass**, judge time 1849 s, input 22,303 tokens against a budget of 33,808. Two correct changes above the old 1000-line limit (1471 and 1555 lines) both passed.
