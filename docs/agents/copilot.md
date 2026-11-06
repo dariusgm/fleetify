@@ -24,6 +24,8 @@
 ## Decision context
 Pick Copilot when the Copilot plan is the budget and you accept that the model is not fixed. Its coarse grant is the main security trade-off: a Copilot recipe allows any shell script the agent writes into its workspace to run through `sh`.
 
+## Decision (2026-11-06)
+The user accepts the `sh` grant for the agentic loop: Copilot may run any shell script in its workspace. The verifier needs `sh`, and Copilot cannot grant a single command line. The accepted risk is that any script the agent writes into its workspace can run through `sh`.
+
 ## Open
-- Decide whether Copilot is allowed to run `sh` at all, or whether the verifier should be given another way.
 - Run the three Copilot cases again on the same model. The model is not choosable on this plan, so the comparison has to be made across runs.
