@@ -114,16 +114,43 @@ pub fn parse_response(body: &Value) -> Result<Answer, String> {
 }
 
 /// One judge call against `url`, with the key from `KEY_ENV`. Any failure is reported in
-/// `Call::review` and means `unsure`. The key never appears in the error text.
-pub fn judge_call(url: &str, model: &str, state: &str, timeout: Duration) -> Call {
+/// `Call::review` and means `unsure`. The key never appears in the error text. A `pass` below
+/// `min_confidence` is `unsure`: the recipe says how sure Jev must be before a change goes on.
+pub fn judge_call(
+    url: &str,
+    model: &str,
+    state: &str,
+    timeout: Duration,
+    min_confidence: f64,
+) -> Call {
     let started = Instant::now();
     let review = crate::envfile::var(KEY_ENV)
         .ok_or_else(|| format!("{KEY_ENV} is not set: the jev judge needs the TypeSafe API key"))
         .and_then(|key| post(url, &key, model, state, timeout))
-        .map(|answer| answer.review);
+        .map(|answer| apply_min_confidence(answer, min_confidence));
     Call {
         review,
         duration: started.elapsed(),
+    }
+}
+
+/// A `pass` counts only at or above `min_confidence`. Jev always gives a confidence for a choice,
+/// so a missing one counts as 0. `fail` and `unsure` are returned as Jev answered them.
+pub fn apply_min_confidence(answer: Answer, min_confidence: f64) -> Review {
+    if answer.review.verdict != Verdict::Pass {
+        return answer.review;
+    }
+    let confidence = answer.confidence.unwrap_or(0.0);
+    if confidence >= min_confidence {
+        return answer.review;
+    }
+    let mut reasons = answer.review.reasons;
+    reasons.push(format!(
+        "pass below the recipe's min_confidence {min_confidence:.2}: not a pass, sent for review"
+    ));
+    Review {
+        verdict: Verdict::Unsure,
+        reasons,
     }
 }
 
@@ -217,6 +244,44 @@ mod tests {
             answer.review.reasons,
             vec!["jev answered pass with confidence 0.93"]
         );
+    }
+
+    #[test]
+    fn a_pass_below_min_confidence_is_unsure() {
+        let answer = |choice: &str, confidence: f64| Answer {
+            review: Review {
+                verdict: Verdict::Pass,
+                reasons: vec!["jev answered".into()],
+            },
+            choice: choice.into(),
+            confidence: Some(confidence),
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        assert_eq!(
+            apply_min_confidence(answer("pass", 0.9), 0.8).verdict,
+            Verdict::Pass
+        );
+        assert_eq!(
+            apply_min_confidence(answer("pass", 0.6), 0.8).verdict,
+            Verdict::Unsure
+        );
+        assert_eq!(
+            apply_min_confidence(answer("pass", 0.8), 0.8).verdict,
+            Verdict::Pass
+        );
+        // A fail stays a fail whatever the confidence.
+        let fail = Answer {
+            review: Review {
+                verdict: Verdict::Fail,
+                reasons: vec![],
+            },
+            choice: "fail".into(),
+            confidence: Some(0.5),
+            input_tokens: 0,
+            output_tokens: 0,
+        };
+        assert_eq!(apply_min_confidence(fail, 0.8).verdict, Verdict::Fail);
     }
 
     #[test]
@@ -342,7 +407,7 @@ mod tests {
     fn live_jev_returns_a_verdict_for_a_small_state() {
         let state = "Task: rename the variable `x` to `count` in `src/lib.rs`.\n\
             Diff: one line changed, `let x = 1;` became `let count = 1;`, and `x` is used nowhere else.";
-        let call = judge_call(API_URL, "jev-1.14.0", state, Duration::from_secs(120));
+        let call = judge_call(API_URL, "jev-1.14.0", state, Duration::from_secs(120), 0.8);
         let review = call.review.expect("the live jev call should answer");
         assert_eq!(review.verdict, Verdict::Pass, "{:?}", review.reasons);
     }

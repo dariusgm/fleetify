@@ -1348,7 +1348,13 @@ fn judge_review(
                                     .unwrap_or(crate::recipe::JUDGE_DEFAULT_TIMEOUT_S),
                             );
                             let call = if judge.level.as_deref() == Some(jev::LEVEL) {
-                                jev::judge_call(jev::API_URL, &model, &input, timeout)
+                                jev::judge_call(
+                                    jev::API_URL,
+                                    &model,
+                                    &input,
+                                    timeout,
+                                    judge.min_confidence.unwrap_or(0.0),
+                                )
                             } else {
                                 judge::run_judge(ctx.runner, &key, &agent, &model, &input, timeout)
                             };

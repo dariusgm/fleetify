@@ -50,7 +50,7 @@ const SKIP_CI_MARKERS: &[&str] = &[
     "ci-skip",
 ];
 
-#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
     /// Must be 1.
@@ -147,7 +147,7 @@ pub struct Recipe {
 /// `[judge]`: an LLM reviews the diff and answers `pass`, `fail` or `unsure`. `fail` ends the
 /// repo as `guard_violation`, `unsure` as `needs_review`; nothing is pushed on either.
 /// Every value that matters is stated here: nothing is inherited from a config file.
-#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Judge {
     /// `session` (the executor's agent and model), `model` (another model), `provider`
@@ -182,6 +182,10 @@ pub struct Judge {
     /// Unset means the default, 1800. Must be between 1 and 7200.
     #[serde(default)]
     pub timeout_s: Option<u64>,
+    /// Jev only: the lowest confidence (0 to 1) at which a `pass` counts. A lower `pass` ends as
+    /// `unsure`, so the change goes to review. Required for level `jev`, rejected otherwise.
+    #[serde(default)]
+    pub min_confidence: Option<f64>,
 }
 
 /// The judge call's timeout when `[judge] timeout_s` is unset.
@@ -911,6 +915,17 @@ impl Recipe {
 
         // Jev is a decision model from TypeSafe, not an agent: no executor is compared with it.
         if level == crate::jev::LEVEL {
+            match judge.min_confidence {
+                None => push(
+                    "judge.min_confidence",
+                    "required for level jev: the lowest confidence (0 to 1) at which a pass counts"
+                        .into(),
+                ),
+                Some(value) if !(0.0..=1.0).contains(&value) => {
+                    push("judge.min_confidence", "must be between 0 and 1".into())
+                }
+                Some(_) => {}
+            }
             if judge.agent.is_some() {
                 push(
                     "judge.agent",
@@ -947,6 +962,12 @@ impl Recipe {
                 );
             }
             return;
+        }
+        if judge.min_confidence.is_some() {
+            push(
+                "judge.min_confidence",
+                "only level jev has a confidence: the agent judges answer pass, fail or unsure without one".into(),
+            );
         }
 
         if level == "session" {
@@ -2624,33 +2645,66 @@ mod judge_tests {
         let ok = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\nmin_confidence = 0.8\ntask = \"x\"\n",
         );
         assert!(fields(&ok).is_empty(), "{:?}", fields(&ok));
 
         let agent = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nagent = \"opencode\"\nmodel = \"jev-1.14.0\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nagent = \"opencode\"\nmodel = \"jev-1.14.0\"\nmin_confidence = 0.8\ntask = \"x\"\n",
         );
         assert!(fields(&agent).iter().any(|l| l.starts_with("judge.agent")));
 
         let llm = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"openai/gpt-5-nano\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"openai/gpt-5-nano\"\nmin_confidence = 0.8\ntask = \"x\"\n",
         );
         assert!(fields(&llm).iter().any(|l| l.starts_with("judge.model")));
 
         let too_big = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 64000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 64000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\nmin_confidence = 0.8\ntask = \"x\"\n",
         );
         assert!(
             fields(&too_big)
                 .iter()
                 .any(|l| l.starts_with("judge.context_tokens"))
+        );
+
+        let missing = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&missing)
+                .iter()
+                .any(|l| l.starts_with("judge.min_confidence"))
+        );
+
+        let not_a_probability = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\nmin_confidence = 1.5\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&not_a_probability)
+                .iter()
+                .any(|l| l.starts_with("judge.min_confidence"))
+        );
+
+        let agent_with_confidence = recipe(
+            Some("opencode"),
+            Some("llamacpp/qwen"),
+            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nmin_confidence = 0.8\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&agent_with_confidence)
+                .iter()
+                .any(|l| l.starts_with("judge.min_confidence"))
         );
     }
 
