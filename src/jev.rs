@@ -162,31 +162,98 @@ pub fn post(
     state: &str,
     timeout: Duration,
 ) -> Result<Answer, String> {
+    let started = Instant::now();
     let client = Client::builder()
         .user_agent(concat!("fleetify/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)
         .build()
         .map_err(|err| format!("cannot start the jev client: {err}"))?;
-    let response = client
-        .post(url)
-        .bearer_auth(key)
-        .json(&request_body(model, state))
-        .send()
-        .map_err(|err| format!("the jev call failed: {}", transport_text(&err)))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .map_err(|err| format!("cannot read the jev response: {err}"))?;
-    if !status.is_success() {
-        return Err(format!(
-            "jev answered HTTP {}: {}",
-            status.as_u16(),
-            error_detail(&text)
-        ));
+    let body = request_body(model, state);
+    let mut attempt = 0;
+    loop {
+        let response = client
+            .post(url)
+            .bearer_auth(key)
+            .json(&body)
+            .send()
+            .map_err(|err| format!("the jev call failed: {}", transport_text(&err)))?;
+        let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let text = response
+            .text()
+            .map_err(|err| format!("cannot read the jev response: {err}"))?;
+        if (200..300).contains(&status) {
+            let value: Value = serde_json::from_str(&text)
+                .map_err(|_| "the jev response is not JSON".to_string())?;
+            return parse_response(&value);
+        }
+        match next_step(
+            status,
+            retry_after.as_deref(),
+            attempt,
+            &error_detail(&text),
+        ) {
+            Next::Stop(message) => return Err(message),
+            Next::Retry(wait) => {
+                // The wait counts against the judge's timeout: no retry that would end past it.
+                if started.elapsed() + wait >= timeout {
+                    return Err(format!(
+                        "jev stayed unavailable (HTTP {status}) until the judge's timeout"
+                    ));
+                }
+                std::thread::sleep(wait);
+                attempt += 1;
+            }
+        }
     }
-    let body: Value =
-        serde_json::from_str(&text).map_err(|_| "the jev response is not JSON".to_string())?;
-    parse_response(&body)
+}
+
+/// What to do after one HTTP error status from Jev, as the API page lists them: 401 auth, 422
+/// validation, 429 rate limit, 529 overloaded. Rate limits and overload are retried with the
+/// `Retry-After` seconds when the response gives them, else with 2, 4 and 8 seconds, up to
+/// `MAX_RETRIES`. Every other status stops with a message that names the cause and never
+/// contains the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Next {
+    Retry(Duration),
+    Stop(String),
+}
+
+/// Retries after a 429 or 529 before the call gives up.
+pub const MAX_RETRIES: u32 = 3;
+/// The longest wait one retry takes, whatever `Retry-After` says.
+pub const MAX_WAIT: Duration = Duration::from_secs(60);
+
+pub fn next_step(status: u16, retry_after: Option<&str>, attempt: u32, detail: &str) -> Next {
+    let overloaded = |what: &str| {
+        if attempt < MAX_RETRIES {
+            let seconds = retry_after
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .unwrap_or(2u64 << attempt);
+            Next::Retry(Duration::from_secs(seconds).clamp(Duration::from_secs(1), MAX_WAIT))
+        } else {
+            Next::Stop(format!(
+                "{what} still after {MAX_RETRIES} retries (HTTP {status}): {detail}"
+            ))
+        }
+    };
+    match status {
+        401 => Next::Stop(format!(
+            "the TypeSafe key was rejected (HTTP 401): check {KEY_ENV}"
+        )),
+        400 => Next::Stop(format!("Jev rejected the request (HTTP 400): {detail}")),
+        413 => Next::Stop("the request is larger than Jev accepts (HTTP 413)".to_string()),
+        422 => Next::Stop(format!(
+            "Jev rejected the request as invalid (HTTP 422): {detail}"
+        )),
+        429 => overloaded("Jev's rate limit (HTTP 429) did not clear"),
+        529 => overloaded("Jev is overloaded (HTTP 529)"),
+        other => Next::Stop(format!("jev answered HTTP {other}: {detail}")),
+    }
 }
 
 /// The `detail` field of an error body, shortened. Falls back to the first characters of the body.
@@ -303,6 +370,49 @@ mod tests {
     }
 
     #[test]
+    fn auth_and_validation_errors_stop_with_their_cause() {
+        let auth = next_step(401, None, 0, "invalid key");
+        assert!(matches!(&auth, Next::Stop(m) if m.contains("401") && m.contains(KEY_ENV)));
+        let invalid = next_step(422, None, 0, "state missing");
+        assert!(
+            matches!(&invalid, Next::Stop(m) if m.contains("422") && m.contains("state missing"))
+        );
+        let too_big = next_step(413, None, 0, "");
+        assert!(matches!(&too_big, Next::Stop(m) if m.contains("413")));
+        let bad = next_step(400, None, 0, "max_tokens_exceeded");
+        assert!(
+            matches!(&bad, Next::Stop(m) if m.contains("400") && m.contains("max_tokens_exceeded"))
+        );
+    }
+
+    #[test]
+    fn rate_limit_and_overload_retry_with_retry_after_then_stop() {
+        assert_eq!(
+            next_step(429, Some("5"), 0, ""),
+            Next::Retry(Duration::from_secs(5))
+        );
+        assert_eq!(
+            next_step(529, None, 0, ""),
+            Next::Retry(Duration::from_secs(2))
+        );
+        assert_eq!(
+            next_step(529, None, 1, ""),
+            Next::Retry(Duration::from_secs(4))
+        );
+        // The wait is capped, and a bad header falls back to the backoff.
+        assert_eq!(next_step(429, Some("9999"), 0, ""), Next::Retry(MAX_WAIT));
+        assert_eq!(
+            next_step(429, Some("Wed, 21 Oct"), 0, ""),
+            Next::Retry(Duration::from_secs(2))
+        );
+        // After the last retry the call stops, and says which error it was.
+        let stop = next_step(429, None, MAX_RETRIES, "slow down");
+        assert!(matches!(&stop, Next::Stop(m) if m.contains("429") && m.contains("slow down")));
+        let overloaded = next_step(529, None, MAX_RETRIES, "");
+        assert!(matches!(&overloaded, Next::Stop(m) if m.contains("529")));
+    }
+
+    #[test]
     fn error_detail_is_shortened() {
         let long = "x".repeat(1000);
         let text = json!({"detail": long}).to_string();
@@ -382,7 +492,7 @@ mod tests {
 
     #[test]
     fn an_http_error_is_an_error_with_the_status_and_no_key() {
-        let (url, server) = one_shot_server(401, r#"{"detail":"invalid key"}"#);
+        let (url, server) = one_shot_server(500, r#"{"detail":"boom"}"#);
         let err = post(
             &url,
             "secret-key-xyz",
@@ -392,8 +502,8 @@ mod tests {
         )
         .unwrap_err();
         server.join().unwrap();
-        assert!(err.contains("HTTP 401"), "{err}");
-        assert!(err.contains("invalid key"), "{err}");
+        assert!(err.contains("HTTP 500"), "{err}");
+        assert!(err.contains("boom"), "{err}");
         assert!(
             !err.contains("secret-key-xyz"),
             "the key leaked into the error: {err}"

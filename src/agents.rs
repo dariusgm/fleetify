@@ -274,14 +274,26 @@ pub struct Invocation {
 
 /// What fleetify grants one agent run for this recipe.
 pub fn grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> Grants {
+    let mut commands: Vec<String> = recipe
+        .needs
+        .commands
+        .iter()
+        .filter(|command| permissions.commands.contains(command))
+        .cloned()
+        .collect();
+    // The inner loop: the agent may run the fast verifier as rendered for its workspace, the
+    // command that task.md names (verifier.md, "Fast verifier"). Nothing else is added.
+    if recipe.tools.is_some()
+        && let Some(spec) = recipe.verify_spec()
+        && let Ok(argv) = spec.render(cfg!(windows), &[("repo", "."), ("tools", AGENT_TOOLS_DIR)])
+    {
+        let verifier = argv.join(" ");
+        if !commands.contains(&verifier) {
+            commands.push(verifier);
+        }
+    }
     Grants {
-        commands: recipe
-            .needs
-            .commands
-            .iter()
-            .filter(|command| permissions.commands.contains(command))
-            .cloned()
-            .collect(),
+        commands,
         web: recipe.needs.web && permissions.web,
         directories: recipe.needs.extra_directories.clone(),
         unrestricted: recipe.needs.unrestricted
@@ -2125,6 +2137,29 @@ mod env_forwarding_tests {
             ..Permissions::default()
         };
         assert!(env_refusals(&asked, &granted, "opencode").is_empty());
+    }
+
+    #[test]
+    fn the_inner_loop_verifier_is_granted_only_with_a_tools_folder() {
+        let with_tools = Recipe::parse(
+            "schema = 1\nname = \"v\"\nbranch = \"b\"\npr_title = \"t\"\nagent = \"claude-code\"\ntools = \"tools\"\n[verify]\nargv = [\"sh\", \"{tools}/verify.sh\", \"{repo}\"]\n",
+        )
+        .unwrap();
+        let granted = grants(&with_tools, &Permissions::default(), "claude-code");
+        assert_eq!(
+            granted.commands,
+            vec![format!("sh {AGENT_TOOLS_DIR}/verify.sh .")]
+        );
+
+        let without_tools = Recipe::parse(
+            "schema = 1\nname = \"v\"\nbranch = \"b\"\npr_title = \"t\"\nagent = \"claude-code\"\n[verify]\nargv = [\"sh\", \"-c\", \"cargo test\"]\n",
+        )
+        .unwrap();
+        assert!(
+            grants(&without_tools, &Permissions::default(), "claude-code")
+                .commands
+                .is_empty()
+        );
     }
 
     #[test]
