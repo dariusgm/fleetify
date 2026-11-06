@@ -87,7 +87,9 @@ Run each once. A miss (a bad change judged `pass`) is a result, not a reason to 
 
 **Cost:** four judge calls plus the work of building the fixtures. The fixtures have to be built by hand; keep each one small (under 100 lines) so it stays inside the default limit.
 
-### 6. Good changes above the limit (false alarms)
+### 6. Good changes above the limit (false alarms) — **done**
+
+**Result (2026-11-06):** the two real correct changes above the old 1000-line limit were judged `pass`: `431a776` (1471 lines, 22,099 input tokens) and `b705066` (1555 lines, 22,303 tokens). The four smaller real commits also passed. No false alarm. Details in the record at the end of this file. The `NOSONAR` layer-1 stop on the first `b705066` run was a recipe rule, not a judge decision.
 
 **Why:** the plan asks for a correct change above the size limit, to show the judge does not reject good work for size or token budget.
 
