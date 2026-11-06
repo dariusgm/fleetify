@@ -150,8 +150,9 @@ pub struct Recipe {
 #[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Judge {
-    /// `session` (the executor's agent and model), `model` (another model) or `provider`
-    /// (a model from another provider). Required when the section is present.
+    /// `session` (the executor's agent and model), `model` (another model), `provider`
+    /// (a model from another provider) or `jev` (TypeSafe's Jev decision model, no agent).
+    /// Required when the section is present.
     #[serde(default)]
     pub level: Option<String>,
     /// Changed lines (added plus deleted, lock files excluded). Above this the verdict is
@@ -189,7 +190,7 @@ pub const JUDGE_DEFAULT_TIMEOUT_S: u64 = 1800;
 pub const JUDGE_MAX_TIMEOUT_S: u64 = 7200;
 
 /// The levels `[judge] level` accepts.
-pub const JUDGE_LEVELS: &[&str] = &["session", "model", "provider"];
+pub const JUDGE_LEVELS: &[&str] = &["session", "model", "provider", "jev"];
 
 /// `[network]`: the hosts an agent container may reach. Needs `image`, and is required when
 /// `image` is set, since the agent must reach its model.
@@ -846,14 +847,14 @@ impl Recipe {
         let Some(level) = judge.level.as_deref() else {
             push(
                 "judge.level",
-                "required when [judge] is present: session, model or provider".into(),
+                "required when [judge] is present: session, model, provider or jev".into(),
             );
             return;
         };
         if !JUDGE_LEVELS.contains(&level) {
             push(
                 "judge.level",
-                format!("{level:?} is not a level: use session, model or provider"),
+                format!("{level:?} is not a level: use session, model, provider or jev"),
             );
             return;
         }
@@ -901,6 +902,46 @@ impl Recipe {
         }
         let executor = self.agent.as_deref().or(agent_override);
         let executor_model = self.model.as_deref();
+
+        // Jev is a decision model from TypeSafe, not an agent: no executor is compared with it.
+        if level == crate::jev::LEVEL {
+            if judge.agent.is_some() {
+                push(
+                    "judge.agent",
+                    "rejected for level jev: Jev is an API, not an agent".into(),
+                );
+            }
+            match judge.model.as_deref() {
+                None => push(
+                    "judge.model",
+                    format!(
+                        "required for level jev: one of {}",
+                        crate::jev::MODELS.join(", ")
+                    ),
+                ),
+                Some(model) if !crate::jev::MODELS.contains(&model) => push(
+                    "judge.model",
+                    format!(
+                        "{model:?} is not a Jev model: use one of {}",
+                        crate::jev::MODELS.join(", ")
+                    ),
+                ),
+                Some(_) => {}
+            }
+            if judge
+                .context_tokens
+                .is_some_and(|context| context > crate::jev::QUESTION_TOKENS)
+            {
+                push(
+                    "judge.context_tokens",
+                    format!(
+                        "over {} for level jev: Jev takes that many tokens per question by default",
+                        crate::jev::QUESTION_TOKENS
+                    ),
+                );
+            }
+            return;
+        }
 
         if level == "session" {
             if judge.agent.is_some() {
@@ -2541,6 +2582,41 @@ mod judge_tests {
             fields(&bare_model)
                 .iter()
                 .any(|l| l.starts_with("judge.model"))
+        );
+    }
+
+    #[test]
+    fn jev_needs_a_jev_model_and_no_agent() {
+        let ok = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&ok).is_empty(), "{:?}", fields(&ok));
+
+        let agent = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nagent = \"opencode\"\nmodel = \"jev-1.14.0\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&agent).iter().any(|l| l.starts_with("judge.agent")));
+
+        let llm = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"openai/gpt-5-nano\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&llm).iter().any(|l| l.starts_with("judge.model")));
+
+        let too_big = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 64000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&too_big)
+                .iter()
+                .any(|l| l.starts_with("judge.context_tokens"))
         );
     }
 

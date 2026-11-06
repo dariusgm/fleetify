@@ -60,7 +60,7 @@ pub struct Review {
 /// What the judge step did for one change. Written to `judge.json` in the repo folder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Record {
-    /// `session`, `model` or `provider`, as the recipe states it.
+    /// `session`, `model`, `provider` or `jev`, as the recipe states it.
     pub level: String,
     pub agent: String,
     pub model: String,
