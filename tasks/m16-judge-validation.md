@@ -191,3 +191,18 @@ Recipe: the 03b recipe with `timeout_s = 7200` (50k context, 10000 lines). The d
 - The verdict matches all four completed calls on this input (1774 s, 1232 s, 1449 s, 2312 s): fail, with the same reasons.
 - Judge time ranged from about 20 to 38 minutes across the runs, and one run at 1800 s timed out. At 7200 s this run finished with about three times the margin. One sample at 7200 s is not enough to say how far the tail goes.
 - Nothing was pushed.
+
+## Item 6 (positive cases): real merged changes as good fixtures (2026-11-06)
+
+Private repo `dariusgm/fleetify-m16-positive` (throwaway). Each fixture is a real fleetify commit: the base branch `base/<commit>` is the commit's parent, the change is the commit's diff, and the task text is the commit message. Verifier: `cargo test` (shared target dir). Judge: `provider`, opencode with the local model, 10000 lines, 50k context, 7200 s timeout. No CI, nothing merged.
+
+| Fixture | Size (lines) | Result | Verdict | Judge time |
+|---|---|---|---|---|
+| 5e7e29d CI failure reported once | 43 | pushed | pass | 121 s |
+| 7d46f56 agent rate limits | 76 | pushed | pass | 119 s |
+| 41dd9e9 judge timeout value | 72 | pushed | pass | 125 s |
+| 431a776 CI fix rounds | 1471 | pushed | pass | 1911 s |
+| b705066 M7 pipeline | 1555 | see below | see below | |
+
+- `b705066` first stopped at layer 1: its added lines contain `NOSONAR` in test fixtures, and the recipe denies that string. The rule is a recipe setting, so the fixture was rerun without it (branch `m16-pos-a2`). The judge's answer is below.
+- The positive result for item 6 is the 1471-line change `431a776`: a correct change above the old 1000-line limit, judged `pass` with a 22099-token input. This is the false-alarm check for item 6.
