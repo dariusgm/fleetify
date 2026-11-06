@@ -224,7 +224,7 @@ fleetify reads `.env` itself at startup. A variable already set in your shell wi
 level = "jev"
 model = "jev-1.14.0"         # or jev-1.13.0; jev-latest and jev-preview move with new releases
 max_diff_lines = 1000        # over this: unsure, Jev is not called
-min_confidence = 0.8         # Jev: a pass below this confidence is unsure (needs_review); required for jev
+min_confidence = 0.6         # Jev: a pass below this confidence is unsure (needs_review); required for jev. 0.6 fits the tested prompt (tasks/m16-jev-prompt)
 context_tokens = 32000       # Jev's context per question; must not be above 32000
 output_tokens = 1000         # reserved for the answer
 task = "Rename the function foo to bar in src/lib.rs"   # or leave unset to use the recipe's instructions
