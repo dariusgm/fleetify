@@ -206,3 +206,5 @@ Private repo `dariusgm/fleetify-m16-positive` (throwaway). Each fixture is a rea
 
 - `b705066` first stopped at layer 1: its added lines contain `NOSONAR` in test fixtures, and the recipe denies that string. The rule is a recipe setting, so the fixture was rerun without it (branch `m16-pos-a2`). The judge's answer is below.
 - The positive result for item 6 is the 1471-line change `431a776`: a correct change above the old 1000-line limit, judged `pass` with a 22099-token input. This is the false-alarm check for item 6.
+
+b705066 (rerun without the `NOSONAR` rule, branch `m16-pos-a2`): result **pushed**, verdict **pass**, judge time 1849 s, input 22,303 tokens against a budget of 33,808. Two correct changes above the old 1000-line limit (1471 and 1555 lines) both passed.
