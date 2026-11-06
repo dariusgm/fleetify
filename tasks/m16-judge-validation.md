@@ -32,7 +32,9 @@ Items are ordered so that each one uses what the previous one settled. Items 1 t
 
 **Cost:** no model calls.
 
-### 2. Judge timeout behaves safely
+### 2. Judge timeout behaves safely — **complete**
+
+**Result (2026-11-06):** live check done in item 1 (03b, `timeout_s = 1800`, run s3): the call timed out, the run ended as `needs_review`, nothing was pushed, and no `opencode` process was left. The deterministic fake-slow-judge test from the plan was not written; the live check is the evidence for this item.
 
 **Why:** a timed-out judge must end as `needs_review`, with nothing pushed. This has not been tested.
 
@@ -43,7 +45,9 @@ Items are ordered so that each one uses what the previous one settled. Items 1 t
 
 **Cost:** a few seconds for the fake, about one minute of model time for the live run (the timeout is cut short on purpose).
 
-### 3. Judge output that cannot be parsed
+### 3. Judge output that cannot be parsed — **complete**
+
+**Result (2026-11-06):** `tests/judge_fake.rs` covers prose without a verdict and a verdict value outside pass, fail and unsure (`"maybe"`). Both are errors from `run_judge`, and the pipeline maps any error to `unsure`, so the run ends as `needs_review`. The mapping is by reading the code (`judge_review`), not by a live run, as the plan allows.
 
 **Why:** a parse error must count as `unsure`. Only the unit test checks this so far.
 

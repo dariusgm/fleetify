@@ -122,10 +122,35 @@ fn an_answer_without_a_verdict_is_an_error_the_pipeline_turns_into_unsure() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+fn a_verdict_outside_the_three_answers_is_an_error_too() {
+    let dir = scratch("invalid-verdict");
+    let log = dir.join("call.log");
+    let script = fake_opencode(&dir, &log, r#"{"verdict": "maybe", "reasons": ["unsure"]}"#);
+    // SAFETY: as above, this test binary runs no other test that reads this variable.
+    unsafe {
+        std::env::set_var("FLEETIFY_OPENCODE_BIN", &script);
+    }
+    let call = judge::run_judge(
+        &runner(),
+        "judge-test",
+        "opencode",
+        "llamacpp/x",
+        "# Task\n",
+        std::time::Duration::from_secs(60),
+    );
+    assert!(
+        call.review.is_err(),
+        "a verdict other than pass, fail or unsure must not be accepted: {:?}",
+        call.review
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// Both cases in one test: they share the `FLEETIFY_OPENCODE_BIN` variable, so they must not run
 /// in parallel.
 #[test]
 fn judge_calls_follow_the_rules_with_a_fake_opencode() {
     the_judge_is_one_fresh_call_in_an_empty_directory_and_reads_the_verdict();
     an_answer_without_a_verdict_is_an_error_the_pipeline_turns_into_unsure();
+    a_verdict_outside_the_three_answers_is_an_error_too();
 }
