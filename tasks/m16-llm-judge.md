@@ -6,6 +6,27 @@
 
 **Goal.** A judge reviews the diff of a change that passed the agent loop and the deterministic gates, and returns `pass`, `fail` or `unsure`. It answers what the layer-1 rules cannot: did the agent do what the task asked, and nothing more; did it weaken a check to get green. `fail` ends the repository as `guard_violation`, `unsure` as `needs_review`. Nothing is committed or pushed on either. Design: `docs/design/guards.md`, layer 2.
 
+## Current state (2026-11-06)
+
+Read this first. The sections below describe the design and the history of the decisions; this section is what is true now.
+
+**Implemented** (commits `5bc75c4` to `b29b286`, merged to `main` via PR #59 and later commits on the same branch):
+- Recipe `[judge]` with `level` (`session`, `model`, `provider`), `max_diff_lines`, `context_tokens`, `output_tokens` (required, the answer must fit the window), `timeout_s` (optional, default 1800, 1 to 7200), `agent`, `model`, `task`.
+- Judge agents: **opencode**, **claude-code** and **copilot**. Other agents are refused. Each judge call is one fresh process: no resume or session flag, only the base environment, and an empty working directory (opencode and claude-code) or no tools at all (copilot).
+- Input: the task, the verifier status, a per-package lock summary, and the diff with `-U3` minus lock files. Claude and opencode read the input from a file that is the only file they may read; copilot gets the input inline in the prompt, because its file-reading path did not work.
+- Verdicts: `pass` continues; `fail` ends as `guard_violation` (rule `judge`); `unsure` ends as `needs_review`. `unsure` covers over the line limit, over the token budget, a timeout, and an unparseable answer. Nothing is pushed on either failure.
+- Record: `judge.json` and `judge-input.md` in the repo folder of each run.
+
+**Validated** (details in `m16-judge-validation.md` and `docs/design/judge-verification.md`):
+- Timeout: a live timeout ended as `needs_review` with nothing pushed; 03b ran to completion at 7200 s.
+- Stability: claude 15 of 15, copilot `auto` 15 of 15 runs consistent; opencode consistent on 03b, one run on the small fixtures.
+- Positives: five real changes, 43 to 1555 lines, all `pass`.
+- Grid: three implementation tools by three judge tools, plus a gamed fixture: 30 of 30 match.
+
+**Not validated yet:** the bad fixtures beyond the gaming case (item 5), an agent run that changes the lock file (item 7), the context-window experiment (item 8), the `model` level live (item 9), the fix round (item 10), refusal messages (item 11), the Jev question (item 12).
+
+**Open decisions for the user:** 8 (labels for real runs), 9 (approved provider and model for company code), item 9 and 10 of the validation plan (second model on the server; CI fix-round run), item 12 (what "support a deciding model like jev" means, and whether diffs may leave the machine).
+
 ## Placement
 
 The judge runs once the agent has finished and the change is about to leave the machine: after the agent loop, after the verifier (outer gate, trusted copy) and the layer-1 guards, and immediately before the commit and push. Nothing is pushed to the remote and no CI is triggered before the verdict. The agent loop itself is not limited by the judge, so it may run as long as it needs.
@@ -238,7 +259,7 @@ M16 says "only if M17 shows the guards are not enough". The integration runs abo
 2. **Build now or after M17?** The configuration, the fresh-call enforcement and the fake-judge tests are cheap; live use needs a provider.
 3. **Context window**: `-U3` as the start, measured against `-U0` and `-U10` (see "Context size").
 4. **Lock files**: excluded from size and input, with the deterministic summary as proposed. Confirm the list of patterns and the summary format.
-5. **One-shot check per agent**: confirm for claude-code, copilot and opencode that the one-shot mode has no resume, continue or server-side conversation continuation. Until this is confirmed, the judge is not enabled for that agent.
+5. **One-shot check per agent**: confirm for claude-code, copilot and opencode that the one-shot mode has no resume, continue or server-side conversation continuation. Status (2026-11-06): the local flags are checked for all three (no continue or session flag; copilot and claude get no session persistence); server-side continuation is not checked for any of them. The judge is enabled for all three, and the server-side question stays open.
 6. **Default model for `model` and `provider`**: refused when the executor uses the agent default (proposed), because the provider cannot be compared. Alternative: resolve the agent's default model at run time and record it. Proposed: refuse, since it keeps the recipe self-describing.
 7. **`unsure` handling**: `needs_review` with the workspace kept (proposed, as in the design). No automatic retry: a parse error is a signal, not noise.
 8. **Labels for real runs**: who labels a real change as good or bad when the judge disagrees with the outcome? Proposed: the user, once per disagreement, recorded in the run folder.
@@ -246,8 +267,8 @@ M16 says "only if M17 shows the guards are not enough". The integration runs abo
 
 ## Follow-up outside this file
 
-- `docs/design/guards.md` still shows a `[judge]` example with `max_diff_lines = 1500`, recommends a different model by default and places the judge before the commit without naming the push. It has to be updated to the three levels, the no-judge default and the push boundary.
-- `docs/design/basic-questions.md` shows `max_diff_lines = 1500` and a commented-out section. Update to the explicit form with 1000.
+- Done (2026-11-06): `docs/design/guards.md` shows the implemented `[judge]` configuration; `docs/design/basic-questions.md` shows the same form; `DECISIONS.md` has the M16 status and a dated entry.
+- Still to do: `docs/design/judge-verification.md` is the place for results and has to be kept in step with the validation file.
 
 ## Done when
 
@@ -336,7 +357,7 @@ The lock summary for 02 was: `Cargo.lock`: changed chrono 0.4.44 → 0.4.45, cla
 **Decisions I made (please check):**
 1. Executor is scripted (`prepare` applies the fixture), not claude-code or copilot. That is the reading of "scripted changes" in step 5, and it keeps the local model the only LLM in the run.
 2. `level = "provider"` is accepted when the recipe has no executor agent. With no executor there is no provider to match. `session` is refused without an executor; `model` and `provider` require an explicit executor model when there is one.
-3. The judge runs on opencode only. claude-code and copilot are refused, because their one-shot mode is not confirmed (decision 5).
+3. At the time, the judge ran on opencode only; claude-code and copilot were refused until their one-shot mode was confirmed (decision 5). Both are now accepted, see Current state.
 4. Judge input: the task text (`[judge] task`, or the recipe's instructions), the verifier status, a lock summary, and the diff with `-U3`, excluding `*.lock` and `package-lock.json`. Over `max_diff_lines`, the verdict is `unsure` and the judge is not called.
 5. Result mapping: `fail` → `guard_violation` with rule `judge`; `unsure` → `needs_review`. Every verdict and its input size is written to `judge.json` in the repo folder, with `judge-input.md` beside it.
 
