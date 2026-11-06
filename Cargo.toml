@@ -24,3 +24,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.59.0", default-features = false }
+
+# The stand-in for `opencode` in tests/judge_fake.rs. Built with the package so that the test can
+# start it on every platform; not a product binary (release uploads match `fleetify*` only).
+[[bin]]
+name = "fake-opencode"
+path = "tests/support/fake_opencode.rs"

@@ -2,6 +2,7 @@
 //! that holds only the input, no executor variables, and a verdict read from the output.
 //! The fake records what it was given, so the test can check the call itself.
 
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,23 +18,17 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// A fake `opencode`: records argv, working directory and environment in `log`, requires the
-/// input file in its working directory, then prints `output`.
+/// A fake `opencode`: the `fake-opencode` helper binary, copied into `dir` with its settings
+/// beside it. It records argv, working directory and environment in `log`, requires the input
+/// file in its working directory, then prints `output`.
 fn fake_opencode(dir: &Path, log: &Path, output: &str) -> PathBuf {
-    let script = dir.join("fake-opencode.sh");
-    let body = format!(
-        "#!/bin/sh\n{{\n  echo \"cwd=$(pwd)\"\n  for a in \"$@\"; do echo \"arg=$a\"; done\n  env | sort | sed 's/^/env: /'\n}} > '{log}'\n\
-         if [ ! -f input.md ]; then echo 'no input' >&2; exit 2; fi\n\
-         cat input.md >> '{log}'\nprintf '%s\\n' '{output}'\n",
-        log = log.display(),
-        output = output.replace('\'', "'\\''"),
-    );
-    fs::write(&script, body).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let script = dir.join(format!("fake-opencode{}", env::consts::EXE_SUFFIX));
+    fs::copy(env!("CARGO_BIN_EXE_fake-opencode"), &script).unwrap();
+    fs::write(
+        dir.join("fake-opencode.conf"),
+        format!("{}\n{output}\n", log.display()),
+    )
+    .unwrap();
     script
 }
 
