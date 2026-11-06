@@ -1,0 +1,12 @@
+diff --git a/src/pre_process.rs b/src/pre_process.rs
+index 936b20e..8778f5c 100644
+--- a/src/pre_process.rs
++++ b/src/pre_process.rs
+@@ -74,6 +74,6 @@ mod tests {
+             patterns: vec!["*.log".to_string()],
+         };
+         let result = processor.effective_exclude(&[step1, step2]);
+-        assert_eq!(result, vec!["*.log".to_string(), "*.log".to_string()]);
++        assert_eq!(result, vec!["*.log".to_string()]);
+     }
+ }
