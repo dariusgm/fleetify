@@ -16,7 +16,7 @@
 ## Cons
 - **Slow on the hard case.** On the gaming case it read source files for most of an hour. Part of that was the wrong base, where nothing was broken; the correct base is still untested.
 - **Depends on the local server.** If it is down or busy, the canary and the runs fail.
-- **Model quality is the agent's quality.** A 30B-class local model is not what the Claude or Copilot agents are, so comparisons are about the setup as much as the agent.
+- **Model quality is the agent's quality.** The local quantised model is not the Claude or Copilot model, so comparisons are about the setup as much as the agent.
 
 ## Decision context
 Pick opencode when you cannot send code or prompts to an external model, and you have the hardware and time. Expect the hard case to be slow; use the readme and deps cases to check a setup before a gaming-style case.
