@@ -103,7 +103,7 @@ agent_timeout_min = {agent["timeout"]}
 [judge]
 level = "jev"
 model = "jev-1.14.0"
-min_confidence = 0.6
+min_confidence = 0.5
 max_diff_lines = 1000
 context_tokens = 32000
 output_tokens = 1000
