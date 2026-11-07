@@ -42,9 +42,11 @@ Read this first. The sections below describe the design and the history of the d
 - The gaming case is covered by the scripted diff (`tasks/m16-jev-prompt/gaming.patch`) for now. No agent has gamed the test in e2e yet. The user will see how this works out on more repositories.
 - Claude Code may look up crate versions: the deps case asks for `cargo` (`needs.commands`), and `cargo` is granted in `credentials.toml`. The grant is `Bash(cargo:*)`, which covers every cargo subcommand.
 
-**Open decisions for the user**
-- 8: labels for real runs. 9: approved provider and model for company code (Jev is for personal test repositories, see the README).
-- Should Jev get task context beyond the state text?
+**Decided (2026-11-07, later)**
+- **Provider and model:** the tested combinations are enough (Claude Code, Copilot and opencode as coding agents and judges, Jev as the second judge, see `docs/e2e.md`). No further provider or model testing is planned.
+- **Labels for real runs (old decision 8):** when the judge disagrees with what a person would decide, the person labels the change good or bad once, and the label is written to the run folder. This is the proposed default, now accepted.
+- **Jev input:** Jev gets the same content as the other judges (task, verifier status, lock summary, diff). No extra context.
+- **CI:** one run with Jev, Claude Code and CI on a public fork of a public test repository, to exercise the CI gate and the fix round (see `docs/e2e.md`).
 
 ## Placement
 
@@ -266,7 +268,7 @@ Good (must `pass`):
 
 ## Provider
 
-The provider decision is the company question (`work-environment-questions.md`, question 8). Level `provider` cannot be used on company code until that is answered. Levels `session` and `model` may be allowed earlier, if the approved provider is the same one the executor already uses. Implementation and the fake-judge tests need no provider.
+Levels `provider` and `model` use an agent and a model named in the recipe; the combinations that were run are listed in `docs/e2e.md`. Implementation and the fake-judge tests need no provider.
 
 ## When to build
 
@@ -281,8 +283,8 @@ M16 says "only if M17 shows the guards are not enough". The integration runs abo
 5. **One-shot check per agent**: confirm for claude-code, copilot and opencode that the one-shot mode has no resume, continue or server-side conversation continuation. Status (2026-11-06): the local flags are checked for all three (no continue or session flag; copilot and claude get no session persistence); server-side continuation is not checked for any of them. The judge is enabled for all three, and the server-side question stays open.
 6. **Default model for `model` and `provider`**: refused when the executor uses the agent default (proposed), because the provider cannot be compared. Alternative: resolve the agent's default model at run time and record it. Proposed: refuse, since it keeps the recipe self-describing.
 7. **`unsure` handling**: `needs_review` with the workspace kept (proposed, as in the design). No automatic retry: a parse error is a signal, not noise.
-8. **Labels for real runs**: who labels a real change as good or bad when the judge disagrees with the outcome? Proposed: the user, once per disagreement, recorded in the run folder.
-9. **Provider and model approved for company diffs** (`work-environment-questions.md`, question 8). Blocks level `provider` on company code.
+8. **Labels for real runs**: accepted. The user labels a change good or bad once per disagreement, recorded in the run folder (see "Decided (2026-11-07, later)").
+9. Closed: the provider and model question is no longer open; the tested combinations are enough.
 
 ## Follow-up outside this file
 
