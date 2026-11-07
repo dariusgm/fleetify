@@ -142,6 +142,27 @@ Every fleetify run of the M16 judge work, one row each, numbered in the order th
 | 122 | dep update | GitHub (github.com) dariusgm/fleetify-m16-templator | main @ a1dd380 | claude-code | Claude Code | claude-haiku-5-5 | opencode / llamacpp/qwen3.8-flash-next (level provider) | 82s / 65s | pushed / verdict pass | not run (no MR) | `m16-oc-claude-code-agent-02-deps-opencode` |
 | 123 | readme change | GitHub (github.com) dariusgm/fleetify-m16-templator | main @ a1dd380 | claude-code | Claude Code | claude-haiku-5-5 | opencode / llamacpp/qwen3.8-flash-next (level provider) | 79s / 61s | pushed / verdict pass | not run (no MR) | `m16-oc-claude-code-agent-01-readme-opencode` |
 
+## CI run (2026-11-07)
+
+The first run with CI, on the public test copy `dariusgm/templator-m16-ci` (a mirror of `dariusgm/templator`, not a GitHub fork: GitHub does not fork a repo into its owner's account).
+
+| Setting | Value |
+|---|---|
+| Source | `dariusgm/templator-m16-ci`, base `main` @ a1dd380 |
+| Coding agent | Claude Code, `haiku` (check-agent passed for this model) |
+| Judge | Jev, `jev-1.14.0`, min confidence 0.5 |
+| Change | deps: clap, chrono, log bumped in `Cargo.toml` (`m16-ci/claude-code-deps-1`) |
+| CI | GitHub Actions, `wait = true`, fix rounds 5 (default), merge off |
+| Judge verdict | pass |
+| Pushed | yes, PR opened on the test copy |
+| CI result | failed: the Security audit job, advisory RUSTSEC-2026-0204 and RUSTSEC-2026-0190 |
+| Fix round | 1 round. The agent made no change and reported that the advisories need a lock update outside this task. Result `ci_failed` |
+
+Findings:
+- **The CI failure is not from the change.** The push run on `main` (commit a1dd380) already fails on the same Security audit job, so the base is red.
+- **Fleetify's fix round ran** and ended safely: no change, nothing merged, the run ended `ci_failed`. The fix round is now exercised, not untested.
+- **CI status polling failed** five times with "connection closed before message" before the status came back. Fleetify retried on its own; the run was not lost.
+
 ## Failed attempts (not counted above)
 
 - `m16-x1-*` (8 runs, 2026-11-07): the recipe set the base to `origin/main`, which fleetify does not accept. Fixed to `main` and rerun as `m16-x1b-*`.
@@ -149,7 +170,7 @@ Every fleetify run of the M16 judge work, one row each, numbered in the order th
 
 ## Not run or missing
 
-- **CI:** no run enabled a merge request, so CI was never exercised. A fix round (CI failure, then a second push) is therefore untested (validation item 10).
+- **CI:** one run with CI (see "CI run" above). The base `main` of the test copy fails its own Security audit, so no CI pass has been seen yet.
 - **`model` judge level on the local server:** out of scope, the server is shared (validation item 9).
 - **Lock summary from a real agent run:** not run (validation item 7). The lock summary has been produced only from scripted lock edits.
 - **Diff-context sweep (`diff_context`):** the option exists; the sweep over 0, 3 and 10 lines is not run (validation item 8).
