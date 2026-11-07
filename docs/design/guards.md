@@ -9,7 +9,7 @@ Guards decide whether the agent's diff may leave the machine. They are layered s
 **Layer 2: LLM judge (optional, off by default).** Answers questions rules cannot: is this diff what the task asked for, or did the agent refactor unrelated code, weaken a check or "fix" the symptom? Design and run record: `tasks/m16-llm-judge.md`.
 
 - **Placement:** after the agent, the verifier (trusted copy) and the layer-1 guards pass, immediately before the commit and push. Nothing is pushed and no CI is triggered before the verdict. A fix round (CI failure) passes through the judge again before its push.
-- **What it is:** a separate, fresh, one-shot LLM call. Not the executing agent's session, no tools, no repo access. Input: the task text, the verifier summary, a deterministic summary of changed lock files, and the diff with `-U3` (lock files excluded). Output: `{"verdict": "pass" | "fail" | "unsure", "reasons": [...]}`. A missing or unparseable answer counts as `unsure`.
+- **What it is:** a separate, fresh, one-shot LLM call. Not the executing agent's session, no tools, no repo access. Input: the task text, the verifier summary, a deterministic summary of changed lock files, and the diff with `-U3` by default (`diff_context` changes it; lock files excluded). Output: `{"verdict": "pass" | "fail" | "unsure", "reasons": [...]}`. A missing or unparseable answer counts as `unsure`.
 - **Configuration: explicit per recipe, no default model.** The section is absent by default, and a recipe without `[judge]` runs no judge. Every value is in the recipe; nothing is inherited from a config file or the environment:
 
   ```toml
@@ -19,6 +19,7 @@ Guards decide whether the agent's diff may leave the machine. They are layered s
   context_tokens = 32768             # the judge model's context window; required
   output_tokens = 8192               # reserved for the answer; required, below context_tokens
   # timeout_s = 1800                 # one call's limit in seconds (1 to 7200); default 1800
+  # diff_context = 3                 # unchanged lines around each change in the diff (0 to 100); default 3
   # agent = "opencode"               # required for model and provider; rejected for session
   # model = "llamacpp/qwen3.8-flash-next"   # required for model and provider; rejected for session
   # task = "..."                     # the task text; unset: the recipe's instructions

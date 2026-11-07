@@ -186,12 +186,20 @@ pub struct Judge {
     /// `unsure`, so the change goes to review. Required for level `jev`, rejected otherwise.
     #[serde(default)]
     pub min_confidence: Option<f64>,
+    /// Unchanged lines of context around each change in the diff the judge reads (`git diff -U`).
+    /// Unset means the default, 3. Must be between 0 and 100.
+    #[serde(default)]
+    pub diff_context: Option<u32>,
 }
 
 /// The judge call's timeout when `[judge] timeout_s` is unset.
 pub const JUDGE_DEFAULT_TIMEOUT_S: u64 = 1800;
 /// The largest value `[judge] timeout_s` accepts.
 pub const JUDGE_MAX_TIMEOUT_S: u64 = 7200;
+/// The diff context in lines when `[judge] diff_context` is unset.
+pub const JUDGE_DEFAULT_DIFF_CONTEXT: u32 = 3;
+/// The largest value `[judge] diff_context` accepts.
+pub const JUDGE_MAX_DIFF_CONTEXT: u32 = 100;
 
 /// The levels `[judge] level` accepts.
 pub const JUDGE_LEVELS: &[&str] = &["session", "model", "provider", "jev"];
@@ -897,6 +905,14 @@ impl Recipe {
             push(
                 "judge.timeout_s",
                 format!("{timeout} is out of range: use 1 to {JUDGE_MAX_TIMEOUT_S} seconds"),
+            );
+        }
+        if let Some(context) = judge.diff_context
+            && context > JUDGE_MAX_DIFF_CONTEXT
+        {
+            push(
+                "judge.diff_context",
+                format!("{context} is out of range: use 0 to {JUDGE_MAX_DIFF_CONTEXT} lines"),
             );
         }
         if judge.task.is_none() && self.instructions.is_empty() {
@@ -2842,6 +2858,24 @@ mod judge_tests {
                 .any(|l| l.starts_with("judge.timeout_s"))
         );
         assert_eq!(recipe(None, None, base).judge.unwrap().timeout_s, None);
+    }
+
+    #[test]
+    fn the_judge_diff_context_is_optional_and_bounded() {
+        let base = "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 10000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\ntask = \"x\"\n";
+        assert!(fields(&recipe(None, None, base)).is_empty());
+        assert_eq!(recipe(None, None, base).judge.unwrap().diff_context, None);
+        for ok in ["0", "10", "100"] {
+            assert!(
+                fields(&recipe(None, None, &format!("{base}diff_context = {ok}\n"))).is_empty(),
+                "{ok} should be accepted"
+            );
+        }
+        assert!(
+            fields(&recipe(None, None, &format!("{base}diff_context = 101\n")))
+                .iter()
+                .any(|l| l.starts_with("judge.diff_context"))
+        );
     }
 
     #[test]

@@ -1465,13 +1465,19 @@ fn judge_input(
         Some(_) => "The verifier passed on this change before the judge ran.".to_string(),
         None => "No verifier is configured for this recipe.".to_string(),
     };
+    let context = format!(
+        "-U{}",
+        judge
+            .diff_context
+            .unwrap_or(crate::recipe::JUDGE_DEFAULT_DIFF_CONTEXT)
+    );
     let diff = git(
         local,
         Some(workspace),
         &[
             "diff",
             "--cached",
-            "-U3",
+            context.as_str(),
             base,
             "--",
             ".",

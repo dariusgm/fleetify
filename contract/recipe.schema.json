@@ -522,6 +522,16 @@
           "default": null,
           "minimum": 0
         },
+        "diff_context": {
+          "description": "Unchanged lines of context around each change in the diff the judge reads (`git diff -U`).\nUnset means the default, 3. Must be between 0 and 100.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
         "level": {
           "description": "`session` (the executor's agent and model), `model` (another model), `provider`\n(a model from another provider) or `jev` (TypeSafe's Jev decision model, no agent).\nRequired when the section is present.",
           "type": [
