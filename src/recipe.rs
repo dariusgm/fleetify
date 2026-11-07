@@ -50,7 +50,7 @@ const SKIP_CI_MARKERS: &[&str] = &[
     "ci-skip",
 ];
 
-#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Recipe {
     /// Must be 1.
@@ -147,11 +147,12 @@ pub struct Recipe {
 /// `[judge]`: an LLM reviews the diff and answers `pass`, `fail` or `unsure`. `fail` ends the
 /// repo as `guard_violation`, `unsure` as `needs_review`; nothing is pushed on either.
 /// Every value that matters is stated here: nothing is inherited from a config file.
-#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Judge {
-    /// `session` (the executor's agent and model), `model` (another model) or `provider`
-    /// (a model from another provider). Required when the section is present.
+    /// `session` (the executor's agent and model), `model` (another model), `provider`
+    /// (a model from another provider) or `jev` (TypeSafe's Jev decision model, no agent).
+    /// Required when the section is present.
     #[serde(default)]
     pub level: Option<String>,
     /// Changed lines (added plus deleted, lock files excluded). Above this the verdict is
@@ -181,15 +182,27 @@ pub struct Judge {
     /// Unset means the default, 1800. Must be between 1 and 7200.
     #[serde(default)]
     pub timeout_s: Option<u64>,
+    /// Jev only: the lowest confidence (0 to 1) at which a `pass` counts. A lower `pass` ends as
+    /// `unsure`, so the change goes to review. Required for level `jev`, rejected otherwise.
+    #[serde(default)]
+    pub min_confidence: Option<f64>,
+    /// Unchanged lines of context around each change in the diff the judge reads (`git diff -U`).
+    /// Unset means the default, 3. Must be between 0 and 100.
+    #[serde(default)]
+    pub diff_context: Option<u32>,
 }
 
 /// The judge call's timeout when `[judge] timeout_s` is unset.
 pub const JUDGE_DEFAULT_TIMEOUT_S: u64 = 1800;
 /// The largest value `[judge] timeout_s` accepts.
 pub const JUDGE_MAX_TIMEOUT_S: u64 = 7200;
+/// The diff context in lines when `[judge] diff_context` is unset.
+pub const JUDGE_DEFAULT_DIFF_CONTEXT: u32 = 3;
+/// The largest value `[judge] diff_context` accepts.
+pub const JUDGE_MAX_DIFF_CONTEXT: u32 = 100;
 
 /// The levels `[judge] level` accepts.
-pub const JUDGE_LEVELS: &[&str] = &["session", "model", "provider"];
+pub const JUDGE_LEVELS: &[&str] = &["session", "model", "provider", "jev"];
 
 /// `[network]`: the hosts an agent container may reach. Needs `image`, and is required when
 /// `image` is set, since the agent must reach its model.
@@ -373,6 +386,11 @@ pub struct Needs {
     /// unrestricted = true` in credentials.toml. Not confined by fleetify's grants.
     #[serde(default)]
     pub unrestricted: bool,
+    /// Environment variables to forward to the agent, by name. The value comes from the
+    /// environment or `.env`; the user must grant each name in `credentials.toml`
+    /// (`[permissions] env` or `[permissions.agent.<name>] env`), or the run is refused.
+    #[serde(default)]
+    pub env: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -809,6 +827,7 @@ impl Recipe {
             }
         }
         self.validate_agent_env(push);
+        self.validate_needs_env(push);
         self.validate_network(push);
         for (agent, settings) in &self.agents {
             let Some(config) = &settings.config else {
@@ -846,14 +865,14 @@ impl Recipe {
         let Some(level) = judge.level.as_deref() else {
             push(
                 "judge.level",
-                "required when [judge] is present: session, model or provider".into(),
+                "required when [judge] is present: session, model, provider or jev".into(),
             );
             return;
         };
         if !JUDGE_LEVELS.contains(&level) {
             push(
                 "judge.level",
-                format!("{level:?} is not a level: use session, model or provider"),
+                format!("{level:?} is not a level: use session, model, provider or jev"),
             );
             return;
         }
@@ -888,6 +907,14 @@ impl Recipe {
                 format!("{timeout} is out of range: use 1 to {JUDGE_MAX_TIMEOUT_S} seconds"),
             );
         }
+        if let Some(context) = judge.diff_context
+            && context > JUDGE_MAX_DIFF_CONTEXT
+        {
+            push(
+                "judge.diff_context",
+                format!("{context} is out of range: use 0 to {JUDGE_MAX_DIFF_CONTEXT} lines"),
+            );
+        }
         if judge.task.is_none() && self.instructions.is_empty() {
             push(
                 "judge.task",
@@ -901,6 +928,63 @@ impl Recipe {
         }
         let executor = self.agent.as_deref().or(agent_override);
         let executor_model = self.model.as_deref();
+
+        // Jev is a decision model from TypeSafe, not an agent: no executor is compared with it.
+        if level == crate::jev::LEVEL {
+            match judge.min_confidence {
+                None => push(
+                    "judge.min_confidence",
+                    "required for level jev: the lowest confidence (0 to 1) at which a pass counts"
+                        .into(),
+                ),
+                Some(value) if !(0.0..=1.0).contains(&value) => {
+                    push("judge.min_confidence", "must be between 0 and 1".into())
+                }
+                Some(_) => {}
+            }
+            if judge.agent.is_some() {
+                push(
+                    "judge.agent",
+                    "rejected for level jev: Jev is an API, not an agent".into(),
+                );
+            }
+            match judge.model.as_deref() {
+                None => push(
+                    "judge.model",
+                    format!(
+                        "required for level jev: one of {}",
+                        crate::jev::MODELS.join(", ")
+                    ),
+                ),
+                Some(model) if !crate::jev::MODELS.contains(&model) => push(
+                    "judge.model",
+                    format!(
+                        "{model:?} is not a Jev model: use one of {}",
+                        crate::jev::MODELS.join(", ")
+                    ),
+                ),
+                Some(_) => {}
+            }
+            if judge
+                .context_tokens
+                .is_some_and(|context| context > crate::jev::QUESTION_TOKENS)
+            {
+                push(
+                    "judge.context_tokens",
+                    format!(
+                        "over {} for level jev: Jev takes that many tokens per question by default",
+                        crate::jev::QUESTION_TOKENS
+                    ),
+                );
+            }
+            return;
+        }
+        if judge.min_confidence.is_some() {
+            push(
+                "judge.min_confidence",
+                "only level jev has a confidence: the agent judges answer pass, fail or unsure without one".into(),
+            );
+        }
 
         if level == "session" {
             if judge.agent.is_some() {
@@ -927,12 +1011,18 @@ impl Recipe {
 
         match judge.agent.as_deref() {
             None => push("judge.agent", format!("required for level {level}")),
-            Some(agent) if agent != crate::agents::OPENCODE => push(
-                "judge.agent",
-                format!(
-                    "the judge runs on opencode only for now; {agent} needs its one-shot mode confirmed first (tasks/m16-llm-judge.md, decision 5)"
-                ),
-            ),
+            Some(agent)
+                if agent != crate::agents::OPENCODE
+                    && agent != crate::agents::CLAUDE_CODE
+                    && agent != crate::agents::COPILOT =>
+            {
+                push(
+                    "judge.agent",
+                    format!(
+                        "the judge runs on opencode, claude-code and copilot; {agent} needs its one-shot mode confirmed first (tasks/m16-llm-judge.md, decision 5)"
+                    ),
+                )
+            }
             Some(_) => {}
         }
         let judge_provider = match judge.model.as_deref() {
@@ -940,17 +1030,25 @@ impl Recipe {
                 push("judge.model", format!("required for level {level}"));
                 None
             }
-            Some(model) => match provider_of(model) {
-                Some(provider) => Some(provider),
-                None => {
-                    push(
-                        "judge.model",
-                        format!(
-                            "{model:?} must be in provider/model form, as opencode names models"
-                        ),
-                    );
-                    None
+            // opencode names the provider in the model; claude-code and copilot have one provider each, fixed by the agent.
+            Some(model) => match judge.agent.as_deref() {
+                Some(agent)
+                    if agent == crate::agents::CLAUDE_CODE || agent == crate::agents::COPILOT =>
+                {
+                    executor_provider(agent, model)
                 }
+                _ => match provider_of(model) {
+                    Some(provider) => Some(provider.to_string()),
+                    None => {
+                        push(
+                            "judge.model",
+                            format!(
+                                "{model:?} must be in provider/model form, as opencode names models"
+                            ),
+                        );
+                        None
+                    }
+                },
             },
         };
         // The executor's model and provider decide what `model` and `provider` mean. Without
@@ -1020,6 +1118,34 @@ impl Recipe {
         }
         if let Err(message) = crate::egress::parse_policy(allow, &self.network.ignore) {
             push("network.ignore", message);
+        }
+    }
+
+    /// `needs.env`: variable names, each once. Whether the user grants and sets them is checked
+    /// at run start (`agents::env_refusals`).
+    fn validate_needs_env(&self, push: &mut impl FnMut(&str, String)) {
+        let mut seen = std::collections::BTreeSet::new();
+        for name in &self.needs.env {
+            let shaped = name
+                .chars()
+                .enumerate()
+                .all(|(i, c)| c == '_' || c.is_ascii_uppercase() || (i > 0 && c.is_ascii_digit()));
+            if !shaped || name.is_empty() {
+                push(
+                    "needs.env",
+                    format!(
+                        "{name:?} is not an environment variable name (upper case letters, digits and _)"
+                    ),
+                );
+            } else if crate::runner::BASE_ENV.contains(&name.as_str()) {
+                push(
+                    "needs.env",
+                    format!("{name} is already passed to every agent"),
+                );
+            }
+            if !seen.insert(name.as_str()) {
+                push("needs.env", format!("{name} is listed twice"));
+            }
         }
     }
 
@@ -2531,17 +2657,99 @@ mod judge_tests {
     }
 
     #[test]
-    fn only_opencode_judges_for_now() {
+    fn jev_needs_a_jev_model_and_no_agent() {
+        let ok = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\nmin_confidence = 0.8\ntask = \"x\"\n",
+        );
+        assert!(fields(&ok).is_empty(), "{:?}", fields(&ok));
+
+        let agent = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nagent = \"opencode\"\nmodel = \"jev-1.14.0\"\nmin_confidence = 0.8\ntask = \"x\"\n",
+        );
+        assert!(fields(&agent).iter().any(|l| l.starts_with("judge.agent")));
+
+        let llm = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"openai/gpt-5-nano\"\nmin_confidence = 0.8\ntask = \"x\"\n",
+        );
+        assert!(fields(&llm).iter().any(|l| l.starts_with("judge.model")));
+
+        let too_big = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 64000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\nmin_confidence = 0.8\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&too_big)
+                .iter()
+                .any(|l| l.starts_with("judge.context_tokens"))
+        );
+
+        let missing = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&missing)
+                .iter()
+                .any(|l| l.starts_with("judge.min_confidence"))
+        );
+
+        let not_a_probability = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"jev\"\nmax_diff_lines = 1000\ncontext_tokens = 32000\noutput_tokens = 1000\nmodel = \"jev-1.14.0\"\nmin_confidence = 1.5\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&not_a_probability)
+                .iter()
+                .any(|l| l.starts_with("judge.min_confidence"))
+        );
+
+        let agent_with_confidence = recipe(
+            Some("opencode"),
+            Some("llamacpp/qwen"),
+            "\n[judge]\nlevel = \"session\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nmin_confidence = 0.8\ntask = \"x\"\n",
+        );
+        assert!(
+            fields(&agent_with_confidence)
+                .iter()
+                .any(|l| l.starts_with("judge.min_confidence"))
+        );
+    }
+
+    #[test]
+    fn the_judge_runs_on_opencode_claude_code_and_copilot() {
         let r = recipe(
             None,
             None,
-            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"claude-code\"\nmodel = \"sonnet\"\ntask = \"x\"\n",
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"gemini\"\nmodel = \"x\"\ntask = \"x\"\n",
         );
         assert!(
             fields(&r)
                 .iter()
-                .any(|l| l.starts_with("judge.agent") && l.contains("opencode only"))
+                .any(|l| l.starts_with("judge.agent") && l.contains("gemini needs")),
+            "{:?}",
+            fields(&r)
         );
+        let ok = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"model\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"claude-code\"\nmodel = \"claude-haiku-5-5\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&ok).is_empty(), "{:?}", fields(&ok));
+        let copilot = recipe(
+            None,
+            None,
+            "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 1000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"copilot\"\nmodel = \"auto\"\ntask = \"x\"\n",
+        );
+        assert!(fields(&copilot).is_empty(), "{:?}", fields(&copilot));
     }
 
     #[test]
@@ -2650,6 +2858,24 @@ mod judge_tests {
                 .any(|l| l.starts_with("judge.timeout_s"))
         );
         assert_eq!(recipe(None, None, base).judge.unwrap().timeout_s, None);
+    }
+
+    #[test]
+    fn the_judge_diff_context_is_optional_and_bounded() {
+        let base = "\n[judge]\nlevel = \"provider\"\nmax_diff_lines = 10000\ncontext_tokens = 32768\noutput_tokens = 8192\nagent = \"opencode\"\nmodel = \"llamacpp/x\"\ntask = \"x\"\n";
+        assert!(fields(&recipe(None, None, base)).is_empty());
+        assert_eq!(recipe(None, None, base).judge.unwrap().diff_context, None);
+        for ok in ["0", "10", "100"] {
+            assert!(
+                fields(&recipe(None, None, &format!("{base}diff_context = {ok}\n"))).is_empty(),
+                "{ok} should be accepted"
+            );
+        }
+        assert!(
+            fields(&recipe(None, None, &format!("{base}diff_context = 101\n")))
+                .iter()
+                .any(|l| l.starts_with("judge.diff_context"))
+        );
     }
 
     #[test]

@@ -205,6 +205,50 @@ The script gets the repository path as its only argument, like the verifier. The
 
 The example is `examples/recipes/scripted-update`. Check a recipe without running it with `fleetify validate <recipe-dir>`.
 
+### LLM judge with Jev (optional)
+
+A judge reviews the diff of a change that passed the verifier and the guards, and before anything is pushed. It answers `pass`, `fail` or `unsure`: `fail` ends the repository as `guard_violation`, `unsure` as `needs_review`. Jev is TypeSafe's decision model: it is not a chat model and writes no text. fleetify sends it the task, the verifier summary and the diff, with one question: pass, fail or unsure. The design is in `tasks/m16-llm-judge.md`.
+
+**Setup.** Get a key from the TypeSafe console (https://console.typesafe.ai/keys) and put it in a `.env` file in the folder you run fleetify from:
+
+```
+TYPESAFE_API_KEY=your-key-here
+```
+
+fleetify reads `.env` itself at startup. A variable already set in your shell wins over the file. `.env` is listed in `.gitignore`, so it is not committed. The judge needs no grant in `credentials.toml`: the Jev key is read by fleetify directly, and it is redacted from logs and reports. A run with a Jev judge refuses to start when the key is missing. Without a key, a dry run warns and nothing else changes.
+
+**Recipe.** The judge is a `[judge]` section. Jev takes no `agent`; `model` is a Jev model, and pinning a version keeps the record comparable:
+
+```toml
+[judge]
+level = "jev"
+model = "jev-1.14.0"         # or jev-1.13.0; jev-latest and jev-preview move with new releases
+max_diff_lines = 1000        # over this: unsure, Jev is not called
+min_confidence = 0.5         # Jev: a pass below this confidence is unsure (needs_review); required for jev. See tasks/m16-jev-prompt
+context_tokens = 32000       # Jev's context per question; must not be above 32000
+output_tokens = 1000         # reserved for the answer
+task = "Rename the function foo to bar in src/lib.rs"   # or leave unset to use the recipe's instructions
+```
+
+**Privacy and cost.** The task text, the verifier summary and the diff are sent to TypeSafe. Use this judge on your own test repositories only, and do not send code you are not allowed to share. Jev costs $0.042 per million input tokens, and its output is free, so a judge call is a small fraction of a cent.
+
+### Environment variables for agents and endpoints
+
+An agent often needs a key that is not its own login: a model endpoint, or a second provider. fleetify forwards such variables to the agent only when both sides agree:
+
+- the recipe asks, in `[needs]`: `env = ["OPENAI_API_KEY"]` (names only, never values);
+- the user grants, in `credentials.toml`, for all agents or for one agent:
+
+```toml
+[permissions]
+env = ["OPENAI_API_KEY"]                 # forwarded to every agent that the recipe asks for it
+
+[permissions.agent.opencode]
+env = ["OPENAI_API_KEY"]                 # or for opencode only
+```
+
+The value comes from the shell or from `.env`. A run refuses to start when a name is asked for but not granted, or not set. The value is redacted from logs and reports. Variables fleetify passes to agents by default (the agent's own login, such as `ANTHROPIC_API_KEY`) are unchanged.
+
 ### Sharing a recipe
 
 A recipe is portable: nothing in it refers to your machine, so a copy works for someone
@@ -299,6 +343,16 @@ Nothing from the host reaches the orchestrator container unless it is passed her
 - Mount each recipe directory and the working directory at its host path too, so the agent containers see the same paths.
 
 You can keep the orchestrator on the host and still run the agents in containers. The agent containers still need the daemon, and the host run reads the keys from your shell and the login file directly. In that setup you need nothing from this section beyond the agent images.
+
+#### Copilot CLI: what fleetify relies on
+
+Copilot is the agent with the most account-side limits. Read this before you choose it (`docs/agents/copilot.md` has the pros and cons):
+
+- **Model.** The Free and Student plans cannot choose a model. Copilot runs in **auto mode**, and auto picks a model per run. Leave `model` unset in the recipe; a pinned name such as `gpt-5.4-mini` is refused as not available on those plans. Each run writes `copilot-usage.json` in its repository folder, and `modelMetrics` names the model that answered. Collect those files to see which models work.
+- **Permissions.** Copilot grants tools by rule, and a non-interactive run denies anything no rule allows. fleetify passes `read`, `write` inside the workspace, and the read-only git commands. A command grant is matched on the **executable** only. So granting the verifier, which runs as `sh .agent/tools/verify.sh .`, grants `sh`, and with it any shell script. Claude Code and opencode match the full command; Copilot cannot. The user accepted this for the agentic loop (2026-11-06): Copilot may run any shell script in its workspace through `sh`. See `docs/agents/copilot.md`.
+- **Canary.** `check-agent copilot` must pass before a run. It can fail once and pass on the next try with the same flags, so run it again before you judge it broken. The canary keeps the agent's output in `agent-output.txt` beside its workspace.
+- **Judge.** Copilot can judge a change with no tools at all. Its input is then part of the prompt, not a file, and its size is limited.
+- **Login.** Copilot uses its own login in host runs. The token rules for containers are in the section above.
 
 #### Example: opencode against a local llama.cpp server
 

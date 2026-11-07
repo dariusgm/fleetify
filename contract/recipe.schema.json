@@ -522,8 +522,18 @@
           "default": null,
           "minimum": 0
         },
+        "diff_context": {
+          "description": "Unchanged lines of context around each change in the diff the judge reads (`git diff -U`).\nUnset means the default, 3. Must be between 0 and 100.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
         "level": {
-          "description": "`session` (the executor's agent and model), `model` (another model) or `provider`\n(a model from another provider). Required when the section is present.",
+          "description": "`session` (the executor's agent and model), `model` (another model), `provider`\n(a model from another provider) or `jev` (TypeSafe's Jev decision model, no agent).\nRequired when the section is present.",
           "type": [
             "string",
             "null"
@@ -539,6 +549,15 @@
           "format": "uint32",
           "default": null,
           "minimum": 0
+        },
+        "min_confidence": {
+          "description": "Jev only: the lowest confidence (0 to 1) at which a `pass` counts. A lower `pass` ends as\n`unsure`, so the change goes to review. Required for level `jev`, rejected otherwise.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
         },
         "model": {
           "description": "The judge's model in `provider/model` form, passed to the agent unchanged. Required for\n`model` and `provider`; rejected for `session`.",
@@ -603,6 +622,14 @@
       "properties": {
         "commands": {
           "description": "Extra commands the agent needs, as `[permissions] commands` lists them.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "description": "Environment variables to forward to the agent, by name. The value comes from the\nenvironment or `.env`; the user must grant each name in `credentials.toml`\n(`[permissions] env` or `[permissions.agent.<name>] env`), or the run is refused.",
           "type": "array",
           "default": [],
           "items": {

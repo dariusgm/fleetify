@@ -258,6 +258,8 @@ pub struct Grants {
     pub web: bool,
     pub directories: Vec<String>,
     pub unrestricted: bool,
+    /// Environment variables forwarded to this agent: asked for by the recipe and granted.
+    pub env: Vec<String>,
 }
 
 /// The command line and the environment of one agent run.
@@ -272,19 +274,67 @@ pub struct Invocation {
 
 /// What fleetify grants one agent run for this recipe.
 pub fn grants(recipe: &Recipe, permissions: &Permissions, name: &str) -> Grants {
+    let mut commands: Vec<String> = recipe
+        .needs
+        .commands
+        .iter()
+        .filter(|command| permissions.commands.contains(command))
+        .cloned()
+        .collect();
+    // The inner loop: the agent may run the fast verifier as rendered for its workspace, the
+    // command that task.md names (verifier.md, "Fast verifier"). Nothing else is added.
+    if recipe.tools.is_some()
+        && let Some(spec) = recipe.verify_spec()
+        && let Ok(argv) = spec.render(cfg!(windows), &[("repo", "."), ("tools", AGENT_TOOLS_DIR)])
+    {
+        let verifier = argv.join(" ");
+        if !commands.contains(&verifier) {
+            commands.push(verifier);
+        }
+    }
     Grants {
-        commands: recipe
-            .needs
-            .commands
-            .iter()
-            .filter(|command| permissions.commands.contains(command))
-            .cloned()
-            .collect(),
+        commands,
         web: recipe.needs.web && permissions.web,
         directories: recipe.needs.extra_directories.clone(),
         unrestricted: recipe.needs.unrestricted
             && permissions.agent.get(name).is_some_and(|p| p.unrestricted),
+        env: recipe
+            .needs
+            .env
+            .iter()
+            .filter(|n| {
+                permissions.env.contains(n)
+                    || permissions
+                        .agent
+                        .get(name)
+                        .is_some_and(|p| p.env.contains(n))
+            })
+            .cloned()
+            .collect(),
     }
+}
+
+/// Environment names the recipe asks for that the user has not granted, or that are not set
+/// in the environment or `.env`. Empty when the run may start. A real run refuses on these.
+pub fn env_refusals(recipe: &Recipe, permissions: &Permissions, name: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for var in &recipe.needs.env {
+        let granted = permissions.env.contains(var)
+            || permissions
+                .agent
+                .get(name)
+                .is_some_and(|p| p.env.contains(var));
+        if !granted {
+            problems.push(format!(
+                "the recipe needs {var} forwarded to the agent, but credentials.toml does not grant it ([permissions] env or [permissions.agent.{name}] env)"
+            ));
+        } else if crate::envfile::var_os(var).is_none() {
+            problems.push(format!(
+                "{var} is granted and needed, but it is not set in the environment or in .env"
+            ));
+        }
+    }
+    problems
 }
 
 /// One line for the run header: what the agent gets for this recipe.
@@ -349,8 +399,16 @@ pub fn invocation_in_network(
     workspace: &Path,
     network: Option<&Network>,
 ) -> Result<Invocation, String> {
+    // A container gets the recipe's agent_env, and the variables the user granted that the
+    // recipe asks for (`needs.env`), once each.
+    let mut container_env = recipe.agent_env.clone();
+    for var in grants(recipe, permissions, name).env {
+        if !container_env.contains(&var) {
+            container_env.push(var);
+        }
+    }
     let extra = Extra {
-        container_env: &recipe.agent_env,
+        container_env: &container_env,
         config: recipe
             .agents
             .get(name)
@@ -386,8 +444,41 @@ pub struct Extra<'a> {
 /// environment holds only the base allowlist and the judge's own configuration: no executor
 /// variable reaches it. The config allows reading and nothing else; the caller runs it in an
 /// empty directory that holds only the input file.
-pub fn judge_command(name: &str, model: &str, prompt: &str) -> Result<Invocation, String> {
+pub fn judge_command(
+    name: &str,
+    model: &str,
+    prompt: &str,
+    input_file: &str,
+) -> Result<Invocation, String> {
     match name {
+        CLAUDE_CODE => {
+            // Claude Code in print mode: one turn, no session kept (--no-session-persistence),
+            // and the only tool is Read, granted for the input file alone. The two deny rules
+            // are a second layer: a read outside the judge's directory is refused. Tested by
+            // hand with the input file and with /etc/hostname (tasks/m16-judge-validation.md).
+            let argv = vec![
+                binary(BINARY_ENV, "claude"),
+                "-p".to_string(),
+                prompt.to_string(),
+                "--model".to_string(),
+                model.to_string(),
+                "--tools".to_string(),
+                "Read".to_string(),
+                "--no-session-persistence".to_string(),
+                "--output-format".to_string(),
+                "text".to_string(),
+                "--disallowedTools".to_string(),
+                "Read(//etc/**)".to_string(),
+                "Read(/home/**)".to_string(),
+                "--allowedTools".to_string(),
+                format!("Read(./{input_file})"),
+            ];
+            Ok(Invocation {
+                argv,
+                env: env_policy(&[], Vec::new()),
+                stop: None,
+            })
+        }
         OPENCODE => {
             let config = json!({
                 "permission": {
@@ -426,6 +517,29 @@ pub fn judge_command(name: &str, model: &str, prompt: &str) -> Result<Invocation
                 stop: None,
             })
         }
+        COPILOT => {
+            // Copilot in print mode, one turn. The judge has no tools at all: --available-tools
+            // names none, so a read of any file is refused (checked by hand, the answer was
+            // "unsure"). The input is in the prompt. No --continue or session flag exists here.
+            let argv = vec![
+                binary(COPILOT_BINARY_ENV, "copilot"),
+                "-p".to_string(),
+                prompt.to_string(),
+                "-s".to_string(),
+                "--no-ask-user".to_string(),
+                "--model".to_string(),
+                model.to_string(),
+                "--available-tools=__none__".to_string(),
+                "--disable-builtin-mcps".to_string(),
+                "--no-auto-update".to_string(),
+                "--no-color".to_string(),
+            ];
+            Ok(Invocation {
+                argv,
+                env: env_policy(&[], Vec::new()),
+                stop: None,
+            })
+        }
         other => Err(format!(
             "the judge is not implemented for {other}: its one-shot mode is not confirmed (tasks/m16-llm-judge.md, decision 5)"
         )),
@@ -444,7 +558,7 @@ fn canary_invocation(
     // in the environment the check cannot run, and it says so before any container starts.
     let token = [COPILOT_TOKEN_ENV.to_string()];
     let copilot_container = name == COPILOT && image.is_some();
-    if copilot_container && std::env::var_os(COPILOT_TOKEN_ENV).is_none() {
+    if copilot_container && crate::envfile::var_os(COPILOT_TOKEN_ENV).is_none() {
         return Err(format!(
             "set {COPILOT_TOKEN_ENV} in the environment: the Copilot container needs it"
         ));
@@ -616,7 +730,7 @@ fn build(
     let Some(image) = image else {
         return Ok(Invocation {
             argv,
-            env: env_policy(names, set),
+            env: env_policy_with(names, &grants.env, set),
             stop: None,
         });
     };
@@ -666,11 +780,21 @@ fn build(
 /// The environment an agent gets: the base allowlist, its own variables, and the
 /// variables fleetify sets for this run.
 fn env_policy(agent_names: &[&str], set: Vec<(String, String)>) -> EnvPolicy {
+    env_policy_with(agent_names, &[], set)
+}
+
+/// As [`env_policy`], with the variables the user granted and the recipe asked for.
+fn env_policy_with(
+    agent_names: &[&str],
+    granted: &[String],
+    set: Vec<(String, String)>,
+) -> EnvPolicy {
     EnvPolicy::Allowlist {
         names: BASE_ENV
             .iter()
-            .chain(agent_names)
             .map(|name| name.to_string())
+            .chain(agent_names.iter().map(|name| name.to_string()))
+            .chain(granted.iter().cloned())
             .collect(),
         set,
     }
@@ -794,6 +918,13 @@ fn copilot_argv(
     // Read-only git is part of the baseline, as for opencode.
     for command in ["git status", "git diff", "git log"] {
         argv.push(format!("--allow-tool=shell({command})"));
+    }
+    // The CLI's own usage file, written beside the workspace (not inside it, so the agent cannot
+    // edit it). It names the model that answered: auto mode picks one per run, and the list of
+    // models that work is built from these files.
+    if let Some(folder) = workspace.parent() {
+        argv.push("--usage-output-file".to_string());
+        argv.push(folder.join("copilot-usage.json").display().to_string());
     }
     // Copilot matches shell grants on the executable only: `shell(sh:*)` allows
     // `sh .agent/tools/verify.sh`, while a grant that names the whole command line is denied
@@ -932,7 +1063,16 @@ fn canary_run(
     request.timeout = Some(CANARY_TIMEOUT);
     request.env = canary.env;
     request.on_stop = canary.stop;
-    runner.run(request);
+    let result = runner.run(request);
+    // Kept beside the canary's workspace, so a failed check can be read: what the agent said
+    // and what it failed on. Not part of the pass criteria.
+    if let Some(root) = workspace.parent() {
+        let mut text = format!("exit: {:?}\n\n== stdout\n", result.outcome);
+        text.push_str(&result.stdout());
+        text.push_str("\n== stderr\n");
+        text.push_str(&result.stderr_tail(200));
+        let _ = fs::write(root.join("agent-output.txt"), text);
+    }
     Ok(())
 }
 
@@ -983,6 +1123,7 @@ mod tests {
             web: false,
             directories: vec!["/data/out".into()],
             unrestricted: false,
+            env: Vec::new(),
         };
         let argv = copilot_argv("copilot", "p", Path::new("/ws"), &grants, None);
         assert!(
@@ -1118,6 +1259,7 @@ text = "Do the thing."
             web,
             extra_directories: Vec::new(),
             unchecked_agents: false,
+            env: Vec::new(),
             agent: BTreeMap::new(),
         }
     }
@@ -1245,7 +1387,10 @@ text = "Do the thing."
         );
         perms.agent.insert(
             "claude-code".to_string(),
-            AgentPermissions { unrestricted: true },
+            AgentPermissions {
+                unrestricted: true,
+                env: Vec::new(),
+            },
         );
         // Granted but not asked for by the recipe: no flag.
         assert!(
@@ -1274,7 +1419,10 @@ text = "Do the thing."
         );
         perms.agent.insert(
             "claude-code".to_string(),
-            AgentPermissions { unrestricted: true },
+            AgentPermissions {
+                unrestricted: true,
+                env: Vec::new(),
+            },
         );
         assert!(missing_permissions(&asks, &perms, "claude-code").is_empty());
 
@@ -1316,6 +1464,7 @@ text = "Do the thing."
             "opencode".to_string(),
             AgentPermissions {
                 unrestricted: false,
+                env: Vec::new(),
             },
         );
         let invocation = invocation("opencode", &recipe, &perms, None, Path::new("/ws")).unwrap();
@@ -1470,7 +1619,13 @@ text = "inline"
 
     #[test]
     fn the_judge_call_is_one_shot_with_no_session_flag_and_no_executor_variables() {
-        let invocation = judge_command(OPENCODE, "llamacpp/qwen3.8-flash-next", "PROMPT").unwrap();
+        let invocation = judge_command(
+            OPENCODE,
+            "llamacpp/qwen3.8-flash-next",
+            "PROMPT",
+            "input.md",
+        )
+        .unwrap();
         // Every flag that would continue an earlier session, for every adapter, is absent.
         for forbidden in [
             "-c",
@@ -1511,8 +1666,62 @@ text = "inline"
 
     #[test]
     fn adapters_without_a_confirmed_one_shot_mode_refuse_the_judge() {
-        assert!(judge_command(CLAUDE_CODE, "sonnet", "p").is_err());
-        assert!(judge_command(COPILOT, "gpt-5", "p").is_err());
+        assert!(judge_command("unknown-agent", "m", "p", "input.md").is_err());
+    }
+
+    #[test]
+    fn the_copilot_judge_has_no_tools_and_no_session() {
+        let invocation = judge_command(COPILOT, "auto", "PROMPT", "input.md").unwrap();
+        for forbidden in ["--continue", "--resume", "-c", "-r"] {
+            assert!(
+                !invocation.argv.iter().any(|a| a == forbidden),
+                "{:?}",
+                invocation.argv
+            );
+        }
+        assert!(
+            invocation
+                .argv
+                .contains(&"--available-tools=__none__".to_string())
+        );
+        assert!(invocation.argv.contains(&"--model".to_string()));
+        assert!(invocation.argv.contains(&"auto".to_string()));
+        let EnvPolicy::Allowlist { names, set } = invocation.env else {
+            panic!("the judge gets an allowlisted environment");
+        };
+        assert!(names.iter().all(|n| BASE_ENV.contains(&n.as_str())));
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn the_claude_judge_is_one_shot_and_reads_only_its_input() {
+        let invocation =
+            judge_command(CLAUDE_CODE, "claude-haiku-5-5", "PROMPT", "input.md").unwrap();
+        for forbidden in [
+            "-c",
+            "--continue",
+            "-r",
+            "--resume",
+            "--fork-session",
+            "--session-id",
+        ] {
+            assert!(
+                !invocation.argv.iter().any(|a| a == forbidden),
+                "{:?}",
+                invocation.argv
+            );
+        }
+        assert!(
+            invocation
+                .argv
+                .contains(&"--no-session-persistence".to_string())
+        );
+        assert_eq!(invocation.argv.last().unwrap(), "Read(./input.md)");
+        let EnvPolicy::Allowlist { names, set } = invocation.env else {
+            panic!("the judge gets an allowlisted environment");
+        };
+        assert!(names.iter().all(|n| BASE_ENV.contains(&n.as_str())));
+        assert!(set.is_empty());
     }
 
     #[test]
@@ -1861,5 +2070,106 @@ text = "inline"
         assert!(invocation.argv.iter().any(|a| a == "OPENAI_API_KEY"));
         assert!(!invocation.argv.iter().any(|a| a.contains("lan.example")));
         assert_eq!(invocation.argv[env + 1], "ANTHROPIC_API_KEY");
+    }
+}
+
+#[cfg(test)]
+mod env_forwarding_tests {
+    use super::*;
+    use crate::grants::{AgentPermissions, Permissions};
+
+    fn recipe(needs_env: &str) -> Recipe {
+        Recipe::parse(&format!(
+            "schema = 1\nname = \"env\"\nbranch = \"b\"\npr_title = \"t\"\nagent = \"opencode\"\n[needs]\nenv = {needs_env}\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_name_is_forwarded_only_when_asked_for_and_granted() {
+        let asked = recipe(r#"["TYPESAFE_API_KEY", "OPENAI_API_KEY"]"#);
+        let perms = Permissions {
+            env: vec!["TYPESAFE_API_KEY".to_string()],
+            ..Permissions::default()
+        };
+        let granted = grants(&asked, &perms, "opencode");
+        assert_eq!(granted.env, vec!["TYPESAFE_API_KEY".to_string()]);
+
+        // A per-agent grant reaches that agent only.
+        let mut scoped = Permissions::default();
+        scoped.agent.insert(
+            "opencode".to_string(),
+            AgentPermissions {
+                env: vec!["OPENAI_API_KEY".to_string()],
+                ..AgentPermissions::default()
+            },
+        );
+        assert_eq!(
+            grants(&asked, &scoped, "opencode").env,
+            vec!["OPENAI_API_KEY".to_string()]
+        );
+        assert!(grants(&asked, &scoped, "claude-code").env.is_empty());
+    }
+
+    #[test]
+    fn an_ungranted_name_is_a_refusal_and_a_missing_one_too() {
+        let asked = recipe(r#"["FLEETIFY_TEST_NOT_SET_ANYWHERE_42"]"#);
+        let none = Permissions::default();
+        let problems = env_refusals(&asked, &none, "opencode");
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("does not grant"), "{problems:?}");
+
+        let granted = Permissions {
+            env: vec!["FLEETIFY_TEST_NOT_SET_ANYWHERE_42".to_string()],
+            ..Permissions::default()
+        };
+        let problems = env_refusals(&asked, &granted, "opencode");
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("not set"), "{problems:?}");
+    }
+
+    #[test]
+    fn a_granted_name_that_is_set_is_not_refused() {
+        // PATH is set in every test environment.
+        let asked = recipe(r#"["PATH"]"#);
+        let granted = Permissions {
+            env: vec!["PATH".to_string()],
+            ..Permissions::default()
+        };
+        assert!(env_refusals(&asked, &granted, "opencode").is_empty());
+    }
+
+    #[test]
+    fn the_inner_loop_verifier_is_granted_only_with_a_tools_folder() {
+        let with_tools = Recipe::parse(
+            "schema = 1\nname = \"v\"\nbranch = \"b\"\npr_title = \"t\"\nagent = \"claude-code\"\ntools = \"tools\"\n[verify]\nargv = [\"sh\", \"{tools}/verify.sh\", \"{repo}\"]\n",
+        )
+        .unwrap();
+        let granted = grants(&with_tools, &Permissions::default(), "claude-code");
+        assert_eq!(
+            granted.commands,
+            vec![format!("sh {AGENT_TOOLS_DIR}/verify.sh .")]
+        );
+
+        let without_tools = Recipe::parse(
+            "schema = 1\nname = \"v\"\nbranch = \"b\"\npr_title = \"t\"\nagent = \"claude-code\"\n[verify]\nargv = [\"sh\", \"-c\", \"cargo test\"]\n",
+        )
+        .unwrap();
+        assert!(
+            grants(&without_tools, &Permissions::default(), "claude-code")
+                .commands
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_host_environment_gets_the_granted_names_and_nothing_else() {
+        let granted = vec!["TYPESAFE_API_KEY".to_string()];
+        let EnvPolicy::Allowlist { names, .. } = env_policy_with(&[], &granted, Vec::new()) else {
+            panic!("expected an allowlist");
+        };
+        assert!(names.contains(&"TYPESAFE_API_KEY".to_string()));
+        assert!(names.contains(&"PATH".to_string()));
+        assert!(!names.contains(&"OPENAI_API_KEY".to_string()));
     }
 }

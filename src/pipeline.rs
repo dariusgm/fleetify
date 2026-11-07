@@ -15,6 +15,7 @@ use crate::git::{GitContext, git};
 use crate::guards;
 use crate::hosts::{self, ChangeRequest, CiFailure, CrState, MergeOutcome};
 use crate::isolation::{self, Network};
+use crate::jev;
 use crate::judge;
 use crate::recipe::{Judge, Recipe};
 use crate::report::{Failure, RepoResult};
@@ -1346,8 +1347,17 @@ fn judge_review(
                                     .timeout_s
                                     .unwrap_or(crate::recipe::JUDGE_DEFAULT_TIMEOUT_S),
                             );
-                            let call =
-                                judge::run_judge(ctx.runner, &key, &agent, &model, &input, timeout);
+                            let call = if judge.level.as_deref() == Some(jev::LEVEL) {
+                                jev::judge_call(
+                                    jev::API_URL,
+                                    &model,
+                                    &input,
+                                    timeout,
+                                    judge.min_confidence.unwrap_or(0.0),
+                                )
+                            } else {
+                                judge::run_judge(ctx.runner, &key, &agent, &model, &input, timeout)
+                            };
                             record.called = true;
                             record.duration_ms =
                                 u64::try_from(call.duration.as_millis()).unwrap_or(u64::MAX);
@@ -1413,6 +1423,13 @@ fn judge_review(
 /// The agent and model that answer the judge: the recipe's judge agent and model, or for
 /// `session` the executor's own. Errors name what is missing.
 fn judge_target(ctx: &Ctx<'_>, judge: &Judge) -> Result<(String, String), String> {
+    if judge.level.as_deref() == Some(jev::LEVEL) {
+        // Jev has no agent: the record names an empty agent and the Jev model.
+        return match judge.model.as_deref() {
+            Some(model) => Ok((String::new(), model.to_string())),
+            None => Err("the jev judge's model is not set".to_string()),
+        };
+    }
     if judge.level.as_deref() == Some("session") {
         let agent = ctx
             .agent
@@ -1448,13 +1465,19 @@ fn judge_input(
         Some(_) => "The verifier passed on this change before the judge ran.".to_string(),
         None => "No verifier is configured for this recipe.".to_string(),
     };
+    let context = format!(
+        "-U{}",
+        judge
+            .diff_context
+            .unwrap_or(crate::recipe::JUDGE_DEFAULT_DIFF_CONTEXT)
+    );
     let diff = git(
         local,
         Some(workspace),
         &[
             "diff",
             "--cached",
-            "-U3",
+            context.as_str(),
             base,
             "--",
             ".",
