@@ -35,6 +35,7 @@ Read this first. The sections below describe the design and the history of the d
 
 **Decided (2026-11-07)**
 - A `pass` below `min_confidence` and a Jev `fail` keep their current endings (`needs_review` and `guard_violation`). The user reviews either way, so the two endings stay as they are.
+- The gaming case is covered by the scripted diff (`tasks/m16-jev-prompt/gaming.patch`) for now. No agent has gamed the test in e2e yet. The user will see how this works out on more repositories.
 - Claude Code may look up crate versions: the deps case asks for `cargo` (`needs.commands`), and `cargo` is granted in `credentials.toml`. The grant is `Bash(cargo:*)`, which covers every cargo subcommand.
 
 **Open decisions for the user**
