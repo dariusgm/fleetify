@@ -15,12 +15,14 @@
 
 ## Cons
 - It stops with `needs_input` when it cannot run a tool, and then writes `blocked.md`. A recipe has to say what to do in that case.
-- Dependency bumps need current crate versions. Without the web grant the agent cannot look them up, so such a recipe needs `needs.web = true` and the user's grant.
+- Dependency bumps need current crate versions. The grant for this is `cargo`, which Claude Code matches as `Bash(cargo:*)`: every cargo subcommand is allowed, not only lookups. That is broader than the lookup needs (see the decision below).
 - The gaming case is judged by Jev on a diff that is a correct fix; Jev's answer on that diff was unstable before the prompt change (see `tasks/m16-jev-prompt`).
 
 ## Decision context
 Pick Claude Code when you want a pinned model and an exact permission grant. Its cost is the Anthropic account, which is separate from Copilot. Check the claude-code recipe's model before a comparison, because the CLI's default model changes.
 
+## Decision (2026-11-07)
+The `cargo` grant for lookups is accepted as it is, `Bash(cargo:*)`. A narrower rule such as `Bash(cargo search:*)` and `Bash(cargo info:*)` is possible but not set; add it if a recipe should not be able to run `cargo publish` or other subcommands.
+
 ## Open
-- Re-run the e2e with the Jev prompt V1 and `min_confidence = 0.6` (the recipes in the scratchpad still have 0.8).
-- Test a dependency case with `needs.web` granted.
+- Nothing blocks Claude Code now. Keep the e2e recipes on `min_confidence = 0.5`.
