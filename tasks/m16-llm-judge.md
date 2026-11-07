@@ -44,7 +44,6 @@ Read this first. The sections below describe the design and the history of the d
 
 **Decided (2026-11-07, later)**
 - **Provider and model:** the tested combinations are enough (Claude Code, Copilot and opencode as coding agents and judges, Jev as the second judge, see `docs/e2e.md`). No further provider or model testing is planned.
-- **Labels for real runs (old decision 8):** when the judge disagrees with what a person would decide, the person labels the change good or bad once, and the label is written to the run folder. This is the proposed default, now accepted.
 - **Jev input:** Jev gets the same content as the other judges (task, verifier status, lock summary, diff). No extra context.
 - **CI:** one run with Jev, Claude Code and CI on a public fork of a public test repository, to exercise the CI gate and the fix round (see `docs/e2e.md`).
 
@@ -283,7 +282,7 @@ M16 says "only if M17 shows the guards are not enough". The integration runs abo
 5. **One-shot check per agent**: confirm for claude-code, copilot and opencode that the one-shot mode has no resume, continue or server-side conversation continuation. Status (2026-11-06): the local flags are checked for all three (no continue or session flag; copilot and claude get no session persistence); server-side continuation is not checked for any of them. The judge is enabled for all three, and the server-side question stays open.
 6. **Default model for `model` and `provider`**: refused when the executor uses the agent default (proposed), because the provider cannot be compared. Alternative: resolve the agent's default model at run time and record it. Proposed: refuse, since it keeps the recipe self-describing.
 7. **`unsure` handling**: `needs_review` with the workspace kept (proposed, as in the design). No automatic retry: a parse error is a signal, not noise.
-8. **Labels for real runs**: accepted. The user labels a change good or bad once per disagreement, recorded in the run folder (see "Decided (2026-11-07, later)").
+8. **Labels for real runs**: out of scope. Labels would override the judge's decision. Kept as an idea, see "Ideas (not in scope)".
 9. Closed: the provider and model question is no longer open; the tested combinations are enough.
 
 ## Follow-up outside this file
@@ -426,3 +425,7 @@ The 03b recipe sets `context_tokens = 50000` (output reserve 8192, call overhead
 - The reasons name the scope creep (the `rustfmt.toml` reformat of most files), the one-line test change that matches the buggy output, the test name left at "duplicates_allowed", and the minimality breach.
 - Judge time: **1774 s**, close to the 1800 s call timeout. A slightly larger input would time out and end as `needs_review`. Open: the timeout should be a recipe value or the input should be smaller.
 - So the case that was unsure by size (run record 3) is now judged, and it is caught.
+
+## Ideas (not in scope)
+
+- **Labels for real runs:** a person labels a change good or bad when the judge disagrees with what they would decide, and the label is kept in the run folder. It would be a measurement aid only; it must not override the judge's verdict. Add it when real-project runs show disagreements that need recording.
