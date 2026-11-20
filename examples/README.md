@@ -11,4 +11,6 @@ The last lines show the effective settings, and, for anything not yet granted, t
     [permissions]
     commands = ["cargo"]
 
+`all-options` shows every option a recipe can set, each with a comment on whether it is required or optional and what it is for. See its `README.md`.
+
 `enable-gitlab-ci` is the golden recipe: `authoring/examples/enable_gitlab_ci.py` writes it byte for byte, and the tests check that.

@@ -1,0 +1,294 @@
+# Every option a recipe.toml can set, in one recipe. Each setting says whether it is
+# REQUIRED or OPTIONAL, what its default is when left out, and what it is for.
+# The recipe is valid and checkable with `fleetify validate examples/recipes/all-options`;
+# see README.md in this folder for the reasons behind each value.
+#
+# Two options exclude each other and so cannot both appear here:
+#   [prepare] or [script]. This recipe uses [prepare]; a [script] version is shown at the end.
+
+# ---------------------------------------------------------------------------------------------
+# Identity: REQUIRED. What the recipe is called and what the change looks like on the host.
+# ---------------------------------------------------------------------------------------------
+
+# REQUIRED. Recipe format version. Must be 1: the only version this fleetify reads.
+schema = 1
+
+# REQUIRED. Lowercase name (letters, digits, '-'). Used in the run id and in reports.
+name = "all-options"
+
+# REQUIRED. Branch created in each repository, without the prefix (see branch_prefix).
+branch = "chore/all-options"
+
+# OPTIONAL. Prefix for every branch fleetify pushes, giving `<prefix>/<branch>`.
+# Default: "fleetify", so the branch above would be `fleetify/chore/all-options`.
+# An empty string means no prefix at all.
+branch_prefix = "automation"
+
+# OPTIONAL. The branch the change starts from and the merge request targets.
+# Default: the repository's default branch.
+base = "main"
+
+# REQUIRED. Title of the merge (pull) request.
+pr_title = "chore: example that shows every recipe option"
+
+# OPTIONAL. Commit message. Default: the value of pr_title.
+commit_message = "chore: example that shows every recipe option"
+
+# OPTIONAL. Model passed unchanged to the recipe's agent. Overridden by `--model` on the
+# command line. Default: unset, so the agent's own configuration chooses.
+model = "claude-opus-5-5"
+
+# ---------------------------------------------------------------------------------------------
+# Agent. OPTIONAL as a whole: without instructions the recipe runs no agent.
+# ---------------------------------------------------------------------------------------------
+
+# OPTIONAL. The agent: claude-code, opencode or copilot. REQUIRED when instructions are set,
+# unless `--agent` is passed. Default: none.
+agent = "claude-code"
+
+# OPTIONAL. Container image the agent runs in. Default: unset, the agent runs on the host.
+# The image must carry the label `io.fleetify.agent` with the agent's name.
+image = "fleetify-agent-claude-code"
+
+# OPTIONAL. Backend that runs the agent's container. Default: "docker". Needs `image`.
+isolation = "docker"
+
+# OPTIONAL. Names (not values) of environment variables passed into the agent's container.
+# The values come from the orchestrator's environment when the run starts. Needs `image`.
+# Default: none.
+agent_env = ["ANTHROPIC_API_KEY"]
+
+# OPTIONAL. Files copied to `.agent/attachments/` before the agent starts. Paths are relative
+# to the recipe directory. Default: none.
+attachments = ["reference/notes.md"]
+
+# OPTIONAL. Directory with the verifier and prepare scripts, relative to the recipe directory.
+# Required when a command uses `{tools}`. Default: none.
+tools = "tools"
+
+# ---------------------------------------------------------------------------------------------
+# Which repositories the recipe applies to. OPTIONAL: default is every repository.
+# All listed conditions must hold (AND). Inside host_type and path_glob, any value may match.
+# ---------------------------------------------------------------------------------------------
+[applies_to]
+# Any of: github, gitlab. Here: GitHub repositories only.
+host_type = ["github"]
+# Every one of these files must exist in the repository.
+has_file = ["README.md"]
+# At least one of these must exist.
+has_file_any = ["pyproject.toml", "package.json"]
+# None of these may exist. Here: a marker a maintainer can add to opt a repository out.
+not_has_file = ["NO-AUTOMATION.md"]
+# Any of these globs must match the repository path, e.g. `group/sub/name`. `*` matches `/` too.
+path_glob = ["acme/*"]
+
+# OPTIONAL. Per-agent defaults, keyed by agent name. Used when neither `--model` nor the
+# recipe's `model` is set for that agent.
+[agents.claude-code]
+# Model for claude-code when the run has no other model. Default: the agent's own choice.
+model = "claude-opus-5-5"
+
+# Settings for opencode. They are only read when the run uses opencode, so they do nothing
+# in this claude-code recipe; they are here to show the two options.
+[agents.opencode]
+model = "example-provider/example-model"
+# OPTIONAL. Opencode only: a table merged into opencode's inline config. Keep secrets out:
+# write `{env:NAME}` where a key goes and opencode reads it from its environment.
+config = { provider = { "example-provider" = { options = { apiKey = "{env:EXAMPLE_API_KEY}" } } } }
+
+# OPTIONAL. Instructions for the agent, concatenated in order. Each entry sets exactly one of
+# `file` (a path relative to the recipe directory) and `text` (inline prompt text).
+# Default: none, which makes the recipe a change without an agent.
+[[instructions]]
+file = "prompts/task.md"
+
+[[instructions]]
+text = "The reference notes are in .agent/attachments/notes.md. Follow them where they apply."
+
+# ---------------------------------------------------------------------------------------------
+# Prepare: a deterministic step that runs before the agent, with no LLM. OPTIONAL.
+# ---------------------------------------------------------------------------------------------
+[prepare]
+# One argument list for both operating systems. Use it when the program exists on both.
+# Alternative: `posix = [...]` and/or `windows = [...]` for one list per OS. Do not mix
+# `argv` with `posix` or `windows`.
+argv = ["python3", "{tools}/prepare.py", "{repo}"]
+# OPTIONAL. Seconds before the step is stopped. Default: 120.
+timeout_s = 120
+
+# OPTIONAL. Scripted change instead of [prepare]: one script file per OS, in `tools/`.
+# posix runs with bash, windows with PowerShell 7 (pwsh). Do not set both [prepare] and [script].
+# [script]
+# posix = "update.sh"
+# windows = "update.ps1"
+# timeout_s = 600
+
+# ---------------------------------------------------------------------------------------------
+# Verify: the verifier decides whether the change may be pushed. OPTIONAL, but strongly advised.
+# ---------------------------------------------------------------------------------------------
+[verify]
+# One list per operating system. Use `argv` instead when one list works on both.
+posix = ["bash", "{tools}/verify.sh", "{repo}"]
+windows = ["pwsh", "-NoProfile", "-File", "{tools}/verify.ps1", "{repo}"]
+# OPTIONAL. Seconds before the verifier is stopped and the repository fails. Default: 300.
+timeout_s = 300
+# OPTIONAL. Lines of failing verifier output shown to the agent. Default: 40.
+tail_lines = 40
+# OPTIONAL. Regexes that pick the relevant lines out of a failure. Default: none, so the
+# last `tail_lines` lines are shown.
+error_patterns = ['^E\s', 'error:']
+# OPTIONAL. Run the verifier on the untouched base before prepare or the agent. If it already
+# fails, the repository ends as `base_broken`, so later failures are known to come from the
+# change. Default: true.
+baseline = true
+
+# ---------------------------------------------------------------------------------------------
+# Guards: checks on the diff before anything is pushed. All OPTIONAL; defaults shown.
+# ---------------------------------------------------------------------------------------------
+[guards]
+# Paths that must not change, as globs. Default: none.
+deny_paths = ["secrets/**"]
+# Regexes that must not match any added line. Default: none.
+deny_added_patterns = ["NOSONAR", '#\s*nosec']
+# If set, every changed path must match one of these globs. Default: no restriction.
+allow_paths = ["src/**", "tests/**", "docs/**", "README.md"]
+# The largest change, in files and in added plus deleted lines. Default: 50 files, 2000 lines.
+max_files_changed = 50
+max_lines_changed = 2000
+# Refuse a change that deletes test files. Default: true.
+forbid_test_deletion = true
+# Refuse a change that adds binary files. Default: true.
+forbid_binary_files = true
+
+# ---------------------------------------------------------------------------------------------
+# Judge: a second opinion on the diff after the guards and before the push. OPTIONAL.
+# Answers pass, fail or unsure. fail ends as `guard_violation`, unsure as `needs_review`.
+# ---------------------------------------------------------------------------------------------
+[judge]
+# REQUIRED when [judge] is present. session (the executor's agent and model), model (another
+# model), provider (a model from another provider) or jev (Jev decision model, no agent).
+# Here: `model`, so another model of the same agent judges.
+level = "model"
+# REQUIRED when [judge] is present. Changed lines (added plus deleted) above which the verdict
+# is `unsure` without any model call. Must be greater than 0.
+max_diff_lines = 400
+# REQUIRED for level model and provider. The judge's agent.
+agent = "claude-code"
+# REQUIRED for level model and provider, in provider/model form for opencode. Must differ from
+# the executor's model for level model.
+model = "claude-sonnet-5-5"
+# OPTIONAL. What the change was asked to do. Default: the recipe's instructions.
+task = "Update the example notes. Nothing outside docs/ and the notes may change."
+# REQUIRED when [judge] is present. The judge model's context window, in tokens.
+context_tokens = 200000
+# REQUIRED when [judge] is present. Tokens reserved for the answer. Below context_tokens.
+output_tokens = 4096
+# OPTIONAL. Seconds one judge call may run before it is stopped; then the verdict is unsure.
+# Default: 1800. Range 1 to 7200.
+timeout_s = 900
+# OPTIONAL. Unchanged lines of context around each change in the diff the judge reads.
+# Default: 3. Range 0 to 100.
+diff_context = 3
+# Jev only, so commented out here: REQUIRED for level jev, and rejected for every other level.
+# The lowest confidence (0 to 1) at which a pass counts; a lower pass ends as `unsure`.
+# min_confidence = 0.8
+
+# ---------------------------------------------------------------------------------------------
+# Needs: what the agent must have. Each item must be granted by the user in credentials.toml,
+# or the run is refused before any repository is touched. Asking here grants nothing.
+# ---------------------------------------------------------------------------------------------
+[needs]
+# OPTIONAL. Extra commands the agent may run. Default: none.
+commands = ["make"]
+# OPTIONAL. Environment variables forwarded to the agent, by name (upper case). The value
+# comes from the environment or .env. Default: none.
+env = ["SOME_SERVICE_TOKEN"]
+# OPTIONAL. Directories beyond the repository the agent may read and write. Default: none.
+extra_directories = ["/srv/shared-templates"]
+# OPTIONAL. Lets the agent use the CLI's "allow everything" mode. Default: false. Dangerous:
+# it also needs `[permissions.agent.<name>] unrestricted = true` in credentials.toml, and it
+# is not confined by fleetify's grants. Keep false unless you have a reason.
+unrestricted = false
+# OPTIONAL. Lets the agent use web access. Default: false.
+web = true
+
+# ---------------------------------------------------------------------------------------------
+# Network: which hosts an agent container may reach. Needs `image`, and `allow` is then REQUIRED.
+# ---------------------------------------------------------------------------------------------
+[network]
+# host:port entries the agent may reach, through the proxy. Must include the agent's model host.
+allow = ["api.anthropic.com:443", "github.com:443"]
+# OPTIONAL. host:port entries the proxy rejects silently: not logged, not shown in reports.
+# For traffic the recipe does not need, such as a vendor's telemetry. Default: none.
+# An entry may not be in both lists.
+ignore = ["telemetry.example.com:443"]
+
+# ---------------------------------------------------------------------------------------------
+# Hosts beyond github.com and gitlab.com. OPTIONAL. Keyed by host name.
+# ---------------------------------------------------------------------------------------------
+[hosts."git.example.com"]
+# REQUIRED inside each entry. github or gitlab: which API and CI integration the host speaks.
+type = "gitlab"
+
+# ---------------------------------------------------------------------------------------------
+# CI: what fleetify does after the push, while the host runs CI. All OPTIONAL; defaults shown.
+# ---------------------------------------------------------------------------------------------
+[ci]
+# auto (detect from the host) or gitlab-ci. Default: "auto".
+provider = "auto"
+# Wait for CI on the pushed commit before reporting success. Default: false.
+wait = false
+# Minutes to wait for CI before giving up. Default: 30. Must be greater than 0.
+timeout_min = 30
+# off (stop at the open request) or when_green (merge once CI is green). Default: "off".
+merge = "off"
+# Check the GitLab CI or GitHub Actions files before the build. Structure only. Default: true.
+validate = true
+# GitHub only: the workflow fleetify starts with workflow_dispatch when the host starts no CI
+# for the pushed commit. The file needs a workflow_dispatch trigger. Default: unset, and then
+# the repository ends as `ci_blocked` if no CI starts.
+dispatch_workflow = "tests.yml"
+# Seconds to wait for the host's own CI before fleetify starts it. 0 starts it at once.
+# Default: 180.
+dispatch_after_s = 180
+# How many times the agent gets a CI failure and tries to fix it on the same branch. 0 turns
+# the loop off. Default: 5.
+fix_rounds = 5
+# Lines of each failed CI job's log that reach the agent (the last ones). Default: 100.
+log_lines = 100
+# Characters of each failed CI job's log that reach the agent. Default: 1000. The smaller of
+# log_lines and log_chars applies.
+log_chars = 1000
+
+# ---------------------------------------------------------------------------------------------
+# Delivery: how far the change goes after the push. Each step is opt-in beyond the one before.
+# ---------------------------------------------------------------------------------------------
+[delivery]
+# Open a merge (pull) request for the pushed branch. false ends the repository as `pushed`.
+# Default: true.
+open_mr = true
+# Delete the source branch after its merge request was merged. Default: false. Needs
+# ci.merge = "when_green".
+delete_branch = false
+
+# ---------------------------------------------------------------------------------------------
+# Limits and rate limits. OPTIONAL; defaults shown.
+# ---------------------------------------------------------------------------------------------
+[limits]
+# Minutes the agent may run in total before it is stopped. Default: 60.
+agent_timeout_min = 60
+# Minutes without agent output before fleetify warns. Default: 10.
+idle_warn_min = 10
+
+[rate_limit]
+# Longest wait, in minutes, when a host asks fleetify to hold back. Longer waits end the
+# repository as `rate_limited`. 0 means never wait. Default: 15.
+max_wait_min = 15
+
+# ---------------------------------------------------------------------------------------------
+# Policy: safety settings. A recipe can tighten them; loosening needs a grant. OPTIONAL.
+# ---------------------------------------------------------------------------------------------
+[policy]
+# Refuse agents that did not pass `check-agent`. Default: true. Setting false needs
+# `[permissions] unchecked_agents = true` in credentials.toml.
+require_checked_agent = true
