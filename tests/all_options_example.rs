@@ -54,11 +54,14 @@ fn the_all_options_example_names_every_option_of_the_schema() {
     // The recipe parses with every table the schema knows.
     Recipe::parse(&text).unwrap();
 
-    let schema: serde_json::Value =
-        serde_json::from_str(&fleetify::recipe::json_schema()).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&fleetify::recipe::json_schema()).unwrap();
     let mut names = BTreeSet::new();
     collect_properties(&schema, &mut names);
-    assert!(names.len() > 60, "the schema walk found only {}", names.len());
+    assert!(
+        names.len() > 60,
+        "the schema walk found only {}",
+        names.len()
+    );
 
     // An option is shown when its line appears, active or commented out: `name = ...`, or a
     // table header `[name]`, `[name.sub]` or `[[name]]`.
@@ -66,10 +69,9 @@ fn the_all_options_example_names_every_option_of_the_schema() {
         .iter()
         .filter(|name| {
             let name = regex::escape(name);
-            let shown = regex::Regex::new(&format!(
-                r"(?m)^\s*#?\s*(\[{{1,2}}{name}[\].]|{name}\s*=)"
-            ))
-            .unwrap();
+            let shown =
+                regex::Regex::new(&format!(r"(?m)^\s*#?\s*(\[{{1,2}}{name}[\].]|{name}\s*=)"))
+                    .unwrap();
             !shown.is_match(&text)
         })
         .collect();
